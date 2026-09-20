@@ -364,18 +364,20 @@ test('a state file naming a real unrelated process does not confer daemon owners
   await expectUnsubmitted(published);
 });
 
-test('the Windows submission child keeps its native module path without inheriting credentials or state overrides', async () => {
+test('the Windows submission child keeps its native module paths and cache without inheriting credentials or state overrides', async () => {
   const published = await board();
   const nativePlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-  // Windows uses its real module search path so this exercises native CIM.
+  // Windows uses its real module path and cache so this exercises native CIM.
   // Other hosts only adapt the parent branch; the real child keeps its native
   // identity probe and still submits to the real owned daemon.
-  const modulePath = process.platform === 'win32'
-    ? process.env.PSModulePath
-    : 'captured-windows-module-search-path';
-  expect(modulePath).toBeTruthy();
+  const nativeKeys = ['PSModulePath', 'PSModuleAnalysisCachePath', 'LOCALAPPDATA'];
+  const windowsPaths = process.platform === 'win32'
+    ? Object.fromEntries(nativeKeys.flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []))
+    : { PSModulePath: 'captured-windows-module-search-path',
+      PSModuleAnalysisCachePath: 'captured-windows-module-cache', LOCALAPPDATA: 'captured-windows-local-appdata' };
+  expect(windowsPaths.PSModulePath).toBeTruthy();
   const overrides = {
-    PSModulePath: modulePath!,
+    ...windowsPaths,
     ANTHROPIC_API_KEY: 'fixture-provider-secret',
     OPENAI_API_KEY: 'fixture-provider-secret',
     GSTACK_HOME: 'fixture-unowned-state',
@@ -390,11 +392,11 @@ test('the Windows submission child keeps its native module path without inheriti
     expect(picker()(question(published.url))).toBe(1);
     expect(spawned).toHaveBeenCalledTimes(1);
     const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
-    expect(options.env?.PSModulePath).toBe(modulePath);
+    for (const [key, value] of Object.entries(windowsPaths)) expect(options.env?.[key]).toBe(value);
     expect(Object.keys(options.env!).sort()).toEqual([
-      'PATH', 'PSModulePath', ...(process.env.SystemRoot ? ['SystemRoot'] : []),
+      'PATH', ...Object.keys(windowsPaths), ...(process.env.SystemRoot ? ['SystemRoot'] : []),
     ].sort());
-    for (const key of Object.keys(overrides).filter(key => key !== 'PSModulePath')) {
+    for (const key of Object.keys(overrides).filter(key => !nativeKeys.includes(key))) {
       expect(options.env?.[key]).toBeUndefined();
     }
     expect(options.timeout).toBeGreaterThan(0);

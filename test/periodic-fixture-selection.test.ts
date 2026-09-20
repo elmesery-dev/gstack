@@ -61,6 +61,7 @@ describe('periodic fixture dependencies select their behavioral cases', () => {
     ['test/fixtures/eng-test-plan-edit-dacc.json', ['autoplan-chain-pty', 'plan-eng-finding-count']],
     ['test/fixtures/eng-test-plan-edit-cli.js', ['autoplan-chain-pty', 'plan-eng-finding-count']],
     ['test/autoplan-owned-state.test.ts', ['autoplan-chain-pty']],
+    ['test/autoplan-artifact-windows-argv.test.ts', ['autoplan-chain-pty', 'plan-eng-finding-count']],
     ['test/fixtures/eng-current-choice-cab3.json', ['plan-eng-finding-count']],
     ['test/fixtures/eng-completed-navigation-cab3.json', ['plan-eng-finding-count']],
     ['test/autoplan-dual-voice-fixture.test.ts', ['autoplan-dual-voice']],

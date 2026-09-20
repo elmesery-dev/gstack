@@ -156,8 +156,13 @@ export function createDesignReviewPicker({ cwd, deadlineAt }: { cwd: string; dea
       env: {
         PATH: process.env.PATH ?? '',
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        // The bounded Windows CIM query needs the host's module search path.
-        ...(process.platform === 'win32' && process.env.PSModulePath ? { PSModulePath: process.env.PSModulePath } : {}),
+        // Windows command discovery needs its module path and startup cache.
+        // LOCALAPPDATA supplies the cache location when no override is set.
+        ...(process.platform === 'win32' ? {
+          ...(process.env.PSModulePath ? { PSModulePath: process.env.PSModulePath } : {}),
+          ...(process.env.PSModuleAnalysisCachePath ? { PSModuleAnalysisCachePath: process.env.PSModuleAnalysisCachePath } : {}),
+          ...(process.env.LOCALAPPDATA ? { LOCALAPPDATA: process.env.LOCALAPPDATA } : {}),
+        } : {}),
       },
     });
     if (child.error || child.signal || child.status !== 0) {
