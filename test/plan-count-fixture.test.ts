@@ -166,6 +166,7 @@ try {
       const cases = [
         { name: 'design', skillName: 'plan-design-review', prompt: PROMPT, mode: 'complete', files: { 'DESIGN.md': '# Approved design\nKeep the existing layout.\n' } },
         { name: 'design-direct', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding' },
+        { name: 'design-named-target', skillName: 'plan-design-review', prompt: fs.readFileSync(path.join(ROOT, 'test/fixtures/plans/ui-heavy-feature.md'), 'utf8'), mode: 'direct-finding', namedTarget: true },
         { name: 'design-batched', skillName: 'plan-design-review', prompt: PROMPT, mode: 'batched-finding' },
         { name: 'failed-native', skillName: 'plan-design-review', prompt: PROMPT, mode: 'failed-call' },
         { name: 'native-permission-policy', skillName: 'plan-eng-review', prompt: PROMPT, mode: 'native-permission-policy', report: path.join(dir, 'native-policy-report.md') },
@@ -500,7 +501,7 @@ const results = await Promise.all(cases.map(async (item) => ({
   name: item.name,
   observation: await runPlanSkillCounting({
     skillName: item.skillName,
-    slashCommand: '/' + item.skillName,
+    slashCommand: '/' + item.skillName + (item.namedTarget ? ' PLAN.md' : ''),
     followUpPrompt: item.prompt,
     fixtureFiles: item.files,
     expectedPlanPath: item.report,
@@ -575,7 +576,7 @@ await Bun.write(${JSON.stringify(resultPath)}, JSON.stringify({ results, onboard
           expect(startup.skill).toContain(`name: ${item.skillName}`);
           expect(startup.sections).toBe(fs.readFileSync(path.join(ROOT, item.skillName, 'sections/review-sections.md'), 'utf8'));
           expect(events.filter((event) => event.type === 'input').map((event) => event.data).join(''))
-            .toBe(`/${item.skillName}\r` + (item.mode === 'prerequisite' ? `${item.custom ? '1\r' : '2'}${item.skipIndex}`
+            .toBe(`/${item.skillName}${item.namedTarget ? ' PLAN.md' : ''}\r` + (item.mode === 'prerequisite' ? `${item.custom ? '1\r' : '2'}${item.skipIndex}`
               : item.mode === 'permission-lifecycle' ? '1\r1\r2'
               : item.mode === 'damaged-submit' ? '\x1b[Z2\r\r'
               : item.mode === 'batched-finding' ? '2\r1\r' : item.mode === 'batched-mode' ? '1\r'
