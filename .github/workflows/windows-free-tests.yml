@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        query: [current, qualified]
+        query: [current, wmi]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -23,7 +23,7 @@ jobs:
       - name: Select diagnostic command
         env:
           QUERY_VARIANT: ${{ matrix.query }}
-        run: bun scripts/windows-cold-query-candidate.ts
+        run: bun scripts/windows-query-instrument.ts
       - name: Cold real board callback
         shell: bash
         run: |
