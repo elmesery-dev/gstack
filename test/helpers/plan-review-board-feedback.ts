@@ -153,7 +153,12 @@ export function createDesignReviewPicker({ cwd, deadlineAt }: { cwd: string; dea
     const child = spawnSync(process.execPath, ['-e', SUBMIT], {
       input: JSON.stringify({ stateFile, url, deadlineAt: childDeadline, alreadySubmitted: submitted.has(url) }),
       encoding: 'utf8', timeout: Math.max(1, childDeadline - Date.now()), killSignal: 'SIGKILL', maxBuffer: 16 * 1024,
-      env: { PATH: process.env.PATH ?? '', ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+      env: {
+        PATH: process.env.PATH ?? '',
+        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+        // The bounded Windows CIM query needs the host's module search path.
+        ...(process.platform === 'win32' && process.env.PSModulePath ? { PSModulePath: process.env.PSModulePath } : {}),
+      },
     });
     if (child.error || child.signal || child.status !== 0) {
       throw new Error(`Design feedback failed: ${child.error?.message ?? child.signal ?? `exit ${child.status}`}\n${child.stderr?.slice(-2000) ?? ''}`,

@@ -364,6 +364,53 @@ test('a state file naming a real unrelated process does not confer daemon owners
   await expectUnsubmitted(published);
 });
 
+test('the Windows submission child keeps its native module path without inheriting credentials or state overrides', async () => {
+  const published = await board();
+  const nativePlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  // Windows uses its real module search path so this exercises native CIM.
+  // Other hosts only adapt the parent branch; the real child keeps its native
+  // identity probe and still submits to the real owned daemon.
+  const modulePath = process.platform === 'win32'
+    ? process.env.PSModulePath
+    : 'captured-windows-module-search-path';
+  expect(modulePath).toBeTruthy();
+  const overrides = {
+    PSModulePath: modulePath!,
+    ANTHROPIC_API_KEY: 'fixture-provider-secret',
+    OPENAI_API_KEY: 'fixture-provider-secret',
+    GSTACK_HOME: 'fixture-unowned-state',
+    DESIGN_DAEMON_STATE_FILE: 'fixture-unowned-daemon.json',
+  };
+  const saved = new Map(Object.keys(overrides).map(key => [key, process.env[key]]));
+  const actualSpawn = childProcess.spawnSync;
+  const spawned = spyOn(childProcess, 'spawnSync').mockImplementation(actualSpawn);
+  try {
+    Object.assign(process.env, overrides);
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    expect(picker()(question(published.url))).toBe(1);
+    expect(spawned).toHaveBeenCalledTimes(1);
+    const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
+    expect(options.env?.PSModulePath).toBe(modulePath);
+    expect(Object.keys(options.env!).sort()).toEqual([
+      'PATH', 'PSModulePath', ...(process.env.SystemRoot ? ['SystemRoot'] : []),
+    ].sort());
+    for (const key of Object.keys(overrides).filter(key => key !== 'PSModulePath')) {
+      expect(options.env?.[key]).toBeUndefined();
+    }
+    expect(options.timeout).toBeGreaterThan(0);
+    expect(options.timeout).toBeLessThanOrEqual(2000);
+    const written = JSON.parse(fs.readFileSync(feedbackPath(published), 'utf8'));
+    expect(written).toMatchObject({ preferred: 'A', regenerated: false, boardId: published.id });
+  } finally {
+    spawned.mockRestore();
+    Object.defineProperty(process, 'platform', nativePlatform);
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('an expired absolute deadline refuses before HTTP', async () => {
   const published = await board();
   expect(() => picker(Date.now() - 1)(question(published.url))).toThrow();
@@ -436,19 +483,25 @@ Date.now = () => now() + 2000;
   const actualSpawn = childProcess.spawnSync;
   const spawned = spyOn(childProcess, 'spawnSync').mockImplementation((command, args, options) =>
     actualSpawn(command, ['--preload', preload, ...args!], options as any));
+  // Bind the assertion to the admission clock, not time spent building the
+  // question before the picker starts its unchanged two-second child budget.
+  const started = Date.now();
+  const clock = spyOn(Date, 'now').mockReturnValue(started);
   try {
-    const started = Date.now();
     expect(() => picker()(question(published.url))).toThrow('Design feedback deadline exhausted');
     expect(spawned).toHaveBeenCalledTimes(1);
     const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
     expect(options.timeout).toBeLessThanOrEqual(2000);
     const input = JSON.parse(options.input as string);
-    expect(input.deadlineAt).toBeLessThanOrEqual(started + 2000);
+    expect(input.deadlineAt).toBe(started + 2000);
     expect(fs.existsSync(queried)).toBe(false);
     const result = spawned.mock.results[0]!.value as childProcess.SpawnSyncReturns<string>;
     expect(result.error).toBeUndefined();
     expect(result.signal).toBeNull();
-  } finally { spawned.mockRestore(); }
+  } finally {
+    clock.mockRestore();
+    spawned.mockRestore();
+  }
   await expectUnsubmitted(published);
 });
 

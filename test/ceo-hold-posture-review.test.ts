@@ -207,12 +207,19 @@ test.each(['provider error','deadline expires'])('%s cannot reset the existing d
 // Execute the actual registered callback, with native I/O and the judge replaced
 // by captured/mocked boundaries. No paid module is imported, actor created or
 // model invoked. The mocked positive proves wiring, not semantic acceptance.
-async function registered(scenario:'accept'|'uncertain'|'missing source'|'missing answer'|'lexical pass'|'expansion'){
+async function registered(scenario:'accept'|'uncertain'|'missing source'|'missing answer'|'lexical pass'|'expansion',sourcePath=captured.source.path){
   const source=fs.readFileSync(path.join(import.meta.dir,'skill-e2e-plan-ceo-mode-routing.test.ts'),'utf8');
   const plan=source.match(/^const PLAN = \[[\s\S]*?^\]\.join\('\\n'\);/m)?.[0];expect(plan).toBeDefined();
   const registration=source.slice(source.indexOf("describeE2E('/plan-ceo-review mode routing (gate)'"));
   expect(registration.startsWith("describeE2E('/plan-ceo-review mode routing (gate)'" )).toBe(true);
-  const f=input();now=f.selectionStartedAt-8000;
+  const f=input(),previous=f.source.path;f.source.path=sourcePath;now=f.selectionStartedAt-8000;
+  for(const e of f.publicTools){
+    if(e.input?.file_path===previous)e.input.file_path=sourcePath;
+    if(e.file?.filePath===previous)e.file.filePath=sourcePath;
+  }
+  // Captured source/Read identities keep their originating path namespace even
+  // when the actual callback is replayed on a different operating system.
+  const paths=/^(?:[A-Za-z]:[\\/]|\\\\)/.test(sourcePath)?path.win32:path.posix;
   const answered=decision(f),pending=clone(answered);pending.answered=false;delete pending.answers;delete pending.answeredAt;pending.unansweredQuestionIndices=[0];
   let stage=0,judges=0,closed=0,cleaned=0;const sends:string[]=[],deadlines:number[]=[];
   const snapshots:string[]=[];const registeredCases:Array<{name:string;run:()=>Promise<void>;timeout:number}>=[];
@@ -227,10 +234,10 @@ async function registered(scenario:'accept'|'uncertain'|'missing source'|'missin
     return t;
   };
   const c={mode:scenario==='expansion'?'SCOPE EXPANSION':'HOLD SCOPE',postureRe:hold};
-  const b={path,CAPTURE_LONG_MS,CASES:[c],EXPANSION_PACING_CALLS:1,
+  const b={path:paths,CAPTURE_LONG_MS,CASES:[c],EXPANSION_PACING_CALLS:1,
     test:(name:string,run:()=>Promise<void>,timeout:number)=>registeredCases.push({name,run,timeout}),describeE2E:(_s:string,run:()=>void)=>run(),
     Bun:{sleep:async(ms:number)=>{now+=ms;}},Date:{now:()=>now},
-    createPlanCountFixture:(plan:string)=>{expect(plan).toBe(captured.source.content);return{cwd:path.dirname(f.source.path),cleanup:()=>{cleaned++;}};},
+    createPlanCountFixture:(plan:string)=>{expect(plan).toBe(captured.source.content);return{cwd:paths.dirname(f.source.path),cleanup:()=>{cleaned++;}};},
     launchClaudePty:async()=>session,createPlanCountSnapshotWriter:()=>((args:any)=>{snapshots.push(args.observation.state);return{};}),
     pendingQuestionRecorderStatus:()=>({status:'ready'}),readPendingQuestion:()=>undefined,readPlanCountTranscript:read,
     navigateToModeAskUserQuestion:async()=>({modeIndex:3,visibleAtMode:'captured mode',question:{nativeCall:mode(f)}}),
@@ -258,4 +265,14 @@ test.each(['accept','uncertain','missing source','missing answer','lexical pass'
     if(scenario==='accept'||scenario==='uncertain')expect(r.deadlines).toEqual([r.deadline]);
     if(['accept','lexical pass','expansion'].includes(scenario)){expect(r.error).toBeUndefined();expect(r.snapshots.at(-1)).toBe('posture_confirmed');}
     else{expect(r.error).toBeInstanceOf(Error);expect(r.snapshots.at(-1)).toBe('failed');}
+  });
+
+for(const sourcePath of ['C:\\owned\\PLAN.md','\\\\server\\share\\PLAN.md'])test.each(['accept','missing source'] as const)(
+  `actual registered callback: %s keeps the original ${sourcePath} Read identity`,async scenario=>{
+    const r=await registered(scenario,sourcePath);
+    expect(r.judges,String(r.error)).toBe(scenario==='accept'?1:0);
+    expect(r.sends.filter(s=>s==='1')).toHaveLength(1);
+    if(scenario==='accept'){
+      expect(r.deadlines).toEqual([r.deadline]);expect(r.error).toBeUndefined();expect(r.snapshots.at(-1)).toBe('posture_confirmed');
+    }else{expect(r.error).toBeInstanceOf(Error);expect(r.snapshots.at(-1)).toBe('failed');}
   });

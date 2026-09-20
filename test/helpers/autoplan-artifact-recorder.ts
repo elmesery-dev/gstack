@@ -14,7 +14,7 @@ type Reason = typeof reasons[number];
 const object = (v: unknown): v is Record<string, any> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const id = (v: unknown): v is string => typeof v === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(v);
 const keys = (v: Record<string, any>, allowed: string[]) => Object.keys(v).every(k => allowed.includes(k));
-const quote = (v: string) => `'${(process.platform === 'win32' ? v.replaceAll('\\','/') : v).replaceAll("'", "'\\''")}'`;
+const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
 export interface PendingAutoplanArtifact {
   source:'pre_tool_use'; sessionId:string; toolUseId:string; tool:'Edit'; file:string; timestamp:string; editDigest?:AutoplanEditDigest;
   /** Validated recorder tombstones; exposed only by the published-current opt-in. */
@@ -64,7 +64,10 @@ export function createAutoplanArtifactRecorder(cwd:string, config:string, stateR
   const createdAt = Date.now();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'gstack-autoplan-artifact-')), file = path.join(dir,'state.json');
   fs.writeFileSync(file,JSON.stringify({version:1,cwd,config,stateRoot,...(engTestPlanRoot ? {engTestPlanRoot} : {}),seenIds:[],pending:null})+'\n',{mode:0o600});
-  const command = [process.execPath,import.meta.path,'--record',file,cwd,config,stateRoot,...(approveEdits ? ['--approve-edits'] : []),...(engTestPlanOnly ? ['--eng-test-plan-only'] : []),...(engTestPlanRoot ? ['--eng-test-plan-root',engTestPlanRoot] : [])].map(quote).join(' ');
+  // Git Bash needs slash-separated command paths. Data arguments keep their
+  // exact native spelling to match the owned event and persisted state.
+  const shellPath = (value:string) => process.platform === 'win32' ? value.replaceAll('\\','/') : value;
+  const command = [shellPath(process.execPath),shellPath(import.meta.path),'--record',file,cwd,config,stateRoot,...(approveEdits ? ['--approve-edits'] : []),...(engTestPlanOnly ? ['--eng-test-plan-only'] : []),...(engTestPlanRoot ? ['--eng-test-plan-root',engTestPlanRoot] : [])].map(quote).join(' ');
   // Foreign/current file mutations invalidate concurrent owned identity. Only
   // allowlisted Edit requests can become pending; Write supplies no authority.
   const hook = {matcher:'^(Write|Edit)$',hooks:[{type:'command',command,timeout:5}]};

@@ -4,18 +4,47 @@ on:
 permissions:
   contents: read
 jobs:
-  native-identity-diagnostic:
+  native-focused-repairs:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Diagnose native identity query without changing actor budgets
-        run: bun scripts/windows-identity-diagnostic.ts
+      - name: Configure fixture Git identity
+        shell: bash
+        run: |
+          git config --global user.email windows-ci@gstack.test
+          git config --global user.name "Windows CI"
+          git config --global init.defaultBranch main
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build import prerequisite
+        shell: bash
+        run: bash browse/scripts/build-node-server.sh
+      - name: Generate host outputs
+        shell: bash
+        run: bun run gen:skill-docs --host all
+      - name: Verify mirrored repair inputs
+        shell: bash
+        run: bun scripts/windows-focused-pins.ts
+      - name: Run native failing files and query controls
+        shell: bash
+        run: |
+          set -o pipefail
+          bun test test/autoplan-owned-state.test.ts test/ceo-hold-posture-review.test.ts test/plan-review-board-feedback.test.ts test/design-daemon-windows-identity.test.ts 2>&1 | tee windows-focused.log
+      - name: Run native argv transport regressions
+        if: always()
+        shell: bash
+        run: |
+          set -o pipefail
+          bun test test/autoplan-artifact-recorder.test.ts --test-name-pattern 'Windows hook transport' 2>&1 | tee windows-argv.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-identity-diagnostic
-          path: windows-identity-diagnostic.json
+          name: windows-focused-repairs
+          path: |
+            windows-focused.log
+            windows-argv.log
+            windows-focused-pins.json
