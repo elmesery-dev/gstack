@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        query: [current, inherited, startup]
+        query: [pwsh]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -20,15 +20,11 @@ jobs:
       - name: Build import prerequisite
         shell: bash
         run: bash browse/scripts/build-node-server.sh
-      - name: Select diagnostic command
-        env:
-          QUERY_VARIANT: ${{ matrix.query }}
-        run: bun scripts/windows-actor-env-diagnostic.ts
       - name: Cold real board callback
         shell: bash
         run: |
           set -o pipefail
-          bun test --timeout 60000 test/plan-review-board-feedback.test.ts --test-name-pattern '^the declared board protocol' 2>&1 | tee windows-cold-board.log
+          bun test test/plan-review-board-feedback.test.ts 2>&1 | tee windows-cold-board.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:

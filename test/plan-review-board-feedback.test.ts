@@ -433,7 +433,7 @@ import * as processApi from 'node:child_process';
 import * as fs from 'node:fs';
 const execute = processApi.execFileSync;
 mock.module('child_process', () => ({ ...processApi, execFileSync(command, args, options) {
-  if (command !== 'powershell.exe') return execute(command, args, options);
+  if (command !== 'pwsh.exe') return execute(command, args, options);
   fs.writeFileSync(${JSON.stringify(queryOptions)}, JSON.stringify(options));
   return execute(process.execPath, ['-e', ${JSON.stringify(`import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(queryPid)}, String(process.pid)); await Bun.sleep(10_000);`)}], options);
 } }));

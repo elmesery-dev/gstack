@@ -172,7 +172,7 @@ export function readCmdline(pid: number, timeoutMs?: number): string {
       }).trim();
     }
     if (process.platform === "win32") {
-      return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      return execFileSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command",
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
         `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop).CommandLine`,
       ], {
