@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 jobs:
-  native-argv-diagnostic:
+  native-bash-environment-diagnostic:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -12,11 +12,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Isolate UNC path transport
+      - name: Isolate Windows environment requirements under Git Bash
         shell: bash
-        run: bun scripts/windows-argv-diagnostic.ts > windows-argv-diagnostic.json
+        env:
+          PROBE_SHELL: bash-groups
+        run: bun scripts/windows-identity-diagnostic.ts
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-argv-diagnostic
-          path: windows-argv-diagnostic.json
+          name: windows-bash-environment-diagnostic
+          path: windows-identity-*.json

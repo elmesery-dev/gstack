@@ -20,29 +20,21 @@ const prefix = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($fal
 const command = prefix + `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}' -ErrorAction Stop).CommandLine`;
 const records = [];
 try {
- const safeKeys = ['PSModulePath','TEMP','TMP','USERPROFILE','HOMEDRIVE','HOMEPATH','WINDIR','SystemDrive','COMSPEC','PATHEXT','APPDATA','LOCALAPPDATA'];
- const safe = Object.fromEntries(safeKeys.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
- const explicit = prefix + "Import-Module ($PSHOME + '\\Modules\\CimCmdlets\\CimCmdlets.psd1') -ErrorAction Stop; " + command;
- console.log(JSON.stringify({shell:process.env.PROBE_SHELL, powershell:Bun.which('powershell.exe'), modulePath:process.env.PSModulePath}));
- for (const [name, environment, env, text] of [
-  ['cim','module-only',{...restricted,PSModulePath:process.env.PSModulePath},command],
-  ['cim','inherited',process.env,command],
-  ['cim','all-safe',{...restricted,...safe},command],
-  ['explicit-cim-module','restricted',restricted,explicit],
- ]) {
-  for (const api of ['spawnSync','execFileSync']) {
-   const childProbe = api === 'spawnSync' ? probe : `
-import { execFileSync } from 'node:child_process';
-const input=JSON.parse(await Bun.stdin.text());const started=Date.now();
-try {const stdout=execFileSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',input.command],{encoding:'utf8',stdio:['ignore','pipe','pipe'],timeout:input.timeout,windowsHide:true});
- console.log(JSON.stringify({elapsedMs:Date.now()-started,status:0,stdout}));}
-catch(error){console.log(JSON.stringify({elapsedMs:Date.now()-started,status:error.status,signal:error.signal,error:{message:error.message,code:error.code},stdout:error.stdout,stderr:error.stderr}));}
-`;
-   const result = spawnSync(process.execPath, ['-e', childProbe], { input: JSON.stringify({ command:text, timeout:1900 }), env,
-    encoding:'utf8',timeout:4900,maxBuffer:128*1024 });
-   const record={name,environment,api,timeout:1900,outerStatus:result.status,outerError:result.error?.message,child:result.stdout,stderr:result.stderr};
-   records.push(record);console.log(JSON.stringify(record));
-  }
+ const baseline={...restricted,PSModulePath:process.env.PSModulePath};
+ const groups={
+  program:['ProgramFiles','ProgramFiles(x86)','ProgramW6432','CommonProgramFiles','CommonProgramFiles(x86)','CommonProgramW6432','ProgramData','ALLUSERSPROFILE'],
+  identity:['USERNAME','USERDOMAIN','USERDOMAIN_ROAMINGPROFILE','LOGONSERVER','SESSIONNAME','USERPROFILE','HOMEDRIVE','HOMEPATH','APPDATA','LOCALAPPDATA'],
+  system:['OS','PROCESSOR_ARCHITECTURE','PROCESSOR_IDENTIFIER','PROCESSOR_LEVEL','PROCESSOR_REVISION','NUMBER_OF_PROCESSORS','WINDIR','SystemDrive','COMSPEC','PATHEXT','TEMP','TMP'],
+  powershell:Object.keys(process.env).filter(k=>/^(PS|POWERSHELL)/i.test(k)&&k.toLowerCase()!=='psmodulepath'),
+ };
+ const add=keys=>Object.fromEntries(keys.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
+ const variants=[['builtin-module-path',{...restricted,PSModulePath:process.env.SystemRoot+'\\System32\\WindowsPowerShell\\v1.0\\Modules'}],
+  ...Object.entries(groups).map(([name,keys])=>[name,{...baseline,...add(keys)}]),
+  ['all-groups',{...baseline,...add(Object.values(groups).flat())}],
+  ...Object.entries(groups).map(([name,keys])=>['inherited-without-'+name,Object.fromEntries(Object.entries(process.env).filter(([key])=>!keys.some(k=>k.toLowerCase()===key.toLowerCase())))])];
+ for(const [environment,env] of variants){
+  const result=spawnSync(process.execPath,['-e',probe],{input:JSON.stringify({command,timeout:1900}),env,encoding:'utf8',timeout:4900,maxBuffer:128*1024});
+  const record={environment,groupKeys:groups[environment],outerStatus:result.status,child:result.stdout,stderr:result.stderr};records.push(record);console.log(JSON.stringify(record));
  }
 } finally {
  target.kill();
