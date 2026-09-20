@@ -5,11 +5,11 @@ const originalBoard="import { execFileSync, spawnSync } from 'node:child_process
 const keys=["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "ProgramData", "ALLUSERSPROFILE", "USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "LOGONSERVER", "SESSIONNAME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "OS", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS", "WINDIR", "SystemDrive", "COMSPEC", "PATHEXT", "TEMP", "TMP", "POWERSHELL_DISTRIBUTION_CHANNEL", "POWERSHELL_UPDATECHECK", "PSModuleAnalysisCachePath", "PSModulePath"];
 const variant=process.env.QUERY_VARIANT;
 if(!['current','standard','inherited'].includes(variant))throw Error('unknown variant');
-const log=path.resolve('windows-query-phase.log');
+const log=path.resolve('windows-query-phase.log').replaceAll(String.fromCharCode(92), '/');
 const psLog="'"+log.replaceAll("'","''")+"'";
 const phase=label=>"[IO.File]::AppendAllText("+psLog+", '"+label+" ' + [DateTime]::UtcNow.ToString('O') + [Environment]::NewLine); ";
 let source=original.replace('"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +',JSON.stringify(phase('PS_ENTER')+'[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); ')+' +');
 source=source.replace(').CommandLine`,', ').CommandLine; '+phase('PS_DONE')+'`,');
-let board=originalBoard.replace('const state = readStateFile(input.stateFile);', 'fs.appendFileSync('+JSON.stringify(log)+', "ACTOR " + JSON.stringify({remainingMs:input.deadlineAt-Date.now(), powershell:Bun.which("powershell.exe"), environment:Object.fromEntries('+JSON.stringify(keys)+'.map(k=>[k,process.env[k]]))}) + "\\n");\nconst state = readStateFile(input.stateFile);');
+let board=originalBoard.replace('const state = readStateFile(input.stateFile);', 'fs.appendFileSync('+JSON.stringify(log)+', "ACTOR " + JSON.stringify({remainingMs:input.deadlineAt-Date.now(), powershell:Bun.which("powershell.exe"), environment:Object.fromEntries('+JSON.stringify(keys)+'.map(k=>[k,process.env[k]]))}) + String.fromCharCode(10));\nconst state = readStateFile(input.stateFile);');
 if(variant!=='current')board=board.replace('env: {\n        PATH:', 'env: {\n        ...'+(variant==='inherited'?'process.env':'Object.fromEntries('+JSON.stringify(keys)+'.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]))')+',\n        PATH:');
 writeFileSync('design/src/daemon-state.ts',source);writeFileSync('test/helpers/plan-review-board-feedback.ts',board);
