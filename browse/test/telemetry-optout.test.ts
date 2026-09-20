@@ -151,23 +151,19 @@ describe('telemetry env tier + cache semantics', () => {
 describe('enforcement: logTelemetry writes only with granted consent', () => {
   test('config-tier opt-out suppresses the JSONL append', async () => {
     const dir = tmpHomeWith('telemetry: off\n');
-    logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
-    // Fire-and-forget path: give any (incorrect) async append time to land.
-    await new Promise((r) => setTimeout(r, 30));
+    await logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
     expect(fs.existsSync(path.join(dir, 'analytics', 'browse-telemetry.jsonl'))).toBe(false);
   });
 
   test('no consent ever recorded (absent key) suppresses the JSONL append', async () => {
     const dir = tmpHomeWith('pair_agent: on\n');
-    logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
-    await new Promise((r) => setTimeout(r, 30));
+    await logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
     expect(fs.existsSync(path.join(dir, 'analytics', 'browse-telemetry.jsonl'))).toBe(false);
   });
 
   test('granted `community` tier appends the event', async () => {
     const dir = tmpHomeWith('telemetry: community\n');
-    logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
-    await new Promise((r) => setTimeout(r, 30));
+    await logTelemetry({ event: 'domain_skill_fired', host: 'example.com' });
     const file = path.join(dir, 'analytics', 'browse-telemetry.jsonl');
     expect(fs.existsSync(file)).toBe(true);
     expect(fs.readFileSync(file, 'utf-8')).toContain('domain_skill_fired');

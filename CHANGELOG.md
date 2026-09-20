@@ -29,6 +29,7 @@ Local test runs spend less time waiting after work is already complete. CI plann
 
 - Wake plan-count checks on output and exit, retain a silent metadata fallback, and settle output bursts before reading split redraws. Three synthetic CLI suites use explicit startup readiness without changing real-CLI startup behavior.
 - Cancel unused PTY and Node deadlines, stop already-exited daemon fixtures immediately, clear cookie-picker fixture sessions between suites, and await watchdog shutdown with a bounded completion signal.
+- Await telemetry append completion in consent tests instead of assuming disk writes finish within 30ms. Consent checks and error swallowing are unchanged.
 - Run gate and periodic CI planners directly on pinned Bun without dependency installation. Reports also skip unused installs; fork restrictions, executor images, and failure checks remain intact.
 - Retain failed eval shard logs from the hidden CI cache directory without uploading unrelated cache files.
 - Inject the CSO Git-pointer race at its first bounded read, preserving the original rejection assertion.
