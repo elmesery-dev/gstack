@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { buildRunManifest, collectPaidTestFiles, type PaidRunManifest, type SliceResult } from '../scripts/test-paid-shards';
 
 const ROOT = path.resolve(import.meta.dir, '..');
-type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
+type Step = { uses?: string; run?: string; if?: string; with?: Record<string, unknown> };
 type Job = {
   needs?: string | string[];
   if?: string;
@@ -59,6 +59,19 @@ describe('paid CI coordination stays off the eval image', () => {
       expect(JSON.stringify(report.steps)).not.toMatch(/restore-deps|bun install/);
       expect(report.steps.find(step => step.run?.includes('--report'))?.run).toContain('bun --no-install run');
       if (name === 'evals.yml') expect(report.permissions).toEqual({ contents: 'read' });
+    });
+
+    test(`${name}: failure logs include the hidden spool directory without uploading the rest of the cache`, () => {
+      const logs = jobs['eval-slices'].steps.find(step => step.with?.name === 'paid-slice-${{ matrix.slice }}-logs');
+      expect(logs?.uses).toStartWith('actions/upload-artifact@');
+      expect(logs?.if).toBe('failure()');
+      expect(logs?.with?.['include-hidden-files']).toBe(true);
+      expect(String(logs?.with?.path).trim().split('\n')).toEqual([
+        '/home/runner/.cache/gstack-paid-shard-*.log',
+        '/tmp/gstack-paid-shard-*.log',
+      ]);
+      expect(Object.values(jobs).flatMap(job => job.steps).filter(step => step.with?.['include-hidden-files']))
+        .toEqual([logs]);
     });
   }
 
