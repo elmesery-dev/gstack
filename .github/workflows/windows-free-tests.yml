@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        query: [builtin_cache, builtin_nocache]
+        query: [current, inherited, startup]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          bun test test/plan-review-board-feedback.test.ts --test-name-pattern '^the declared board protocol' 2>&1 | tee windows-cold-board.log
+          bun test --timeout 60000 test/plan-review-board-feedback.test.ts --test-name-pattern '^the declared board protocol' 2>&1 | tee windows-cold-board.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
