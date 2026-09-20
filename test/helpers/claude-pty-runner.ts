@@ -4280,7 +4280,7 @@ export async function runPlanSkillObservation(opts: {
           ...highWaterFlags(),
         };
       }
-      if (visible.includes('Unknown command:')) {
+      if (isUnknownSlashCommandVisible(visible, `/${opts.skillName}`)) {
         return {
           outcome: 'exited',
           summary: `claude rejected /${opts.skillName} as unknown command (skill not registered in this cwd)`,
@@ -4462,6 +4462,12 @@ export interface PlanSkillCountObservation {
   reviewCount: number;
   /** Answered administrative handoffs and artifact rendering, preserved separately. */
   administrativeCount: number;
+}
+
+export function isUnknownSlashCommandVisible(visible: string, slashCommand: string): boolean {
+  const command = slashCommand.trim().split(/\s+/)[0];
+  return [...visible.matchAll(/Unknown command:\s*(\/[\w-]+)(?=\s|$)/g)]
+    .some(match => match[1] === command);
 }
 
 /**
@@ -4746,7 +4752,7 @@ export async function runPlanSkillCounting(opts: {
         );
       }
 
-      if (visible.includes('Unknown command:')) {
+      if (isUnknownSlashCommandVisible(visible, opts.slashCommand)) {
         return snapshot(
           'exited',
           `claude rejected ${opts.slashCommand} as unknown command (skill not registered in this cwd)`,
@@ -5053,7 +5059,7 @@ export async function runPlanSkillFloorCheck(opts: {
           elapsedMs: Date.now() - startedAt,
         });
       }
-      if (visible.includes('Unknown command:')) {
+      if (isUnknownSlashCommandVisible(visible, opts.slashCommand)) {
         return finish({
           auqObserved: false,
           outcome: 'exited',

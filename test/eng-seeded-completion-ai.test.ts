@@ -136,6 +136,7 @@ async function mockedObservation(frames: string[], verdict: 'waiting' | 'working
       close: async () => { closed++; } }),
     createPlanCountSnapshotWriter: () => () => ({}), logPtySnapshot: () => {},
     isProseAUQVisible: predicates.isProseAUQVisible, isPlanReadyVisible: predicates.isPlanReadyVisible,
+    isUnknownSlashCommandVisible: predicates.isUnknownSlashCommandVisible,
     isScopeGateQuestionVisible: predicates.isScopeGateQuestionVisible,
     isScopeGateAutoSelectVisible: predicates.isScopeGateAutoSelectVisible,
     classifyVisible, extractPlanFilePath, findNativeAutoDecision: () => null,
