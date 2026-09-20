@@ -20,19 +20,23 @@ const prefix = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($fal
 const command = prefix + `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}' -ErrorAction Stop).CommandLine`;
 const records = [];
 try {
- for (const [name, commandText, timeout] of [
-  ['startup', prefix + "'started'", 1900],
-  ['cim-original-budget', command, 1900],
-  ['cim-diagnostic-timing-only', command, 10000],
-  ['cim-warm-original-budget', command, 1900],
- ]) {
-  for (const [environment, env] of [['restricted', restricted], ['inherited', process.env]]) {
-   const result = spawnSync(process.execPath, ['-e', probe], { input: JSON.stringify({ command: commandText, timeout }), env,
-    encoding: 'utf8', timeout: timeout + 3000, maxBuffer: 128 * 1024 });
-   const record = { name, environment, timeout, outerStatus: result.status, outerError: result.error?.message, child: result.stdout, stderr: result.stderr };
-   records.push(record);
-   console.log(JSON.stringify(record));
-  }
+ const groups = {
+  temp: ['TEMP', 'TMP'],
+  profile: ['USERPROFILE', 'HOMEDRIVE', 'HOMEPATH'],
+  system: ['WINDIR', 'SystemDrive', 'COMSPEC', 'PATHEXT'],
+  modules: ['PSModulePath'],
+  appdata: ['APPDATA', 'LOCALAPPDATA'],
+ };
+ const add = keys => Object.fromEntries(keys.filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+ const all = Object.values(groups).flat();
+ const variants = [['restricted', restricted], ...Object.entries(groups).map(([name, keys]) => [name, {...restricted, ...add(keys)}]),
+  ['all-safe', {...restricted, ...add(all)}], ...Object.entries(groups).map(([name, keys]) => ['all-except-' + name, {...restricted, ...add(all.filter(key => !keys.includes(key)))}])];
+ for (const [environment, env] of variants) {
+  const result = spawnSync(process.execPath, ['-e', probe], { input: JSON.stringify({ command, timeout: 1900 }), env,
+   encoding: 'utf8', timeout: 4900, maxBuffer: 128 * 1024 });
+  const record = { environment, keys: Object.keys(env), timeout: 1900, outerStatus: result.status, outerError: result.error?.message, child: result.stdout, stderr: result.stderr };
+  records.push(record);
+  console.log(JSON.stringify(record));
  }
 } finally {
  target.kill();
