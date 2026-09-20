@@ -1,6 +1,6 @@
 import { type TemplateContext, toShellPath } from './types';
 import { COMMAND_DESCRIPTIONS } from '../../browse/src/commands';
-import { SNAPSHOT_FLAGS } from '../../browse/src/snapshot';
+import { SNAPSHOT_FLAGS } from '../../browse/src/snapshot-flags';
 
 /**
  * The ONE untrusted-content warning (#2441). Embedded in the browse
