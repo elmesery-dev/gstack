@@ -13,6 +13,25 @@ test('the captured untagged dashboard decision proves UI review, but its setup q
   expect(calls[3]!.questions[0]!.question).not.toContain('<gstack-qid:');
 });
 
+test('the second captured review distinguishes setup from all ten native design decisions', () => {
+  const replay = captured.additionalCaptures[0]!.calls as NativePlanQuestionCall[];
+  expect(replay.map(call => isDesignUIScopeReview(fingerprint(call))))
+    .toEqual([false, false, ...Array(10).fill(true)]);
+});
+
+test('issue and pass separators do not change native design evidence', () => {
+  for (const issueSeparator of [':', ' —', ' –', ' -']) {
+    for (const passSeparator of [',', ';', ' —', ' –', ' -', ':', ' (']) {
+      const call = structuredClone(calls[3]!);
+      const q = call.questions[0]!;
+      q.question = q.question.replace('Issue 1:', `Issue 1${issueSeparator}`)
+        .replace(', Pass 1', `${passSeparator} Pass 1`);
+      call.answers = { [q.question]: q.options[0]!.label };
+      expect(isDesignUIScopeReview(fingerprint(call)), `${issueSeparator} / ${passSeparator}`).toBe(true);
+    }
+  }
+});
+
 test('native ownership and complete offered answers are required for UI evidence', () => {
   for (const mutate of [
     (call: NativePlanQuestionCall) => { call.answered = false; },

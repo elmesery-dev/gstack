@@ -13,10 +13,10 @@ export function isDesignUIScopeReview(fp: AskUserQuestionFingerprint): boolean {
   const workflow = /\b(?:reviewers?|scope|learnings|routing|mockups?|permissions?|codex|claude|outside)\b/i;
   return call.questions.some(q => {
     if (/^(?:scope|focus|learnings|routing|next steps?|outside(?: design)? voices)$/i.test(q.header.trim())) return false;
-    const issue = /^(?:D\d+\s*[—–:-]\s*)?Issue ([1-9]\d*): ((?:Which|How|What|Should)\b[^\n]*\?)$/i.exec(q.question.split('\n')[0]!.trim());
+    const issue = /^(?:D\d+\s*[—–:-]\s*)?Issue ([1-9]\d*)\s*[:—–-]\s*((?:Which|How|What|Should|Does|Add|Specify|Define|Replace|Shape)\b[^\n]*\?)$/i.exec(q.question.split('\n')[0]!.trim());
     if (!issue || workflow.test(issue[2]!) ||
-        !/\b(?:dashboard|hierarchy|panels?|layout|buttons?|navigation|notifications?|activity|actions?|spacing|colou?rs?|fonts?|typography|loading|errors?|focus|contrast|keyboard|mobile|responsive|toasts?|modals?|empty)\b/i.test(issue[2]!) ||
-        !/^Project\/branch\/task:[^\n]*\bPLAN\.md\b[^\n]*,\s*Pass [1-7]\b/m.test(q.question)) return false;
+        !/\b(?:dashboard|hierarchy|panels?|layout|headers?|buttons?|navigation|notifications?|activity|actions?|spacing|colou?rs?|fonts?|typography|loading|errors?|focus|contrast|keyboard|mobile|responsive|toasts?|modals?|empty)\b/i.test(issue[2]!) ||
+        !/^Project\/branch\/task:[^\n]*\bPLAN\.md\b[^\n]*[,;:—–(-]\s*Pass [1-7]\b/m.test(q.question)) return false;
     const choice = new RegExp(`^${issue[1]}[A-Z]:\\s+\\S`);
     return q.options.every(option => choice.test(option.label) && !workflow.test(option.label));
   });

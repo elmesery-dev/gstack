@@ -174,6 +174,7 @@ try {
         { name: 'design-tool-diagnostic', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding', toolDiagnostic: true },
         { name: 'design-gate-positive', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding', gateFilter: true },
         { name: 'design-ui-captured', skillName: 'plan-design-review', prompt: fs.readFileSync(path.join(ROOT, 'test/fixtures/plans/ui-heavy-feature.md'), 'utf8'), mode: 'direct-finding', gateFilter: true, namedTarget: true, capturedQuestions: designUICapture.calls[3]!.questions },
+        { name: 'design-ui-captured-separators', skillName: 'plan-design-review', prompt: fs.readFileSync(path.join(ROOT, 'test/fixtures/plans/ui-heavy-feature.md'), 'utf8'), mode: 'direct-finding', gateFilter: true, namedTarget: true, capturedQuestions: designUICapture.additionalCaptures[0]!.calls[2]!.questions },
         { name: 'design-batched', skillName: 'plan-design-review', prompt: PROMPT, mode: 'batched-finding' },
         { name: 'failed-native', skillName: 'plan-design-review', prompt: PROMPT, mode: 'failed-call' },
         { name: 'native-permission-policy', skillName: 'plan-eng-review', prompt: PROMPT, mode: 'native-permission-policy', report: path.join(dir, 'native-policy-report.md') },
@@ -633,7 +634,7 @@ await Bun.write(${JSON.stringify(resultPath)}, JSON.stringify({ results, onboard
             expect(result.observation.reviewCount).toBe(1);
             expect(result.observation.step0Count).toBe(2);
             expect(result.observation.fingerprints.map(fp => fp.preReview)).toEqual([true, true, false]);
-            expect(result.observation.fingerprints.at(-1).nativeCall.questions[0].header).toBe(item.capturedQuestions ? 'Hierarchy' : 'Button style');
+            expect(result.observation.fingerprints.at(-1).nativeCall.questions[0].header).toBe(item.capturedQuestions?.[0].header ?? 'Button style');
             const finding = result.observation.fingerprints.at(-1);
             expect(finding.promptSnippet.length).toBe(240);
             expect((item.capturedQuestions ? isDesignUIScopeReview : isDesignCountFirstReview)(nativePlanCallFingerprint(finding.nativeCall, finding.observedAtMs, finding.preReview))).toBe(true);
