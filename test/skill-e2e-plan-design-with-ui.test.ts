@@ -23,8 +23,9 @@ import {
   designStep0Boundary,
   nativePlanCallFingerprint,
 } from './helpers/claude-pty-runner';
-import { isDesignCountFirstReview, isDesignCountSetup, isDesignCompletionHandoff, pickDesignCountQuestion } from './helpers/design-count-review';
+import { isDesignCountSetup, isDesignCompletionHandoff, pickDesignCountQuestion } from './helpers/design-count-review';
 import { isDesignArtifactGeneration } from './helpers/design-artifact-question';
+import { isDesignUIScopeReview } from './helpers/design-ui-scope';
 
 const describeE2E = describeE2ETier('gate');
 
@@ -40,8 +41,8 @@ describeE2E('/plan-design-review with UI scope (gate)', () => {
         slashCommand: '/plan-design-review PLAN.md',
         followUpPrompt: fs.readFileSync(FIXTURE, 'utf8'),
         isLastStep0AUQ: designStep0Boundary,
-        isFirstReviewAUQ: isDesignCountFirstReview,
-        isReviewAUQ: isDesignCountFirstReview,
+        isFirstReviewAUQ: isDesignUIScopeReview,
+        isReviewAUQ: isDesignUIScopeReview,
         isSetupAUQ: isDesignCountSetup,
         isCompletionHandoffAUQ: isDesignCompletionHandoff,
         isArtifactGenerationAUQ: isDesignArtifactGeneration,
@@ -51,7 +52,7 @@ describeE2E('/plan-design-review with UI scope (gate)', () => {
       });
       const designQuestionObserved = observation.fingerprints.some(fp =>
         !fp.preReview && !fp.administrative && fp.nativeCall &&
-        isDesignCountFirstReview(nativePlanCallFingerprint(fp.nativeCall, fp.observedAtMs, fp.preReview)));
+        isDesignUIScopeReview(nativePlanCallFingerprint(fp.nativeCall, fp.observedAtMs, fp.preReview)));
       if ((observation.outcome !== 'ceiling_reached' && observation.outcome !== 'plan_ready') ||
           observation.reviewCount < 1 || !designQuestionObserved) {
         throw new Error(

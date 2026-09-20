@@ -228,6 +228,7 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
     "test/ceo-hold-commitment-ar.test.ts", "test/fixtures/ceo-hold-commitment-ar.json",
   ],
   'plan-design-with-ui-scope':   [
+    'test/helpers/design-ui-scope.ts', 'test/design-ui-scope.test.ts', 'test/fixtures/plan-design-ui-scope.json',
     "test/plan-scope-recovery-av.test.ts",
     "test/fixtures/plan-scope-recovery-av.json",
     "test/fixtures/design-scope-checkpoint-at.json",'plan-design-review/**', 'test/fixtures/plans/ui-heavy-feature.md', 'test/helpers/claude-pty-runner.ts', 'test/helpers/hermetic-skill-runtime.ts', 'test/hermetic-skill-runtime.test.ts', 'test/helpers/pty-trust-dialog.ts', 'test/pty-trust-dialog.test.ts', 'test/skill-e2e-plan-design-with-ui.test.ts', 'test/plan-count-truncated-question.test.ts', 'test/fixtures/ceo-approach-z-call.json', 'test/fixtures/ceo-approach-z-screen.txt',
