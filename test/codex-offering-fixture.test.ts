@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildCodexOfferingPrompt, codexOfferingSources } from './helpers/codex-offering-fixture';
 import captured from './fixtures/codex-offering-cdd-public.json';
+import timedOut from './fixtures/codex-offering-timeout-public.json';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
@@ -17,6 +18,45 @@ function fixture() {
 }
 
 describe('Codex offering source lookup', () => {
+  test('captured timeouts wrote oversized summaries successfully but never completed execution', () => {
+    expect(timedOut.cases.map(row => row.attempt)).toEqual([1, 2]);
+    for (const row of timedOut.cases) {
+      expect(row.exitReason).toBe('timeout');
+      expect(row.timeoutMs).toBe(120_000);
+      expect(row.tools.length).toBeLessThan(row.maxTurns);
+      expect(row.tools.every(tool => tool.acknowledged && !tool.isError)).toBe(true);
+      expect(row.tools.some(tool => !['Read', 'Bash', 'Write'].includes(tool.name))).toBe(false);
+      expect(row.summaryWords).toBeGreaterThan(600);
+      expect(row.tools.at(-1)?.name).toBe('Write');
+      expect(row.writeSeconds * 1000).toBeLessThan(row.timeoutMs);
+      expect(row.writeAcknowledged).toBe(true);
+      expect(row.providerFinalResult).toBe(false);
+    }
+  });
+
+  test('bounded summaries retain all five audit questions and require a terminal response after writing', () => {
+    const root = path.resolve(import.meta.dir, '..');
+    for (const skill of ['office-hours', 'plan-ceo-review', 'plan-design-review', 'plan-eng-review']) {
+      const prompt = buildCodexOfferingPrompt({ root, skill, featureName: 'outside voice', summaryPath: '/tmp/offering-summary.md' });
+      expect(prompt.split('\n').filter(line => /^\d\. /.test(line))).toEqual([
+        '1. How is Codex availability checked? (what exact bash command?)',
+        '2. How is the user prompted? (via AskUserQuestion? what are the options?)',
+        '3. What happens when Codex is NOT available? (fallback to subagent? skip entirely?)',
+        '4. Is this step blocking (gates the workflow) or optional (can be skipped)?',
+        '5. What prompt/context is sent to Codex?',
+      ]);
+      expect(prompt).toContain('read the relevant complete sections');
+      expect(prompt).toContain('identify anything they do not document');
+      expect(prompt).toContain('source file/line citations, at most 600 words total');
+      expect(prompt).toContain('Answer every question and cover its relevant branches');
+      expect(prompt).toContain('Preserve the exact availability command');
+      expect(prompt).toContain('instead of copying whole blocks');
+      expect(prompt.indexOf('After the Write succeeds')).toBeGreaterThan(prompt.indexOf('Write your summary to'));
+      expect(prompt).toContain('finish with one sentence naming the saved path');
+      expect(prompt).toContain('Do not repeat the audit in your final response');
+    }
+  });
+
   test('captured failures used all eight tool calls before writing, finding carved evidence late', () => {
     expect(captured.cases.map(row => row.attempt)).toEqual([1, 2]);
     for (const row of captured.cases) {

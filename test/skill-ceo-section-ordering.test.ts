@@ -50,7 +50,7 @@ test('CEO decision cycle returns to its caller with two complete persistence che
   expect(positions.every(position => position >= 0)).toBe(true);
   expect(positions).toEqual([...positions].sort((a, b) => a - b));
   expect(cycle.match(/\*\*(?:Pre-question|Post-answer) checkpoint:\*\*/g)).toHaveLength(2);
-  expect(cycle).toContain('resume the section that sent you here at its next instruction, without restarting Step 0 or mode selection');
+  expect(cycle).toContain('resume its next instruction; do not restart Step 0 or mode selection');
   expect(cycle).not.toContain('Save pending rows before comparing options');
   expect(cycle).toContain('complete current plan, pending rows and comparisons');
 });
@@ -98,7 +98,7 @@ test('CEO handoff allows no pending choice without inventing an approval', () =>
   expect(noChoice).toBeGreaterThan(0);
   expect(noChoice).toBeLessThan(approach.indexOf('**2. Record the pending choice.**'));
   expect(approach).toContain('Initial 0D after 0C scans for unresolved approach');
-  expect(approach).toContain('If unresolved, compare: A) current/requested plan as written');
+  expect(approach).toContain('Otherwise run steps 1–4: A) current/requested plan');
   expect(approach).toContain('Initial pass after 0C: proceed to 0E once required choices are settled');
   expect(approach).toContain('invent no alternatives or approval');
   expect(handoff).toContain('No new approach decision was needed');
@@ -136,8 +136,8 @@ test('CEO mode handoff applies the selected mode before the next question', () =
   expect(selection).toContain('An explicit choice skips steps 2–3');
   expect(instruction).toContain('After selection');
   expect(instruction).toContain('send brief chat before tools');
-  const selectionSteps = selection.slice(0, handoffStart);
-  expect(selectionSteps).toContain('only if that check exits 0 with `AUTO_DECIDE`');
+  const selectionSteps = compactProse(selection.slice(0, handoffStart));
+  expect(selectionSteps).toContain('A check that exits 0 with `AUTO_DECIDE` selects the recommendation');
   expect(selectionSteps).toContain('**STOP for the answer**');
   expect(selectionSteps).not.toMatch(/\blog (?:with|that ID)\b/);
   const loggingStart = handoff.indexOf('Record mode provenance after the handoff');
@@ -255,10 +255,12 @@ test('CEO routes administrative menus separately while scope and TODO retain the
   expect(mechanics).toContain("step's listed options with the preamble question tool");
   expect(mechanics).toContain('Log answer and provenance');
   expect(mechanics).toContain('does not approve implementation, scope, TODO remedies or outside-review findings');
-  for (const gate of ['ledger row', 'comparison', 'labeled chat output', 'Read-back', 'exact question object', 'actual answer']) expect(substantive).toContain(gate);
+  expect(substantive).toContain('Run steps 1–4 below');
+  const procedure = decisions.slice(decisions.indexOf('**1. Check sources'));
+  for (const gate of ['ledger row', 'comparison', 'For chat, verify the complete text labeled **not persisted**', 'Read-back', 'one native arguments object', 'actual answer']) expect(procedure).toContain(gate);
   expect(decisions).toContain('Use each menu only for its step');
   expect(decisions).toContain('handle it as a Plan decision');
-  expect(decisions).toContain('including D when offered');
+  expect(decisions).toContain('Use offered columns, including D');
   expect(decisions).toContain('For different kinds of work');
   expect(decisions).not.toContain('For every question');
   expect(main).toContain('Run all four 0D steps for each unanswered addition or deferral, using its menu');
@@ -343,9 +345,9 @@ test('CEO value comparisons and decline-all outcomes stay explicit before approv
   expect(pendingSave >= 0 && pendingSave < values && values < comparedSave && comparedSave < ask).toBe(true);
   const comparison = procedure.slice(values, ask);
   expect(compactProse(comparison)).toContain('Show unchanged, shared and pending values');
-  expect(compactProse(comparison)).toContain('shared values/frameworks do not merge independent choices');
+  expect(compactProse(comparison)).toContain('shared frameworks do not merge independent choices');
   expect(comparison).toContain('Keep other rows fixed or pending');
-  expect(compactProse(comparison)).toContain('preserve accepted requirements, tests and fixes');
+  expect(compactProse(comparison)).toContain('preserve requirements, tests and fixes');
   expect(procedure).toContain('If all options are declined, continue only with a viable current approach retained by the answer');
   expect(procedure).toContain('otherwise leave the row unresolved and stop for direction');
 });
@@ -378,7 +380,7 @@ test('CEO Step 0 drafts provisional contracts before menus and saves their compl
       expect(approach).toContain('other rows fixed or pending');
       expect(approach).toContain('independent changes separate ledger rows');
       expect(approach.indexOf('Record owner, behavior, limits, test method and coverage in Current/Proposed')).toBeLessThan(approach.indexOf('Build one `currentDecision`'));
-      expect(compactProse(approach)).toContain('shared values/frameworks do not merge independent choices');
+      expect(compactProse(approach)).toContain('shared frameworks do not merge independent choices');
       expect(source).toContain('If an attempted save fails, report it and stop');
       expect(approach).toContain('Record pending rows before comparisons; never prewrite approval or tasks');
       expect(approach).toContain('never prewrite approval or tasks');
@@ -468,9 +470,9 @@ test('CEO Step 0 defines the decision record, execution order, and mode approval
   expect(step0).toContain('An explicit choice skips steps 2–3');
   expect(step0).toContain('For >15 planned changed files, recommend SCOPE REDUCTION');
   expect(step0).toContain('a new product/system (greenfield) → SCOPE EXPANSION');
-  expect(step0).toContain('When `QUESTION_TUNING: false`, skip the lookup');
-  expect(step0).toContain('Otherwise check `question_id=plan-ceo-review-mode` through the preamble');
-  expect(step0).toContain('Select the recommendation automatically only if that check exits 0 with `AUTO_DECIDE`');
+  expect(step0).toContain('When tuning is false, omit the lookup');
+  expect(step0).toContain('When `QUESTION_TUNING: true`, first check `question_id=plan-ceo-review-mode` through the preamble');
+  expect(step0).toContain('A check that exits 0 with `AUTO_DECIDE` selects the recommendation');
   expect(step0).toContain('Without that successful check, offer all four modes in one AskUserQuestion');
   expect(step0).toContain('**STOP for the answer**');
   expect(step0).toContain('Selecting a mode does not approve changes');
@@ -504,7 +506,7 @@ describe('CEO review decision boundaries contract', () => {
   const apply = compactProse(continuity.split('**Apply.**')[1]!);
 
   test('every approach comparison preserves approvals and separates independent changes', () => {
-    expect(compactProse(alternatives)).toContain('preserve accepted requirements, tests and fixes');
+    expect(compactProse(alternatives)).toContain('preserve requirements, tests and fixes');
     expect(alternatives).toContain('behavior, limits, test method and coverage');
     expect(skeleton).toContain('Set review depth');
     expect(compactProse(skeleton)).toContain('Ask before expanding strategy-only into implementation design');
@@ -528,7 +530,7 @@ describe('CEO review decision boundaries contract', () => {
     expect(alternatives).toContain('Tests for existing behavior | Separate independently selectable additions');
     expect(compactProse(skeleton)).toContain("Cite actual instructions/answers and exact scope");
     expect(alternatives).toContain('Weigh diff size and long-term architecture equally');
-    expect(compactProse(alternatives)).toContain('including a possible rewrite');
+    expect(compactProse(alternatives)).toContain('including rewrites');
     expect(alternatives).toContain('Initial 0D after 0C scans for unresolved approach');
     expect(alternatives).toContain('Initial pass after 0C: proceed to 0E once required choices are settled');
   });
@@ -544,7 +546,7 @@ describe('CEO review decision boundaries contract', () => {
     expect(compactProse(skeleton).indexOf(reopenRule)).toBeLessThan(compactProse(skeleton).indexOf('**2. Record the pending choice.**'));
     expect(approach).toContain('STOP for the actual answer, even for a lone option');
     expect(gate).toContain('Initial pass after 0C: proceed to 0E once required choices are settled');
-    expect(gate).toContain('Do not ask here. Return to the step or section that invoked 0D');
+    expect(gate).toContain('Return to the invoking step without another question');
     expect(approach).toContain('Recommendations are not approval');
     expect(approach).not.toContain('Do NOT proceed to Step 0D or 0F until the user responds to 0C-bis');
     expect(compactProse(approach)).toContain('Ask one row per call with that object unchanged, without recomposing');
@@ -703,7 +705,7 @@ describe('CEO review decision continuity contract', () => {
     const skeleton = fs.readFileSync(`${SKELETON}.tmpl`, 'utf8');
     expect(continuity).toContain('If this section needs a new decision or evidence warrants reopening one');
     expect(skeleton).toContain('Give independent changes separate ledger rows');
-    expect(compactProse(compactProse(skeleton))).toContain('shared values/frameworks do not merge independent choices');
+    expect(compactProse(compactProse(skeleton))).toContain('shared frameworks do not merge independent choices');
     for (const requirement of ['Resolve critical risks now',
       'complete 0D through its post-answer save, then continue to Apply below',
       'Keep independent safety fixes and throughput improvements in separate rows']) expect(continuity).toContain(requirement);

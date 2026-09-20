@@ -97,10 +97,14 @@ This makes the compounding visible. The user should see that gstack is getting
 smarter on their codebase over time.
 
 ## Retrospective learning
-For selected paths, run `git log --oneline -- <paths>` and
-`git log --grep=revert --oneline -- <paths>`; branch diff uses changed files.
-Plan target with no files: use named future paths or record `not available`.
-Check recurring issues or reversals.
+History paths by review target:
+- Plan: named existing paths. Mark named future paths `not available`; missing
+  history proves nothing about proposed behavior. Never invent paths.
+- Branch diff: changed files.
+- File/directory: selected path.
+
+Run `git log --oneline -- <paths>` and `git log --grep=revert --oneline -- <paths>`.
+Check recurring issues and reversals.
 
 **Plan-review evidence:** Implementation/validation steps are proposals. Calibrate
 findings below: quote the motivating plan requirement (file:line) and check existing interfaces
@@ -177,11 +181,12 @@ higher confidence.
 
 ## Decision procedure
 
-Use this six-step loop for findings from Scope Challenge, Sections 1–4, Outside
-Voice and late changes. Finish one choice before starting another. It also covers
-TODO choices. Setup gates are target/prerequisite choices before findings:
-Context Recovery/prerequisite prompts, initial target selector and Scope
-Challenge complexity selector. They use local rules, no pre-answer ledger.
+Run this six-step loop for findings from Scope Challenge, Sections 1–4, Outside
+Voice, late changes and TODO choices. Finish one choice before the next.
+
+Setup gates—Context Recovery/prerequisites, Prior Learnings configuration,
+target and Scope Challenge complexity selectors—use local rules without a
+pre-answer ledger. These answers approve no engineering remedy.
 
 Flow: issue -> compare -> save/read -> ask/wait -> apply -> next issue.
 
@@ -229,50 +234,49 @@ their own choices, and their tests wait for approval.
 
 ### 3. Compare one choice
 
-Build one question for one choice per AskUserQuestion call: Select one pending
-ID and build `currentDecision`:
+Select one pending ID. Prepare its question in this order:
+
+**Draft the native fields:** build `currentDecision`:
 - `question`: the complete D-numbered preamble brief, including Project, ELI10,
   Stakes, Recommendation and applicable completeness/net fields.
 - `header`: the exact native header.
 - `options`: every exact label and full description.
 
-Fit headers and labels to host limits now, before saving. Put the problem and
-file:line in the native fields. Offer 2–3 options, including do-nothing when
-reasonable; Outside Voice retains its four-option menu. Each option must explain
-human/CC effort, risk and maintenance. Tie the recommendation to the engineering
-preferences and prefer complete coverage when extra CC effort is marginal.
-If the host does not state limits, keep headers under 5 words and option labels
-under 5 words; put details in descriptions.
+Put the problem and file:line in the native fields. Offer 2–3 options, including
+do-nothing when reasonable; Outside Voice retains its four-option menu.
+Each option must explain human/CC effort, risk and maintenance. Tie the
+recommendation to the engineering preferences; prefer complete coverage when
+extra CC effort is marginal. Fit headers and labels to host limits now, before
+saving. Without stated limits, keep both under 5 words; details go in descriptions.
 
 For one fixed approved contract, coverage choices vary implementation or proof
 depth. Use `Completeness: N/10`: 10 covers all relevant in-scope edges, 7 covers
 the happy path, 3 is a shortcut. For different approaches, use
 `Note: options differ in kind, not coverage — no completeness score.`
-Completeness is only coverage depth for one approved contract. If options bundle
-unrelated policies, split them. Test-review scores rate existing/proposed tests,
-not answer status.
+Test-review scores rate existing/proposed tests, not answer status.
 
-Build a separate **comparison grid** for the whole brief. Give every selectable
+**Audit the commitments.** Build a separate **comparison grid** for the whole
+brief. Give every selectable
 behavior, approach, guarantee or bound a row. Show its concrete current value,
 each option's value and work, and any approval citation. Include shared, fixed
 and pending choices.
-If the grid exposes another independent change, return to step 2 and split it before sending the question. Put all deliberation in the native
-question/descriptions; a saved-only Pros/cons block cannot supply missing
-decision context.
 
-Compare each option's full label and description with every row in its grid
-column. They must make the same commitments and retain the same conditions:
-- Vary only this choice. Keep other approved values fixed and pending choices
-  undecided. A value shared by all options still needs approval if it is new.
-- Treat necessary implementation and proof of an approved contract as common
-  work. Cite its answer instead of creating another approval row. Never cut an
-  established contract or its required proof.
-- An Investigate/Defer option must bound the investigation and name what stays
-  unchanged or pending. It approves no implementation, including a conditional
-  fix. Keep that remedy pending.
+Use these three checks for every column:
+1. Vary only this choice. Keep other approved values fixed and pending choices
+   undecided. A value shared by all options still needs approval if it is new.
+2. Treat necessary implementation and proof of an approved contract as common
+   work. Cite its answer instead of creating another approval row. Never cut an
+   established contract or its required proof.
+3. An Investigate/Defer option must bound the investigation and name what stays
+   unchanged or pending. It approves no implementation, including a conditional
+   fix. Keep that remedy pending.
 
-Resolve any contradiction here. If you discover another independent choice,
-return to step 2 before sending the question.
+**Reconcile before saving.** Compare each option's full label and description
+with every row in its grid column. They must make the same commitments and retain
+the same conditions. Put all deliberation in the native question/descriptions;
+a saved-only Pros/cons block cannot supply missing decision context. Repair
+contradictions now. If you discover another independent choice, return to step 2
+before sending the question.
 
 For example, jitter and a delay cap can be chosen independently. A menu of “both / cap only / neither” bundles them by omitting “jitter only.” Ask about jitter first:
 
@@ -341,9 +345,7 @@ comparison or a critic's advice cannot substitute for this verification.
 ### 5. Ask and wait
 
 Use the preamble's tool resolution, failure fallback and authorized auto-decision
-rules. The initial target selector and Scope Challenge complexity selector are
-setup gates with local rules and no pre-answer ledger rows because they choose
-scope first. Every later engineering remedy uses this Decision procedure.
+rules.
 
 Send `AskUserQuestion({ questions: [currentDecision] })` after step 4. Send one
 question object for one choice; other IDs wait. Copy the verified question,
@@ -430,23 +432,22 @@ preamble's decision-brief format for this complexity gate.
 Initial scope selectors need no grid or **pre-answer** ledger write. Ask and
 wait before changes.
 
-1. Explain complexity; ask each feature cut/deferral separately first. Ask and
-   wait before changing scope.
-2. Structure choice: after feature scope is fixed, compare only the file/class
-   arrangement. Compare original/smaller class/module arrangements with identical feature
-   choices, contracts and approved security/error/test/performance fixes.
-   Unapproved fixes stay pending.
-3. structure only menu:
-   `A) Original arrangement: <files/classes>; fixed features: <approved list>`
-   `B) Smaller arrangement: <files/classes>; fixed features: same list`
-   `Pending remedies not decided here: <ids>`.
-   These labels decide only file/class arrangement, not pending remedies.
-4. Save the actual feature and structure answers as one scope record: `feature
+1. Explain the complexity. Ask each proposed feature cut/deferral separately;
+   wait before changing scope. With no proposed cuts, keep the feature list and
+   go directly to the structure question.
+2. Always ask the structure question when this gate trips, even with no cuts.
+   Compare only the file/class arrangement. Use labels `Original arrangement`
+   and `Smaller arrangement`; put files/classes in each description. Both retain
+   the same approved feature list, contracts and approved
+   security/error/test/performance fixes. Include `Pending remedies not decided here: <ids>` in the
+   question; unapproved fixes stay pending. If no smaller arrangement preserves
+   these commitments, explain that and offer confirmation of the original
+   arrangement or a pause to investigate a smaller one. Wait for the answer.
+3. Save the actual feature and structure answers as one scope record: `feature
    answers: <refs>; structure: <A/B + ref>; accepted scope: <exact scope>;
    pending remedies: <ids or none>`.
 
-After all complexity answers, save actual answers and accepted scope under the
-write policy; no retroactive pending record.
+Save this record under the write policy; no retroactive pending record.
 
 Other remedies need separate accept/reject/defer answers through Decision
 procedure after findings exist.
@@ -467,6 +468,9 @@ reuse exact answers. Evaluate Architecture → Code Quality → Tests → Perfor
 at most 8 top issues each. Never condense, abbreviate or skip a section, including
 strategy/spec/infra plans. With zero findings, report "No issues found" and continue.
 
+After each of Sections 1–4, resolve new or reopened choices through Decision
+procedure, report findings and dispositions, then continue.
+
 ### 1. Architecture review
 Evaluate:
 * Overall system design and component boundaries.
@@ -478,8 +482,6 @@ Evaluate:
 * For each new codepath or integration point, describe one realistic production failure scenario and whether the plan accounts for it.
 * **Distribution architecture:** If this introduces a new artifact (binary, package, container), how does it get built, published, and updated? Is the CI/CD pipeline part of the plan or deferred?
 
-Resolve this section's new or reopened choices through the Decision procedure. Then report its findings and dispositions and continue.
-
 ### 2. Code quality review
 Evaluate:
 * Code organization and module structure.
@@ -488,8 +490,6 @@ Evaluate:
 * Technical debt hotspots.
 * Areas that are fragile or unnecessarily complex, using the entrypoint's engineering preferences.
 * Existing ASCII diagrams in touched files — are they still accurate after this change?
-
-Resolve this section's new or reopened choices through the Decision procedure. Then report its findings and dispositions and continue.
 
 ### 3. Test review
 
@@ -524,22 +524,22 @@ ls jest.config.* vitest.config.* playwright.config.* cypress.config.* .rspec pyt
 git ls-files | grep -cE '(^|/)(tests?|spec|__tests__)/|(^|/)tests?\.py$|(^|/)test_[^/]+\.py$|_test\.(go|py|rb|ts|js|exs)$|\.(test|spec)\.[jt]sx?$|_spec\.rb$|Test\.(java|kt)$' | sed 's/^/TESTFILES:/'
 ```
 
-3. **If no framework detected:** still produce the coverage diagram and planned test assertions. State that the framework is unknown; use the decision gate if selecting one needs approval. Do not install a framework or write the proposed tests during this review.
+3. **If no framework detected:** State that the framework is unknown; continue the diagram and planned assertions. If proposing a new framework, settle that choice through Decision procedure in Test step 5. Reuse an exact prior approval; with no selection proposed, ask no framework question. Do not install a framework or write the proposed tests during this review.
+
+Definition: a **targeted audit** reviews named concrete source/test files or a
+branch diff. A **prototype** is existing runnable code referenced by the plan,
+not a proposed future component.
+
+For every target, run these five Test steps inside Section 3, after Scope
+Challenge and the Architecture/Code Quality reviews. Do not restart them.
+Within Test step 1, read concrete source/tests before tracing or diagramming;
+Test step 2 adds user flows. Future paths remain proposals, not runnable code.
 
 **Step 1. Trace every codepath in the plan:**
 
 Read the plan document. For each new feature, service, endpoint, or component described, trace how data will flow through the code — don't just list planned functions, actually follow the planned execution:
 
-1. **Read the plan.** For each planned component, understand what it does and how it connects to existing code.
-Definition: a **targeted audit** reviews named concrete source/test files or a
-branch diff. A **prototype** is existing runnable code referenced by the plan,
-not a proposed future component.
-
-When grounded in concrete source and test files, read them in a dedicated tool
-call before drawing the diagram. For targeted audits only, do this after Scope
-Challenge resolves and before Step 2. Map user flows. Do not mix diff, grep,
-package/config, git, or commentary into that read; use separate calls for
-context. Base the diagram on that read.
+1. **Read the plan.** For each planned component, understand what it does and how it connects to existing code. When grounded in concrete source and test files, read them in a dedicated tool call before drawing the diagram. Do not mix diff, grep, package/config, git, or commentary into that read; use separate calls for context. Base the diagram on that read.
 2. **Trace data flow.** Starting from each entry point (route handler, exported function, event listener, component render), follow the data through every branch:
    - Where does input come from? (request params, props, database, API call)
    - What transforms it? (validation, mapping, computation)
@@ -709,8 +709,6 @@ Evaluate:
 * Memory-usage concerns.
 * Caching opportunities.
 * Slow or high-complexity code paths.
-
-Resolve this section's new or reopened choices through the Decision procedure. Then report its findings and dispositions and continue.
 
 ## Outside Voice — Independent Plan Challenge (default-on)
 
@@ -1010,6 +1008,9 @@ unresolved decisions in the report.
 Run this finish sequence after Approval readiness passes. The reference sections
 below supply content, formats and commands for the named step; they do not start
 another review cycle.
+
+On recovery, resume at the failed step. Reuse a successful Review Log for
+unchanged saved outputs; changed outputs must pass steps 1–4 again.
 
 1. **Prepare the review body.** Use the output reference below to complete the
    working plan, Implementation Tasks and Completion summary. Derive unresolved

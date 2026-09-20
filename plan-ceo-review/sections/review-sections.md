@@ -514,8 +514,8 @@ Use this exact route:
 - `CODEX_MODE: disabled` means intentional opt-out. Record disabled coverage and
   do not run a replacement reviewer.
 - `CODEX_MODE: ready` means run the outside invocation above.
-- Any other preflight result, including `under_current_harness`,
-  `under_codex`, missing CLI, auth/model failure, harness mismatch or failed
+- Any other preflight result, including `under_codex`,
+  missing CLI, auth/model failure, harness mismatch or failed
   output validation, means report the diagnosis and run the native fallback
   below. A native result never counts as outside coverage.
 
@@ -572,7 +572,8 @@ Do not record a clean review when no reviewer completed within the accepted wait
 
 Enter this block only after an external reviewer completed and the current
 native review exists. Current native review means this skill's completed
-Sections 1-10/11 and current report. If the only reviewer is same-harness/native
+Sections 1-10/11 and current findings and decision ledger; the final report is
+written later in Required Outputs. If the only reviewer is same-harness/native
 fallback, or if the external review was disabled, unavailable, timed out,
 cancelled, raw/incomplete or same-harness-only with unknown model identity, do
 not synthesize cross-model agreement. Record only OUTSIDE COVERAGE and do not
@@ -602,7 +603,7 @@ Only run this metadata write when permitted by the storage policy; otherwise rep
 ~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-plan-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","host":"claude","outside_provider":"codex","outside_status":"OUTSIDE_STATUS","phase":"plan-review","commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
 
-Substitute: STATUS = "clean" only if a reviewer completed and found no issues; "issues_found" if findings exist, or "unavailable" if neither reviewer completed. Never count missing coverage as a clean review.
+Substitute: STATUS = "clean" only if a reviewer completed and found no issues; "issues_found" if findings exist, or "unavailable" if neither reviewer completed. Never count missing coverage as a clean review. A completed native fallback uses SOURCE=in-host, OUTSIDE_STATUS=unavailable, and STATUS=clean or issues_found from its findings. These findings are the reviewer's, even if later resolved by the parent.
 Retain the historical review-log skill ID; add `"host":"claude","outside_provider":"codex","outside_status":"completed|unavailable|disabled|skipped","phase":"plan-review"`. Record differing attempt outcomes separately. `source:"codex"` requires completed CLI output; native uses `source:"in-host"` (historical `source:"claude"`: native Claude). Availability/native fallback is not outside completion. Preserve all reported modelUsage; unknown model identity stays unknown.
 
 

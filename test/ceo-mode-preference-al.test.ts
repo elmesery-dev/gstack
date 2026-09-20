@@ -54,14 +54,15 @@ test('source and both isolated host renders bind the shared check, marker and lo
  for(const document of [source,...rendered.values()]){
   const id=modeId(document),s=section(document);
   expect(getQuestion(id)).toMatchObject({id:'plan-ceo-review-mode',skill:'plan-ceo-review',category:'routing',door_type:'two-way'});
-  expect(s).toContain('check `question_id=plan-ceo-review-mode` through the preamble');
-  const automatic=s.split('Select the recommendation automatically')[1]!.split('\n')[0]!;
-  expect(automatic).toContain('only if that check exits 0 with `AUTO_DECIDE`');
-  expect(automatic).toContain('use the automatic handoff in step 4');
+  const routing=s.slice(s.indexOf('3. Resolve that recommendation'),s.indexOf('4. **Mode handoff:**')).replace(/\s+/g,' ');
+  expect(routing).toContain('check `question_id=plan-ceo-review-mode` through the preamble');
+  expect(routing).toContain('A check that exits 0 with `AUTO_DECIDE` selects the recommendation');
+  expect(routing).toContain('go to the automatic handoff in step 4');
+  expect(routing).toContain('When tuning is false, omit the lookup');
   const handoff=s.split('**Mode handoff:**')[1]!;
   expect(handoff).toContain('`'+id+': AUTO_DECIDE`');
   expect(handoff).toContain('Auto-decided review mode → <selected mode> (your preference)');
-  const asked=s.split('Without that successful check,')[1]!.split('\n')[0]!;
+  const asked=routing.split('Without that successful check,')[1]!;
   expect(asked).toContain('offer all four modes in one AskUserQuestion');
   expect(asked).toContain('**STOP for the answer**');
   expect(asked).toContain('When `QUESTION_TUNING: true`');
@@ -70,7 +71,8 @@ test('source and both isolated host renders bind the shared check, marker and lo
   expect(logging).toContain('no question log because none was asked');
   expect(logging).toContain('`'+id+'`, `auto_decided: true`');
   expect(logging).toContain('`auto_decided: false`, including the question ID only when `QUESTION_TUNING: true`');
-  expect(s.indexOf('4. **Mode handoff:**')).toBeGreaterThan(s.indexOf('3. Resolve that recommendation:'));
+  expect(s.indexOf('3. Resolve that recommendation')).toBeGreaterThanOrEqual(0);
+  expect(s.indexOf('4. **Mode handoff:**')).toBeGreaterThan(s.indexOf('3. Resolve that recommendation'));
   expect(handoff).toContain('After selection');
   expect(handoff).toContain('send brief chat before tools or further questions');
   expect(s.slice(0,s.indexOf('4. **Mode handoff:**'))).not.toMatch(/\blog (?:with|that ID)\b/);
@@ -102,9 +104,10 @@ test('only an explicit user selection or enabled successful mode check bypasses 
  for(const document of rendered.values()){
   const s=section(document),q=tuning(document);
   expect(s).toContain('An explicit choice skips steps 2–3');
-  expect(s).toContain('When `QUESTION_TUNING: false`, skip the lookup and ask below');
-  expect(s).toContain('Otherwise check `question_id=plan-ceo-review-mode` through the preamble');
-  expect(s).toContain('Select the recommendation automatically only if that check exits 0 with `AUTO_DECIDE`');
+  const routing=s.slice(s.indexOf('3. Resolve that recommendation'),s.indexOf('4. **Mode handoff:**')).replace(/\s+/g,' ');
+  expect(routing).toContain('When `QUESTION_TUNING: true`, first check `question_id=plan-ceo-review-mode` through the preamble');
+  expect(routing).toContain('When tuning is false, omit the lookup');
+  expect(routing).toContain('A check that exits 0 with `AUTO_DECIDE` selects the recommendation');
   expect(s).toContain('**STOP for the answer**');
   expect(document).toContain('Question Tuning (skip entirely if `QUESTION_TUNING: false`)');
   expect(q).toContain('`AUTO_DECIDE` means choose the recommended option');

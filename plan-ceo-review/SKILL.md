@@ -845,11 +845,11 @@ Plain terms:
   the preamble.
 
 Depth sets detail, not section coverage: review Sections 1–10 in every depth;
-run Section 11 only for UI. Strategy-only depth uses capability-level rows and
+run Section 11 only for UI. Strategy-only uses capability-level rows and
 "implementation owner must prove ___" notes, including the Error & Rescue map.
-Implementation-ready depth names interfaces, codepaths, rescue behavior and
-tests. Endpoint, method and state-machine contracts are required only when they
-are blockers or the selected depth calls for them.
+Implementation-ready names interfaces, codepaths, rescue behavior and tests.
+For one narrow decision, apply every section to that choice and its dependencies.
+Detail implementation contracts only for blockers or implementation-ready depth.
 
 **Keep the stated limits.** Record each measure, value, unit and prerequisite. Count all deliverables, including reused code. Changing a limit needs evidence and user approval.
 
@@ -888,20 +888,17 @@ Describe the 12-month ideal and whether this plan moves toward it.
   Ask that step's listed options with the preamble question tool. Log answer and
   provenance. This does not approve implementation, scope, TODO remedies or outside-review findings.
 - **Plan decision:** scope additions/cuts, approach choices, TODOs, specs and
-  review/outside findings. Run all 0D steps: ledger row, comparison, save or
-  labeled chat output, Read-back for file saves, exact question object, actual
-  answer, and applying only that answer's scope.
+  review/outside findings. Run steps 1–4 below. Their checkpoints belong to their
+  enclosing step; they are not additional passes through 0D.
 
-Use each menu only for its step: 0E chooses mode; 0G changes scope; Outside Voice
-handles reviewer findings; Next Steps chooses what happens after review. If an
-answer also changes plan scope, approach, TODO or finding, handle it as a Plan
-decision.
+Use each menu only for its step. If an admin answer also changes scope, approach,
+TODO or finding, handle it as a Plan decision.
 
-Initial 0D after 0C scans for unresolved approach. If none, cite
-settled/current approach and continue to 0E. If unresolved, compare: A)
-current/requested plan as written; B) smallest scoped alternative; C)
-larger/rewrite only with evidence. If one path is viable, explain why; ask only
-if approval is missing.
+**Entry check.** The entry check below selects a route; it is not a fifth step.
+Initial 0D after 0C scans for unresolved approach. If no choice needs an answer,
+return to the invoking step (0E on this initial visit). Otherwise run steps 1–4:
+A) current/requested plan; B) smallest scoped alternative; C) larger/rewrite only
+with evidence. Explain a lone viable path; ask only if approval is missing.
 
 **1. Check sources and prior answers.**
 Compare input, source and actual answers. Correct facts, flag approval conflicts
@@ -935,9 +932,9 @@ Build one `currentDecision` to save and send, using the preamble:
   2 ✅ pros and 1 ❌ con. Follow the Preamble self-check for minimum pros/cons;
   destructive one-way choices use its hard-stop exception.
 
-Without a prescribed menu, offer 2–3 options (prefer 3 for non-trivial plans);
-explain any lone option. No implementation: use S and state zero work.
-Weigh diff size and long-term architecture equally, including a possible rewrite.
+Without a prescribed menu, offer 2–3 options; prefer 3 for non-trivial plans.
+No implementation: use S and state zero work.
+Weigh diff size and long-term architecture equally, including rewrites.
 
 In Proposed, compare every commitment in the labels, descriptions and pros/cons:
 
@@ -945,10 +942,9 @@ In Proposed, compare every commitment in the labels, descriptions and pros/cons:
 Commitment | Source/approval or pending | Current | A | B | C
 ```
 
-Use the offered columns, including D when offered. Show unchanged, shared and
-pending values; shared values/frameworks do not merge independent choices. Keep
-other rows fixed or pending and preserve accepted requirements, tests and fixes.
-Offer no unrelated work.
+Use offered columns, including D. Show unchanged, shared and pending values;
+shared frameworks do not merge independent choices. Keep other rows fixed or
+pending; preserve requirements, tests and fixes. Offer no unrelated work.
 
 Score this row's coverage differences in the Commitment comparison: 10 = all
 edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
@@ -962,9 +958,7 @@ edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
   Effort/risk must each be one listed value, never a range. Correct any missing,
   changed or invalid `currentDecision` field before saving.
 - **Save.** Under the storage policy, save/present the complete current plan,
-  pending rows and comparisons. Under this decision's own heading, copy its grid
-  and all exact fields in this layout, as plain text. The fenced block below is
-  an example only; do not add fences to the saved record:
+  pending rows and comparisons. Under its own heading, copy its grid and all exact fields in this layout as unfenced plain text:
 
   ```text
   ## currentDecision (ROW-ID)
@@ -1009,11 +1003,9 @@ storage policy before taking another row.
 If all options are declined, continue only with a viable current approach retained
 by the answer; otherwise leave the row unresolved and stop for direction.
 
-**Continue after 0D:**
-Do not ask here. Return to the step or section that invoked 0D.
+**Continue after 0D:** Return to the invoking step without another question.
 - Initial pass after 0C: proceed to 0E once required choices are settled.
-- Later call: resume the section that sent you here at its next instruction,
-  without restarting Step 0 or mode selection.
+- Later call: resume its next instruction; do not restart Step 0 or mode selection.
 
 When returning, carry both resolved findings and genuine no-issue outcomes. Say
 "No issues, moving on." only when there are none.
@@ -1023,10 +1015,14 @@ Follow the preamble's session rules; `CONDUCTOR_SESSION: true` changes transport
 
 1. An explicit choice skips steps 2–3. "Go big", "ambitious" or "cathedral" means SCOPE EXPANSION; "hold scope but tempt me", "show me options" or "cherry-pick" means SELECTIVE EXPANSION. Do not ask again.
 2. Recommend without selecting. Count distinct planned file additions, edits and deletions, labeling estimates. For >15 planned changed files, recommend SCOPE REDUCTION. Otherwise: a new product/system (greenfield) → SCOPE EXPANSION; added capability → SELECTIVE EXPANSION; fix/refactor → HOLD SCOPE.
-3. Resolve that recommendation:
-   - When `QUESTION_TUNING: false`, skip the lookup and ask below.
-   - Otherwise check `question_id=plan-ceo-review-mode` through the preamble. Select the recommendation automatically only if that check exits 0 with `AUTO_DECIDE`; use the automatic handoff in step 4.
-   - Without that successful check, offer all four modes in one AskUserQuestion, using step 2's recommendation. **STOP for the answer**; the user's choice wins. When `QUESTION_TUNING: true`, include `<gstack-qid:plan-ceo-review-mode>`. These modes differ in kind, not coverage; do NOT score completeness.
+3. Resolve that recommendation. When `QUESTION_TUNING: true`, first check
+   `question_id=plan-ceo-review-mode` through the preamble. A check that exits 0
+   with `AUTO_DECIDE` selects the recommendation; go to the automatic handoff in
+   step 4. When tuning is false, omit the lookup.
+   Without that successful check, offer all four modes in one AskUserQuestion,
+   using step 2's recommendation. **STOP for the answer**; the user's choice
+   wins. When `QUESTION_TUNING: true`, include `<gstack-qid:plan-ceo-review-mode>`.
+   These modes differ in kind, not coverage; do NOT score completeness.
 
 4. **Mode handoff:** After selection, send brief chat before tools or further questions. Explain the mode's application and rationale. Include every governing approved row's ID, answer reference and accepted scope; do not collapse several choices into one approach.
 - `plan-ceo-review-mode: AUTO_DECIDE`: `Auto-decided review mode → <selected mode> (your preference). Change with /plan-tune. Approved decisions: <rows or none>. <Application and rationale>.`
@@ -1202,7 +1198,11 @@ Report the outcome and fields below. Show full reviewer output on request. List 
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON `null` ("score unavailable"). Label earlier grades "prior review score".
 
-Follow the storage policy for concerns and metrics. Append only when metadata writes are permitted; otherwise show these fields as not persisted:
+Concerns belong in the CEO summary under the storage policy. Metrics use the
+same write policy: append only when metadata writes are permitted; otherwise show these fields as not persisted.
+The metrics write is required when permitted, not best-effort: its failed mkdir
+or append stops the review as a save failure. Reviewer availability remains a
+quality bonus; it does not excuse a failed artifact write:
 ```bash
 mkdir -p ~/.gstack/analytics || exit 1
 echo '{"skill":"plan-ceo-review","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","iterations":ITERATIONS,"issues_found":FOUND,"issues_fixed":FIXED,"remaining":REMAINING,"quality_score":SCORE}' >> ~/.gstack/analytics/spec-review.jsonl || exit 1

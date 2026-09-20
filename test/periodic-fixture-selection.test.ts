@@ -214,7 +214,7 @@ test('offering source lookup dependencies select all four gate audits', () => {
   const expected = ['codex-offered-office-hours', 'codex-offered-ceo-review',
     'codex-offered-design-review', 'codex-offered-eng-review'].sort();
   for (const file of ['test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts',
-    'test/fixtures/codex-offering-cdd-public.json', 'test/helpers/workflow-judge-input.ts',
+    'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json', 'test/helpers/workflow-judge-input.ts',
     'test/workflow-judge-input.test.ts', 'test/helpers/workflow-excerpt.ts']) {
     const result = selectTests([file], E2E_TOUCHFILES);
     expect(result.reason).toBe('diff');
@@ -222,7 +222,7 @@ test('offering source lookup dependencies select all four gate audits', () => {
     for (const id of expected) expect(E2E_TIERS[id]).toBe('gate');
   }
   for (const file of ['test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts',
-    'test/fixtures/codex-offering-cdd-public.json']) {
+    'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json']) {
     expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
   }
 });

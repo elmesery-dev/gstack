@@ -895,7 +895,6 @@ describe('TEST_COVERAGE_AUDIT placeholders', () => {
       'Diagram the execution',
       'concrete source and test files',
       'dedicated tool call before drawing the diagram',
-      'after Scope Challenge resolves and before Step 2. Map user flows',
       'use separate calls for',
       'context. Base the diagram on that read',
       'start Test review output with the coverage diagram',
@@ -912,6 +911,9 @@ describe('TEST_COVERAGE_AUDIT placeholders', () => {
       expect(normalizedPlanSkill).toContain(phrase);
       expect(normalizedShipSkill).toContain(phrase);
     }
+    expect(normalizedPlanSkill).toContain('For every target, run these five Test steps inside Section 3, after Scope Challenge and the Architecture/Code Quality reviews');
+    expect(normalizedPlanSkill).toContain('Within Test step 1, read concrete source/tests before tracing or diagramming; Test step 2 adds user flows');
+    expect(normalizedShipSkill).toContain('after Scope Challenge resolves and before Step 2. Map user flows');
     // Plan mode traces the plan, not a git diff
     expect(planSkill).toContain('Trace every codepath in the plan');
     expect(planSkill).not.toContain('git diff origin');
@@ -996,9 +998,10 @@ describe('TEST_COVERAGE_AUDIT placeholders', () => {
 
   test('plan framework absence keeps requirements without offering test generation', () => {
     const detection = planSkill.split('\n#### Test Framework Detection\n')[1]!.split('**Step 1.')[0]!;
-    expect(detection).toContain('still produce the coverage diagram and planned test assertions');
+    expect(detection).toContain('continue the diagram and planned assertions');
     expect(detection).toContain('State that the framework is unknown');
-    expect(detection).toContain('use the decision gate if selecting one needs approval');
+    expect(detection).toContain('If proposing a new framework, settle that choice through Decision procedure in Test step 5');
+    expect(detection).toContain('Reuse an exact prior approval; with no selection proposed, ask no framework question');
     expect(detection).toContain('Do not install a framework or write the proposed tests during this review');
     expect(detection).not.toContain('skip test generation');
     expect(shipSkill).toContain('use the bootstrap decision already made in Step 4');
@@ -4445,9 +4448,9 @@ describe('plan-mode-info resolver (handshake-replacement)', () => {
     expect(content.indexOf(reopenRule!)).toBeLessThan(presentIdx);
     const gate = content.slice(stopIdx, modeIdx);
     expect(approach).toContain("Initial 0D after 0C scans for unresolved approach");
-    expect(approach).toContain("If unresolved, compare: A) current/requested plan as written");
+    expect(approach).toContain("Otherwise run steps 1–4: A) current/requested plan");
     expect(gate).toContain("Initial pass after 0C: proceed to 0E once required choices are settled");
-    expect(gate).toContain("Do not ask here. Return to the step or section that invoked 0D");
+    expect(gate).toContain("Return to the invoking step without another question");
     expect(gate).not.toContain("When this step's required decisions are settled, go to 0E if you came from 0C");
     expect(gate).toContain('even for a lone option');
     expect(approach).toContain('Recommendations are not approval');

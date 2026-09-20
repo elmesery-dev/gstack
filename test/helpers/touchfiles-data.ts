@@ -890,16 +890,16 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
 
   // Codex offering verification
   'codex-offered-office-hours':  ['test/session-runner-stream-lifecycle.test.ts', 'test/paid-retry-supervision.test.ts', 'office-hours/**', 'scripts/gen-skill-docs.ts', 'test/skill-e2e-plan.test.ts',
-    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json',
+    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json',
     'test/helpers/workflow-judge-input.ts', 'test/workflow-judge-input.test.ts', 'test/helpers/workflow-excerpt.ts'
   ],
   'codex-offered-ceo-review':    ['test/session-runner-stream-lifecycle.test.ts', 'test/paid-retry-supervision.test.ts', 'plan-ceo-review/**', 'scripts/gen-skill-docs.ts', 'test/skill-e2e-plan.test.ts',
-    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json',
+    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json',
     'test/helpers/workflow-judge-input.ts', 'test/workflow-judge-input.test.ts', 'test/helpers/workflow-excerpt.ts',
     'scripts/resolvers/preamble/generate-ask-user-format.ts', 'scripts/resolvers/tasks-section.ts'
   ],
   'codex-offered-design-review': ['test/session-runner-stream-lifecycle.test.ts', 'test/paid-retry-supervision.test.ts',
-    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json',
+    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json',
     'test/helpers/workflow-judge-input.ts', 'test/workflow-judge-input.test.ts', 'test/helpers/workflow-excerpt.ts',
     "test/plan-scope-recovery-av.test.ts",
     "test/fixtures/plan-scope-recovery-av.json",
@@ -910,7 +910,7 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
     'scripts/resolvers/preamble/generate-ask-user-format.ts'
   ],
   'codex-offered-eng-review':    ['test/session-runner-stream-lifecycle.test.ts', 'test/paid-retry-supervision.test.ts',
-    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json',
+    'test/helpers/codex-offering-fixture.ts', 'test/codex-offering-fixture.test.ts', 'test/fixtures/codex-offering-cdd-public.json', 'test/fixtures/codex-offering-timeout-public.json',
     'test/helpers/workflow-judge-input.ts', 'test/workflow-judge-input.test.ts', 'test/helpers/workflow-excerpt.ts',
     'scripts/resolvers/learnings.ts',
     "test/plan-scope-recovery-av.test.ts",

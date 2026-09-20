@@ -61,7 +61,8 @@ const PER_SKILL_RULES: Record<string, RegExp[]> = {
   'plan-ceo-review': [/One decision unit = one AskUserQuestion call/i, /Do NOT batch/i],
   'plan-eng-review': [
     /one question for one choice per AskUserQuestion call/i,
-    /If the grid exposes another independent change, return to step 2 and split it before sending/i,
+    /Give independently selectable changes separate IDs/i,
+    /If you discover another independent choice,\s+return to step 2\s+before sending the question/i,
   ],
   'plan-design-review': [/One issue = one AskUserQuestion call/i],
   'plan-devex-review': [

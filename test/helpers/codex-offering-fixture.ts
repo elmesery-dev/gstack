@@ -53,5 +53,7 @@ Summarize the Codex/${options.featureName} integration — answer these specific
 5. What prompt/context is sent to Codex?
 
 Use only evidence from the source files; identify anything they do not document.
-Write your summary to ${options.summaryPath}`;
+Write five numbered answers with source file/line citations, at most 600 words total. Answer every question and cover its relevant branches. Preserve the exact availability command; summarize the scripts and prompt/context instead of copying whole blocks.
+Write your summary to ${options.summaryPath}
+After the Write succeeds, finish with one sentence naming the saved path. Do not repeat the audit in your final response.`;
 }

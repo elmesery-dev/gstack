@@ -255,7 +255,7 @@ ls jest.config.* vitest.config.* playwright.config.* cypress.config.* .rspec pyt
 git ls-files | grep -cE '(^|/)(tests?|spec|__tests__)/|(^|/)tests?\\.py$|(^|/)test_[^/]+\\.py$|_test\\.(go|py|rb|ts|js|exs)$|\\.(test|spec)\\.[jt]sx?$|_spec\\.rb$|Test\\.(java|kt)$' | sed 's/^/TESTFILES:/'
 \`\`\`
 
-3. **If no framework detected:**${mode === 'ship' ? ' use the bootstrap decision already made in Step 4; report diagram-only coverage if setup was declined. Do not restart bootstrap from this audit.' : mode === 'plan' ? ' still produce the coverage diagram and planned test assertions. State that the framework is unknown; use the decision gate if selecting one needs approval. Do not install a framework or write the proposed tests during this review.' : ' still produce the coverage diagram, but skip test generation.'}`);
+3. **If no framework detected:**${mode === 'ship' ? ' use the bootstrap decision already made in Step 4; report diagram-only coverage if setup was declined. Do not restart bootstrap from this audit.' : mode === 'plan' ? ' State that the framework is unknown; continue the diagram and planned assertions. If proposing a new framework, settle that choice through Decision procedure in Test step 5. Reuse an exact prior approval; with no selection proposed, ask no framework question. Do not install a framework or write the proposed tests during this review.' : ' still produce the coverage diagram, but skip test generation.'}`);
 
   // ── Before/after count (ship only) ──
   if (mode === 'ship') {
@@ -280,14 +280,23 @@ Read the plan document. For each new feature, service, endpoint, or component de
 Read every changed file. For each one, trace how data flows through the code — don't just list functions, actually follow the execution:`;
 
   const traceStep1 = mode === 'plan'
-    ? `1. **Read the plan.** For each planned component, understand what it does and how it connects to existing code.`
+    ? `1. **Read the plan.** For each planned component, understand what it does and how it connects to existing code. When grounded in concrete source and test files, read them in a dedicated tool call before drawing the diagram. Do not mix diff, grep, package/config, git, or commentary into that read; use separate calls for context. Base the diagram on that read.`
     : `1. **Read the diff.** For each changed file, read the full file (not just the diff hunk) to understand context.`;
 
   sections.push(`
-${traceSource}
+${mode === 'plan' ? `Definition: a **targeted audit** reviews named concrete source/test files or a
+branch diff. A **prototype** is existing runnable code referenced by the plan,
+not a proposed future component.
+
+For every target, run these five Test steps inside Section 3, after Scope
+Challenge and the Architecture/Code Quality reviews. Do not restart them.
+Within Test step 1, read concrete source/tests before tracing or diagramming;
+Test step 2 adds user flows. Future paths remain proposals, not runnable code.
+
+` : ''}${traceSource}
 
 ${traceStep1}
-Definition: a **targeted audit** reviews named concrete source/test files or a
+${mode === 'plan' ? '' : `Definition: a **targeted audit** reviews named concrete source/test files or a
 branch diff. A **prototype** is existing runnable code referenced by the plan,
 not a proposed future component.
 
@@ -296,7 +305,7 @@ call before drawing the diagram. For targeted audits only, do this after Scope
 Challenge resolves and before Step 2. Map user flows. Do not mix diff, grep,
 package/config, git, or commentary into that read; use separate calls for
 context. Base the diagram on that read.
-2. **Trace data flow.** Starting from each entry point (route handler, exported function, event listener, component render), follow the data through every branch:
+`}2. **Trace data flow.** Starting from each entry point (route handler, exported function, event listener, component render), follow the data through every branch:
    - Where does input come from? (request params, props, database, API call)
    - What transforms it? (validation, mapping, computation)
    - Where does it go? (database write, API response, rendered output, side effect)

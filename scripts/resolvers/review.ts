@@ -571,7 +571,11 @@ ${ceo ? `Report the outcome and fields below. Show full reviewer output on reque
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON \`null\` ("score unavailable"). Label earlier grades "prior review score".
 
-Follow the storage policy for concerns and metrics. Append only when metadata writes are permitted; otherwise show these fields as not persisted:` : `After the loop completes (PASS, max iterations, or convergence guard):
+Concerns belong in the CEO summary under the storage policy. Metrics use the
+same write policy: append only when metadata writes are permitted; otherwise show these fields as not persisted.
+The metrics write is required when permitted, not best-effort: its failed mkdir
+or append stops the review as a save failure. Reviewer availability remains a
+quality bonus; it does not excuse a failed artifact write:` : `After the loop completes (PASS, max iterations, or convergence guard):
 
 1. Tell the user the result — summary by default:
    "Your doc survived N rounds of adversarial review. M issues caught and fixed.
@@ -1058,8 +1062,8 @@ Use this exact route:
 - \`CODEX_MODE: disabled\` means intentional opt-out. Record disabled coverage and
   do not run a replacement reviewer.
 - \`CODEX_MODE: ready\` means run the outside invocation above.
-- Any other preflight result, including \`under_current_harness\`,
-  \`under_codex\`, missing CLI, auth/model failure, harness mismatch or failed
+- Any other preflight result, including \`${outsideVoiceFor(ctx).id === 'codex' ? 'under_codex' : 'under_current_harness'}\`,
+  missing CLI, auth/model failure, harness mismatch or failed
   output validation, means report the diagnosis and run the native fallback
   below. A native result never counts as outside coverage.
 
@@ -1147,7 +1151,8 @@ Report all findings, dispositions and remaining disagreements after resolving th
 
 Enter this block only after an external reviewer completed and the current
 native review exists. Current native review means this skill's completed
-Sections 1-10/11 and current report. If the only reviewer is same-harness/native
+Sections 1-10/11 and current findings and decision ledger; the final report is
+written later in Required Outputs. If the only reviewer is same-harness/native
 fallback, or if the external review was disabled, unavailable, timed out,
 cancelled, raw/incomplete or same-harness-only with unknown model identity, do
 not synthesize cross-model agreement. Record only OUTSIDE COVERAGE and do not
@@ -1239,7 +1244,7 @@ After processing the queue, report findings, dispositions and remaining disagree
 ~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-plan-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","host":"${ctx.host}","outside_provider":"${outsideVoiceFor(ctx).id}","outside_status":"OUTSIDE_STATUS","phase":"plan-review","commit":"'"$(git rev-parse --short HEAD)"'"}'
 \`\`\`
 
-Substitute: STATUS = "clean" only if a reviewer completed and found no issues; "issues_found" if findings exist, or "unavailable" if neither reviewer completed. Never count missing coverage as a clean review.${ctx.skillName === 'plan-eng-review' ? ' A completed native fallback uses SOURCE=in-host, OUTSIDE_STATUS=unavailable, and STATUS=clean or issues_found from its findings. These findings are the reviewer\'s, even if later resolved by the parent.' : ''}
+Substitute: STATUS = "clean" only if a reviewer completed and found no issues; "issues_found" if findings exist, or "unavailable" if neither reviewer completed. Never count missing coverage as a clean review.${['plan-ceo-review', 'plan-eng-review'].includes(ctx.skillName) ? ' A completed native fallback uses SOURCE=in-host, OUTSIDE_STATUS=unavailable, and STATUS=clean or issues_found from its findings. These findings are the reviewer\'s, even if later resolved by the parent.' : ''}
 ${outsideVoiceProvenance(ctx, 'plan-review')}
 
 
