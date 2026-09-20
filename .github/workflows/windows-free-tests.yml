@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 jobs:
-  native-launcher-diagnostic:
+  native-argv-diagnostic:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -12,17 +12,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Probe exact native query under Git Bash
+      - name: Isolate UNC path transport
         shell: bash
-        env:
-          PROBE_SHELL: bash
-        run: bun scripts/windows-identity-diagnostic.ts
-      - name: Probe exact native query under PowerShell
-        env:
-          PROBE_SHELL: pwsh
-        run: bun scripts/windows-identity-diagnostic.ts
+        run: bun scripts/windows-argv-diagnostic.ts > windows-argv-diagnostic.json
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-launcher-diagnostic
-          path: windows-identity-*.json
+          name: windows-argv-diagnostic
+          path: windows-argv-diagnostic.json
