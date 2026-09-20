@@ -31,6 +31,10 @@ Local test runs spend less time waiting after work is already complete. CI plann
 - Cancel unused PTY and Node deadlines, stop already-exited daemon fixtures immediately, clear cookie-picker fixture sessions between suites, and await watchdog shutdown with a bounded completion signal.
 - Run gate and periodic CI planners directly on pinned Bun without dependency installation. Reports also skip unused installs; fork restrictions, executor images, and failure checks remain intact.
 - Inject the CSO Git-pointer race at its first bounded read, preserving the original rejection assertion.
+- Preload the UI-positive design-review eval in an isolated plan fixture and require an answered native design question, rather than accepting the scope menu.
+- Generate skill documentation in a fresh checkout without importing browser runtime dependencies. Keep snapshot flag metadata and public exports unchanged.
+- Eliminate early-reader pipe races in artifact URL normalization and safety-hook matching. Multiline commands retain their warnings even with large trailing content.
+- Treat a publication removed by another CSO recovery helper during candidate enumeration as a bounded retry; replacement inodes still fail closed.
 
 ## [1.87.4.0] - 2026-09-16
 
