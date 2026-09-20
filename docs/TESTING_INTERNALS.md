@@ -144,6 +144,13 @@ total-run deadlines. `test/pty-output-wake.test.ts` covers output, silent waits,
 exit, close, missing readiness, split redraws, and continuous redraws. Close and output waits
 cancel their losing deadlines so completed workers can exit immediately.
 
+The UI-positive design gate preloads `PLAN.md` and counts only positively
+identified, answered native design questions. Setup and outside-review choices
+cannot trip its one-question ceiling. Its final proof uses the full native
+question, not the truncated diagnostic snippet. Unknown-command failures must
+name the invoked slash command; a child tool rejecting `--help` is not a skill
+registration failure.
+
 **Paid suite (sharded runner, local AND CI).** `scripts/test-paid-shards.ts`
 is the single selection engine: 1 file per shard, `EVALS_JOBS` shard
 processes × `EVALS_CONCURRENCY` within-shard, per-shard `GSTACK_EVAL_DIR`,
