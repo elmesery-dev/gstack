@@ -59,7 +59,13 @@ describe('agents-digest', () => {
     // The explainer arms print the digest path, anchored to the script's own
     // directory — a $(pwd)-relative path prints a nonexistent file whenever
     // setup is invoked from anywhere but the repo root.
-    expect(setup).toContain('$SOURCE_GSTACK_DIR/agents-digest/gstack-AGENTS.md');
+    const explainer = setup.match(/^print_instruction_tier\(\) \{([\s\S]*?)^\}/m)?.[1];
+    expect(explainer).toBeDefined();
+    // Informational hosts resolve their own anchor before install preflight.
+    // Bind the printed path to that assignment, without fixing its local name.
+    const anchor = explainer!.match(/^\s*([A-Za-z_]\w*)="\$\(cd "\$\(dirname "\$0"\)" && pwd -P\)"$/m)?.[1];
+    expect(anchor).toBeDefined();
+    expect(explainer).toContain(`$${anchor}/${DIGEST_RELPATH}`);
     expect(setup).not.toMatch(/\$\(pwd\)\/agents-digest/);
     // …and no line may write to an AGENTS.md destination. Covers direct
     // write verbs (cp/ln/mv/tee/install/rsync/dd/truncate), > and >>

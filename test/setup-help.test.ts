@@ -2,6 +2,7 @@ import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
+import * as os from 'os';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const SETUP_SCRIPT = path.join(ROOT, 'setup');
@@ -115,6 +116,49 @@ describe('setup: host accept-list ↔ hosts/index.ts registry cross-check (#2361
     expect(res.stdout).toContain('.claude/skills');
     // It must not fall through into the installer.
     expect(res.stdout).not.toMatch(/Installing|bun install|Building/);
+  });
+
+  test.each(['slate', 'openclaw', 'hermes', 'gbrain'])('%s finishes before installation preflight commands', (host) => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-info-preflight-'));
+    const startup = path.join(temporary, 'startup.bash');
+    fs.writeFileSync(startup, `command() { echo 'unexpected installation preflight' >&2; return 97; }
+uname() { echo 'unexpected platform probe' >&2; return 97; }
+date() { echo 'unexpected backup timestamp' >&2; return 97; }
+`);
+    try {
+      const res = spawnSync('bash', [SETUP_SCRIPT, '--host', host], {
+        encoding: 'utf-8', timeout: 5000, cwd: temporary,
+        env: { ...process.env, BASH_ENV: startup.replaceAll('\\', '/') },
+      });
+      expect(res.error).toBeUndefined();
+      expect(res.status).toBe(0);
+      expect(res.stderr).toBe('');
+      expect(res.stdout).not.toMatch(/Installing|bun install|Building/);
+      if (host === 'openclaw' || host === 'hermes') {
+        expect(res.stdout.replaceAll('\\', '/')).toContain('/agents-digest/gstack-AGENTS.md');
+      }
+    } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+  });
+
+  test('install hosts preserve parsed flags and still require installation preflight', () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'setup-install-preflight-'));
+    const startup = path.join(temporary, 'startup.bash');
+    const observed = path.join(temporary, 'flags');
+    fs.writeFileSync(startup, `command() {
+  printf 'preflight:%s:%s:%s:%s:%s:%s\\n' "$HOST" "$QUIET" "$SKILL_PREFIX" "$SKILL_PREFIX_FLAG" "$MODEL_OVERRIDE" "$MODEL_OVERRIDE_SET" > "$GSTACK_TEST_SETUP_FLAG_LOG"
+  return 97
+}
+`);
+    try {
+      const res = spawnSync('bash', [SETUP_SCRIPT, '--host', 'claude', '--host=codex', '--quiet', '--no-prefix', '--model', 'first', '--model=second'], {
+        encoding: 'utf-8', timeout: 5000,
+        env: { ...process.env, BASH_ENV: startup.replaceAll('\\', '/'), GSTACK_TEST_SETUP_FLAG_LOG: observed.replaceAll('\\', '/') },
+      });
+      expect(res.error).toBeUndefined();
+      expect(res.status).toBe(1);
+      expect(fs.readFileSync(observed, 'utf8')).toBe('preflight:codex:1:0:1:second:1\n');
+      expect(res.stderr).toContain('Error: bun is required but not installed.');
+    } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   });
 
   test('zero-dispatch guard exists: unwired host errors loudly instead of exit-0 no-op', () => {

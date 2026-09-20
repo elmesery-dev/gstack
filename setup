@@ -49,6 +49,108 @@ for _arg in "$@"; do
   esac
 done
 
+# Informational hosts do not install anything. Resolve them before tool,
+# platform, and installation-path probes (especially costly in Git Bash).
+# ─── Parse flags ──────────────────────────────────────────────
+HOST="claude"
+QUIET=0
+LOCAL_INSTALL=0
+SKILL_PREFIX=1
+SKILL_PREFIX_FLAG=0
+TEAM_MODE=0
+NO_TEAM_MODE=0
+PLAN_TUNE_HOOKS_MODE=""   # "" = resolve from env/config/prompt; "yes"/"no" = explicit
+TIMELINE_STOP_HOOK_MODE=""  # "" = resolve from env/config; "yes"/"no" = explicit (#2677)
+MODEL_OVERRIDE=""
+MODEL_OVERRIDE_SET=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --host) [ -z "$2" ] && echo "Missing value for --host (expected claude, codex, kiro, factory, opencode, cursor, slate, openclaw, hermes, gbrain, or auto)" >&2 && exit 1; HOST="$2"; shift 2 ;;
+    --host=*) HOST="${1#--host=}"; shift ;;
+    --model) [ -z "$2" ] && echo "Missing value for --model" >&2 && exit 1; MODEL_OVERRIDE="$2"; MODEL_OVERRIDE_SET=1; shift 2 ;;
+    --model=*) MODEL_OVERRIDE="${1#--model=}"; MODEL_OVERRIDE_SET=1; shift ;;
+    --local) LOCAL_INSTALL=1; shift ;;
+    --prefix)    SKILL_PREFIX=1; SKILL_PREFIX_FLAG=1; shift ;;
+    --no-prefix) SKILL_PREFIX=0; SKILL_PREFIX_FLAG=1; shift ;;
+    --team)    TEAM_MODE=1; shift ;;
+    --no-team) NO_TEAM_MODE=1; shift ;;
+    --plan-tune-hooks)    PLAN_TUNE_HOOKS_MODE="yes"; shift ;;
+    --no-plan-tune-hooks) PLAN_TUNE_HOOKS_MODE="no"; shift ;;
+    --plan-tune-hooks=*)  PLAN_TUNE_HOOKS_MODE="${1#--plan-tune-hooks=}"; shift ;;
+    --timeline-stop-hook)    TIMELINE_STOP_HOOK_MODE="yes"; shift ;;
+    --no-timeline-stop-hook) TIMELINE_STOP_HOOK_MODE="no"; shift ;;
+    --timeline-stop-hook=*)  TIMELINE_STOP_HOOK_MODE="${1#--timeline-stop-hook=}"; shift ;;
+    -q|--quiet) QUIET=1; shift ;;
+    *) shift ;;
+  esac
+done
+
+# Shared by the instruction-tier explainer arms (openclaw, hermes). The digest
+# path is anchored to the script's own directory — $(pwd) would print a
+# nonexistent path when setup is invoked from anywhere else.
+print_instruction_tier() {
+  local source_dir
+  source_dir="$(cd "$(dirname "$0")" && pwd -P)"
+  echo ""
+  echo "Instruction-only tier (no install): copy the 2KB rules digest into a"
+  echo "location your agent reads (e.g. append to your project's AGENTS.md)."
+  echo "It carries gstack's ethos, reuse ladder, and voice rules:"
+  echo ""
+  echo "  $source_dir/agents-digest/gstack-AGENTS.md"
+  echo ""
+  echo "Re-copy it after upgrading gstack — the digest's first line shows its version."
+  echo ""
+}
+
+case "$HOST" in
+  claude|codex|kiro|factory|opencode|cursor|auto) ;;
+  slate)
+    echo ""
+    echo "Slate is not yet a first-class install target (docs/designs/SLATE_HOST.md —"
+    echo "blocked on the host-config refactor). Slate discovers skills from"
+    echo ".claude/skills as a compatibility fallback, so a Slate user is served by"
+    echo "the Claude install today:"
+    echo ""
+    echo "  ./setup --host claude"
+    echo ""
+    exit 0 ;;
+  openclaw)
+    echo ""
+    echo "OpenClaw integration uses a different model — OpenClaw spawns Claude Code"
+    echo "sessions natively via ACP. gstack provides methodology artifacts, not a"
+    echo "full skill installation."
+    echo ""
+    echo "To integrate gstack with OpenClaw:"
+    echo "  1. Tell your OpenClaw agent: 'install gstack for openclaw'"
+    echo "  2. Or generate artifacts: bun run gen:skill-docs --host openclaw"
+    echo "  3. See docs/OPENCLAW.md for the full architecture"
+    print_instruction_tier
+    exit 0 ;;
+  hermes)
+    echo ""
+    echo "Hermes integration uses the same model as OpenClaw — Hermes spawns"
+    echo "Claude Code sessions, and gstack provides methodology artifacts."
+    echo ""
+    echo "To integrate gstack with Hermes:"
+    echo "  1. Tell your Hermes agent: 'install gstack for hermes'"
+    echo "  2. Or generate artifacts: bun run gen:skill-docs --host hermes"
+    print_instruction_tier
+    exit 0 ;;
+  gbrain)
+    echo ""
+    echo "GBrain is a mod for gstack — it makes coding skills brain-aware."
+    echo "GBrain generates brain-enhanced skill variants that search your brain"
+    echo "for context before starting and save results after finishing."
+    echo ""
+    echo "To generate brain-aware skills:"
+    echo "  bun run gen:skill-docs --host gbrain"
+    echo ""
+    echo "GBrain setup and brain skills ship from the GBrain repo."
+    echo ""
+    exit 0 ;;
+  *) echo "Unknown --host value: $HOST (expected claude, codex, kiro, factory, opencode, cursor, slate, openclaw, hermes, gbrain, or auto)" >&2; exit 1 ;;
+esac
+
 if ! command -v bun >/dev/null 2>&1; then
   echo "Error: bun is required but not installed." >&2
   echo "Install with checksum verification:" >&2
@@ -411,7 +513,6 @@ _print_windows_copy_note_once() {
 }
 
 # ─── Quiet mode helper ────────────────────────────────────────
-QUIET=0
 log() { [ "$QUIET" -eq 0 ] && echo "$@" || true; }
 
 # Aside (aside.com, macOS 15+) is the primary browser; the compiled browse
@@ -436,103 +537,6 @@ _browser_hint() {
     log "  browser: gstack browser (fallback). Install Aside for the primary path: aside.com (macOS 15+)"
   fi
 }
-
-# ─── Parse flags ──────────────────────────────────────────────
-HOST="claude"
-LOCAL_INSTALL=0
-SKILL_PREFIX=1
-SKILL_PREFIX_FLAG=0
-TEAM_MODE=0
-NO_TEAM_MODE=0
-PLAN_TUNE_HOOKS_MODE=""   # "" = resolve from env/config/prompt; "yes"/"no" = explicit
-TIMELINE_STOP_HOOK_MODE=""  # "" = resolve from env/config; "yes"/"no" = explicit (#2677)
-MODEL_OVERRIDE=""
-MODEL_OVERRIDE_SET=0
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --host) [ -z "$2" ] && echo "Missing value for --host (expected claude, codex, kiro, factory, opencode, cursor, slate, openclaw, hermes, gbrain, or auto)" >&2 && exit 1; HOST="$2"; shift 2 ;;
-    --host=*) HOST="${1#--host=}"; shift ;;
-    --model) [ -z "$2" ] && echo "Missing value for --model" >&2 && exit 1; MODEL_OVERRIDE="$2"; MODEL_OVERRIDE_SET=1; shift 2 ;;
-    --model=*) MODEL_OVERRIDE="${1#--model=}"; MODEL_OVERRIDE_SET=1; shift ;;
-    --local) LOCAL_INSTALL=1; shift ;;
-    --prefix)    SKILL_PREFIX=1; SKILL_PREFIX_FLAG=1; shift ;;
-    --no-prefix) SKILL_PREFIX=0; SKILL_PREFIX_FLAG=1; shift ;;
-    --team)    TEAM_MODE=1; shift ;;
-    --no-team) NO_TEAM_MODE=1; shift ;;
-    --plan-tune-hooks)    PLAN_TUNE_HOOKS_MODE="yes"; shift ;;
-    --no-plan-tune-hooks) PLAN_TUNE_HOOKS_MODE="no"; shift ;;
-    --plan-tune-hooks=*)  PLAN_TUNE_HOOKS_MODE="${1#--plan-tune-hooks=}"; shift ;;
-    --timeline-stop-hook)    TIMELINE_STOP_HOOK_MODE="yes"; shift ;;
-    --no-timeline-stop-hook) TIMELINE_STOP_HOOK_MODE="no"; shift ;;
-    --timeline-stop-hook=*)  TIMELINE_STOP_HOOK_MODE="${1#--timeline-stop-hook=}"; shift ;;
-    -q|--quiet) QUIET=1; shift ;;
-    *) shift ;;
-  esac
-done
-
-# Shared by the instruction-tier explainer arms (openclaw, hermes). The digest
-# path is anchored to the script's own directory — $(pwd) would print a
-# nonexistent path when setup is invoked from anywhere else.
-print_instruction_tier() {
-  echo ""
-  echo "Instruction-only tier (no install): copy the 2KB rules digest into a"
-  echo "location your agent reads (e.g. append to your project's AGENTS.md)."
-  echo "It carries gstack's ethos, reuse ladder, and voice rules:"
-  echo ""
-  echo "  $SOURCE_GSTACK_DIR/agents-digest/gstack-AGENTS.md"
-  echo ""
-  echo "Re-copy it after upgrading gstack — the digest's first line shows its version."
-  echo ""
-}
-
-case "$HOST" in
-  claude|codex|kiro|factory|opencode|cursor|auto) ;;
-  slate)
-    echo ""
-    echo "Slate is not yet a first-class install target (docs/designs/SLATE_HOST.md —"
-    echo "blocked on the host-config refactor). Slate discovers skills from"
-    echo ".claude/skills as a compatibility fallback, so a Slate user is served by"
-    echo "the Claude install today:"
-    echo ""
-    echo "  ./setup --host claude"
-    echo ""
-    exit 0 ;;
-  openclaw)
-    echo ""
-    echo "OpenClaw integration uses a different model — OpenClaw spawns Claude Code"
-    echo "sessions natively via ACP. gstack provides methodology artifacts, not a"
-    echo "full skill installation."
-    echo ""
-    echo "To integrate gstack with OpenClaw:"
-    echo "  1. Tell your OpenClaw agent: 'install gstack for openclaw'"
-    echo "  2. Or generate artifacts: bun run gen:skill-docs --host openclaw"
-    echo "  3. See docs/OPENCLAW.md for the full architecture"
-    print_instruction_tier
-    exit 0 ;;
-  hermes)
-    echo ""
-    echo "Hermes integration uses the same model as OpenClaw — Hermes spawns"
-    echo "Claude Code sessions, and gstack provides methodology artifacts."
-    echo ""
-    echo "To integrate gstack with Hermes:"
-    echo "  1. Tell your Hermes agent: 'install gstack for hermes'"
-    echo "  2. Or generate artifacts: bun run gen:skill-docs --host hermes"
-    print_instruction_tier
-    exit 0 ;;
-  gbrain)
-    echo ""
-    echo "GBrain is a mod for gstack — it makes coding skills brain-aware."
-    echo "GBrain generates brain-enhanced skill variants that search your brain"
-    echo "for context before starting and save results after finishing."
-    echo ""
-    echo "To generate brain-aware skills:"
-    echo "  bun run gen:skill-docs --host gbrain"
-    echo ""
-    echo "GBrain setup and brain skills ship from the GBrain repo."
-    echo ""
-    exit 0 ;;
-  *) echo "Unknown --host value: $HOST (expected claude, codex, kiro, factory, opencode, cursor, slate, openclaw, hermes, gbrain, or auto)" >&2; exit 1 ;;
-esac
 
 # ─── Resolve skill prefix preference ─────────────────────────
 # Priority: CLI flag > saved config > interactive prompt (or flat default for non-TTY)

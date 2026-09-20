@@ -165,6 +165,12 @@ When fixing failures or preparing `/ship`, follow this order:
    Also run adjacent cheap checks: generated-content freshness, prompt-size/parity
    limits, source assertions, fixture checks, and dependency selection as
    applicable. A changed prompt must clear these before its eval.
+   For skill edits, include `bun test test/parity-suite.test.ts`: its historical
+   union-size cap is separate from the other prompt-size and context budgets.
+   When workflow wording changes, search the entire test tree for removed
+   clauses, including always-loaded prompt guards. Test fixtures containing
+   subprocess examples must pass `test/spawnsync-timeout-tripwire.test.ts`;
+   its scanner also checks quoted code.
    Run its selected quality judge before long behavioral evaluations that read
    the same changed prompt. If a repair supersedes an active run's inputs, cancel
    that run, preserve completed outcomes, and label unfinished cases as cancelled.
@@ -177,6 +183,10 @@ When fixing failures or preparing `/ship`, follow this order:
    CI supervision against every case and configured retry, not just one attempt.
    Preflight the actual launcher: required binaries, isolated state, display when
    needed, explicit test tier, selection, and expected executed-case counts.
+   Match the runtime versions pinned by the workflow and its container image.
+   Keep socket-bearing temporary paths short after the runner adds its nested
+   directories; exercise that exact layout in the smoke check. Store long-lived
+   logs separately from socket directories.
    Verify required tool execution with a no-cost smoke check under that launch
    environment; versions and authentication alone do not prove it works. Set
    private artifact modes explicitly and preserve normal fixture permissions.
@@ -186,6 +196,8 @@ When fixing failures or preparing `/ship`, follow this order:
    placeholders separately, with zero selected-case credit.
    Put standalone Git fixtures outside another checkout; verify their resolved
    project slug and state root before interpreting a failure.
+   Prove a seed commit succeeds there: repository-local author configuration
+   does not establish the identity available to a fresh fixture repository.
    Reject missing explicit test files before invoking Bun; it can silently ignore
    a nonexistent file selector and pass the remaining files.
    Preserve exit status through logging. Use the documented detached runner and
