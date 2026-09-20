@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 jobs:
-  native-bash-environment-diagnostic:
+  native-cache-and-quoting-proof:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
@@ -12,13 +12,18 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Isolate Windows environment requirements under Git Bash
+      - name: Prove native Bash quoting candidate
+        shell: bash
+        run: bun scripts/windows-argv-split-diagnostic.ts > windows-argv-split.json
+      - name: Verify query cache environment
         shell: bash
         env:
-          PROBE_SHELL: bash-groups
+          PROBE_SHELL: cache
         run: bun scripts/windows-identity-diagnostic.ts
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-bash-environment-diagnostic
-          path: windows-identity-*.json
+          name: windows-cache-and-quoting-proof
+          path: |
+            windows-identity-*.json
+            windows-argv-split.json

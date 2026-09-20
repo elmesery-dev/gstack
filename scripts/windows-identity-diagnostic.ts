@@ -20,21 +20,18 @@ const prefix = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($fal
 const command = prefix + `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${target.pid}' -ErrorAction Stop).CommandLine`;
 const records = [];
 try {
- const baseline={...restricted,PSModulePath:process.env.PSModulePath};
- const groups={
-  program:['ProgramFiles','ProgramFiles(x86)','ProgramW6432','CommonProgramFiles','CommonProgramFiles(x86)','CommonProgramW6432','ProgramData','ALLUSERSPROFILE'],
-  identity:['USERNAME','USERDOMAIN','USERDOMAIN_ROAMINGPROFILE','LOGONSERVER','SESSIONNAME','USERPROFILE','HOMEDRIVE','HOMEPATH','APPDATA','LOCALAPPDATA'],
-  system:['OS','PROCESSOR_ARCHITECTURE','PROCESSOR_IDENTIFIER','PROCESSOR_LEVEL','PROCESSOR_REVISION','NUMBER_OF_PROCESSORS','WINDIR','SystemDrive','COMSPEC','PATHEXT','TEMP','TMP'],
-  powershell:Object.keys(process.env).filter(k=>/^(PS|POWERSHELL)/i.test(k)&&k.toLowerCase()!=='psmodulepath'),
- };
- const add=keys=>Object.fromEntries(keys.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
- const variants=[['builtin-module-path',{...restricted,PSModulePath:process.env.SystemRoot+'\\System32\\WindowsPowerShell\\v1.0\\Modules'}],
-  ...Object.entries(groups).map(([name,keys])=>[name,{...baseline,...add(keys)}]),
-  ['all-groups',{...baseline,...add(Object.values(groups).flat())}],
-  ...Object.entries(groups).map(([name,keys])=>['inherited-without-'+name,Object.fromEntries(Object.entries(process.env).filter(([key])=>!keys.some(k=>k.toLowerCase()===key.toLowerCase())))])];
- for(const [environment,env] of variants){
+ const modules={PSModulePath:process.env.PSModulePath};
+ const cache={PSModuleAnalysisCachePath:process.env.PSModuleAnalysisCachePath};
+ const vars={distribution:process.env.POWERSHELL_DISTRIBUTION_CHANNEL,updatecheck:process.env.POWERSHELL_UPDATECHECK,cacheConfigured:!!process.env.PSModuleAnalysisCachePath};
+ console.log(JSON.stringify(vars));
+ for(const [environment,env] of [
+  ['cache-only',{...restricted,...cache}],
+  ['modules-and-cache',{...restricted,...modules,...cache}],
+  ['modules-cache-localappdata',{...restricted,...modules,...cache,LOCALAPPDATA:process.env.LOCALAPPDATA}],
+  ['modules-localappdata-no-cache',{...restricted,...modules,LOCALAPPDATA:process.env.LOCALAPPDATA}],
+ ]){
   const result=spawnSync(process.execPath,['-e',probe],{input:JSON.stringify({command,timeout:1900}),env,encoding:'utf8',timeout:4900,maxBuffer:128*1024});
-  const record={environment,groupKeys:groups[environment],outerStatus:result.status,child:result.stdout,stderr:result.stderr};records.push(record);console.log(JSON.stringify(record));
+  const record={environment,outerStatus:result.status,child:result.stdout,stderr:result.stderr};records.push(record);console.log(JSON.stringify(record));
  }
 } finally {
  target.kill();
