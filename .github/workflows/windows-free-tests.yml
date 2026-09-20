@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        query: [os, os_shell, full]
+        query: [builtin_cache, builtin_nocache]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
