@@ -506,5 +506,35 @@
         }
       ]
     }
+  ],
+  "additionalQuestionCaptures": [
+    {
+      "source": {
+        "commit": "269b5747",
+        "workflowRun": 35537130656,
+        "attempt": 2,
+        "retainedRange": "final question, options and answer; owning IDs precede the retained log tail"
+      },
+      "question": {
+        "question": "D10 — Issue 6: 'Mark all as read' — confirmation modal (as planned) or immediate action with an Undo toast?\nProject/branch/task: dashboard plan on main; plan line 13 specifies a modal dialog.\nELI10: A confirmation dialog asks 'are you sure?' before doing something. It's right for deleting data. For marking notifications read, it's an extra click every time, and the user learns to dismiss it without reading. The alternative is: do it instantly, show a small toast 'Marked 3 as read. Undo' for 5 seconds, and flip them back if they tap Undo. Same safety, zero friction.\nStakes if we pick wrong: Modal: a daily annoyance that trains users to click through dialogs (which then makes real destructive dialogs less safe). Undo without a backend path: a toast that lies.\nRecommendation: 6A because the action is reversible and low-stakes; modals should be reserved for one-way doors. Principle: clicks don't matter, thinking does; goodwill reservoir.\nCompleteness: 6A=10/10, 6B=7/10, 6C=5/10\nNet: frictionless with a small backend addition vs. friction with no backend change.",
+        "header": "Mark read",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "6A Immediate + Undo toast, drop the modal (recommended)",
+            "description": "✅ Click -> rows fade to read state optimistically, badge goes to 0, toast 'Marked {n} as read. Undo' for 6s; Undo restores the exact set. ✅ Removes the modal component from scope entirely; toast system already in plan. ❌ Needs a backend 'mark unread by id list' (or a single reversible batch endpoint) so Undo is real, not cosmetic. (human: ~3h / CC: ~20 min)"
+          },
+          {
+            "label": "6B Keep the modal, make it a one-line dialog",
+            "description": "✅ No backend change; matches the plan as written. ✅ Dialog: 'Mark 3 notifications as read?' [Cancel] [Mark read], focus on Cancel, Esc closes. ❌ Adds a click to a daily action; trains users to dismiss dialogs; modal + focus trap must still be built and tested. (human: ~2h / CC: ~15 min)"
+          },
+          {
+            "label": "6C Immediate, plain success toast, no Undo",
+            "description": "✅ Simplest: click, rows update, toast 'Marked as read'. ✅ No modal, no undo endpoint. ❌ Accidental click has no recovery; unread state is lost for that session."
+          }
+        ]
+      },
+      "answer": "6A Immediate + Undo toast, drop the modal (recommended)"
+    }
   ]
 }

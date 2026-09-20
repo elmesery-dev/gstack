@@ -7,6 +7,16 @@ import { E2E_TOUCHFILES } from './helpers/touchfiles-data';
 
 const calls = captured.calls as NativePlanQuestionCall[];
 const fingerprint = (call: NativePlanQuestionCall) => nativePlanCallFingerprint(call, 0, true);
+const recovered = captured.additionalQuestionCaptures[0]!;
+const recoveredCall: NativePlanQuestionCall = {
+  sessionId: 'ui-scope-replay',
+  toolUseId: 'recovered-question',
+  questions: [recovered.question],
+  answered: true,
+  failed: false,
+  answers: { [recovered.question.question]: recovered.answer },
+  unansweredQuestionIndices: [],
+};
 
 test('the captured untagged dashboard decision proves UI review, but its setup questions do not', () => {
   expect(calls.map(call => isDesignUIScopeReview(fingerprint(call)))).toEqual([false, false, false, true]);
@@ -29,6 +39,44 @@ test('issue and pass separators do not change native design evidence', () => {
       call.answers = { [q.question]: q.options[0]!.label };
       expect(isDesignUIScopeReview(fingerprint(call)), `${issueSeparator} / ${passSeparator}`).toBe(true);
     }
+  }
+});
+
+test('a recovered UI decision replays with fixture-owned metadata without filename, pass, or leading question verb', () => {
+  expect(isDesignUIScopeReview(fingerprint(recoveredCall))).toBe(true);
+  const call = structuredClone(recoveredCall);
+  const q = call.questions[0]!;
+  q.question = q.question.replace(/^Project\/branch\/task:[^\n]*\n/m, '');
+  call.answers = { [q.question]: q.options[0]!.label };
+  expect(isDesignUIScopeReview(fingerprint(call))).toBe(true);
+});
+
+test('choice identity does not depend on punctuation after the issue letter', () => {
+  for (const separator of ['', ':', '.', ')', '—', '–', '-']) {
+    const call = structuredClone(recoveredCall);
+    const q = call.questions[0]!;
+    for (const option of q.options) option.label = option.label.replace(/^6([A-Z]) /, `6$1${separator} `);
+    call.answers = { [q.question]: q.options[0]!.label };
+    expect(isDesignUIScopeReview(fingerprint(call)), separator).toBe(true);
+  }
+});
+
+test('numbered UI language still requires concrete design choices rather than workflow or another target', () => {
+  for (const mutate of [
+    (q: NativePlanQuestionCall['questions'][number]) => { q.header = 'Scope'; },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.question = q.question.replace('dashboard plan on main', 'OTHER.md dashboard plan on main'); },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.question = q.question.replace('D10 — Issue 6:', 'Example:'); },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.question = q.question.replace('Undo toast?', 'Undo toast.'); },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.options[0]!.label = '7A Immediate + Undo toast'; },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.options = [{ label: '6A Yes' }, { label: '6B No' }]; },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.options[0]!.label = '6A Review the modal later'; },
+    (q: NativePlanQuestionCall['questions'][number]) => { q.question = q.question.replace("'Mark all as read' — confirmation modal (as planned) or immediate action with an Undo toast?", 'Which modal should the outside reviewers discuss?'); },
+  ]) {
+    const call = structuredClone(recoveredCall);
+    const q = call.questions[0]!;
+    mutate(q);
+    call.answers = { [q.question]: q.options[0]!.label };
+    expect(isDesignUIScopeReview(fingerprint(call))).toBe(false);
   }
 });
 

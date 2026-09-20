@@ -150,8 +150,11 @@ cannot trip its one-question ceiling. Its final proof uses the full native
 question, not the truncated diagnostic snippet. Unknown-command failures must
 name the invoked slash command; a child tool rejecting `--help` is not a skill
 registration failure.
-Its gate-specific classifier also recognizes answered, untagged UI issues tied
-to `PLAN.md` and a design pass; periodic seeded-finding classifiers are unchanged.
+Its gate-specific classifier also recognizes answered, untagged UI issues with
+concrete numbered design choices. The isolated fixture owns the target; repeated
+filenames, pass labels, question verbs, and option punctuation are not required.
+Explicit wrong-plan context and workflow menus are rejected; periodic
+seeded-finding classifiers are unchanged.
 
 **Paid suite (sharded runner, local AND CI).** `scripts/test-paid-shards.ts`
 is the single selection engine: 1 file per shard, `EVALS_JOBS` shard
