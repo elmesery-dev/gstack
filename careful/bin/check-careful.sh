@@ -75,7 +75,7 @@ CMD_LOWER=$(printf '%s' "$CMD" | tr '[:upper:]' '[:lower:]')
 # shell. Rather than try to out-parse bash, treat these splitting/decoding
 # primitives as a reason to ask: they are vanishingly rare in commands a human
 # actually means to run unattended.
-if printf '%s' "$CMD" | grep -qE '\$\{IFS\}|\$IFS|\$\(echo[^)]*base64[^)]*\)|base64[[:space:]]+(-d|--decode)[^|]*\|[[:space:]]*(sh|bash)' 2>/dev/null; then
+if grep -qE '\$\{IFS\}|\$IFS|\$\(echo[^)]*base64[^)]*\)|base64[[:space:]]+(-d|--decode)[^|]*\|[[:space:]]*(sh|bash)' <<< "$CMD" 2>/dev/null; then
   gstack_hook_decision ask "[careful] Shell obfuscation detected (IFS word-splitting or base64-to-shell). Read the command carefully before approving."
   exit 0
 fi
@@ -98,8 +98,8 @@ if [ "$_IS_SIMPLE" -eq 1 ]; then
   # trail the target) are skipped; EVERY non-option token must be a root-class
   # target (/, ~, $HOME, /*), and a recursive flag must be present. noglob is
   # forced around word-splitting so a literal /* token never expands.
-  if printf '%s' "$CMD" | grep -qE '^[[:space:]]*(sudo[[:space:]]+)?rm[[:space:]]' 2>/dev/null \
-    && printf '%s' "$CMD" | grep -qE '(^|[[:space:]])(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)([[:space:]]|$)' 2>/dev/null; then
+  if grep -qE '^[[:space:]]*(sudo[[:space:]]+)?rm[[:space:]]' <<< "$CMD" 2>/dev/null \
+    && grep -qE '(^|[[:space:]])(-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)([[:space:]]|$)' <<< "$CMD" 2>/dev/null; then
     _ROOT_TARGETS=0
     _SAFE_TARGETS=0
     set -f
@@ -124,11 +124,11 @@ if [ "$_IS_SIMPLE" -eq 1 ]; then
   # Force-push to the repo's default branch (the shared history everyone pulls).
   # Force is carried by -f/--force OR by git's plus-refspec syntax (+main,
   # +HEAD:main) which needs no flag at all. --force-with-lease never matches.
-  if printf '%s' "$CMD" | grep -qE '^[[:space:]]*git[[:space:]]+push([[:space:]]|$)' 2>/dev/null; then
+  if grep -qE '^[[:space:]]*git[[:space:]]+push([[:space:]]|$)' <<< "$CMD" 2>/dev/null; then
     _HAS_FORCE=0
-    if printf '%s' "$CMD" | grep -qE '(^|[[:space:]])(-f|--force)($|[[:space:]])' 2>/dev/null; then
+    if grep -qE '(^|[[:space:]])(-f|--force)($|[[:space:]])' <<< "$CMD" 2>/dev/null; then
       _HAS_FORCE=1
-    elif printf '%s' "$CMD" | grep -qE '(^|[[:space:]])\+[^[:space:]]' 2>/dev/null; then
+    elif grep -qE '(^|[[:space:]])\+[^[:space:]]' <<< "$CMD" 2>/dev/null; then
       _HAS_FORCE=1
     fi
     if [ "$_HAS_FORCE" -eq 1 ]; then
@@ -162,7 +162,7 @@ if [ "$_IS_SIMPLE" -eq 1 ]; then
           fi
         done
         set +f
-        if [ "$_TARGETS_DEFAULT" -eq 0 ] && printf '%s' "$CMD" | grep -qE '^[[:space:]]*git[[:space:]]+push([[:space:]]+(-f|--force))*[[:space:]]*$' 2>/dev/null; then
+        if [ "$_TARGETS_DEFAULT" -eq 0 ] && grep -qE '^[[:space:]]*git[[:space:]]+push([[:space:]]+(-f|--force))*[[:space:]]*$' <<< "$CMD" 2>/dev/null; then
           # Bare `git push --force` (force flags only, no remote/ref): targets
           # the current branch's upstream — the default branch only when ON it.
           _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || true)
@@ -198,7 +198,7 @@ fi
 case "$CMD" in
   *$'\n'*) : ;; # multi-line: fall through to the destructive checks
   *)
-    if printf '%s' "$CMD" | grep -qE '^[[:space:]]*rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+|--recursive[[:space:]]+)(([^[:space:];&|#(`]*/)?(node_modules|\.next|dist|__pycache__|\.cache|build|\.turbo|coverage)[[:space:]]*)+$' 2>/dev/null; then
+    if grep -qE '^[[:space:]]*rm[[:space:]]+(-[a-zA-Z]*[rR][a-zA-Z]*[[:space:]]+|--recursive[[:space:]]+)(([^[:space:];&|#(`]*/)?(node_modules|\.next|dist|__pycache__|\.cache|build|\.turbo|coverage)[[:space:]]*)+$' <<< "$CMD" 2>/dev/null; then
       echo '{}'
       exit 0
     fi
@@ -210,50 +210,50 @@ WARN=""
 PATTERN=""
 
 # rm -rf / rm -r / rm -R / rm --recursive (capital -R is BSD/macOS recursive)
-if printf '%s' "$CMD" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)' 2>/dev/null; then
+if grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: recursive delete (rm -r). This permanently removes files."
   PATTERN="rm_recursive"
 fi
 
 # DROP TABLE / DROP DATABASE
-if [ -z "$WARN" ] && printf '%s' "$CMD_LOWER" | grep -qE 'drop\s+(table|database)' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'drop\s+(table|database)' <<< "$CMD_LOWER" 2>/dev/null; then
   WARN="Destructive: SQL DROP detected. This permanently deletes database objects."
   PATTERN="drop_table"
 fi
 
 # TRUNCATE
-if [ -z "$WARN" ] && printf '%s' "$CMD_LOWER" | grep -qE '\btruncate\b' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE '\btruncate\b' <<< "$CMD_LOWER" 2>/dev/null; then
   WARN="Destructive: SQL TRUNCATE detected. This deletes all rows from a table."
   PATTERN="truncate"
 fi
 
 # git push --force / git push -f / plus-refspec force (git push origin +ref)
-if [ -z "$WARN" ] && printf '%s' "$CMD" | grep -qE 'git\s+push\s' 2>/dev/null \
-  && printf '%s' "$CMD" | grep -qE '(-f\b|--force|(^|[[:space:]])\+[^[:space:]])' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'git\s+push\s' <<< "$CMD" 2>/dev/null \
+  && grep -qE '(-f\b|--force|(^|[[:space:]])\+[^[:space:]])' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: git force-push rewrites remote history. Other contributors may lose work."
   PATTERN="git_force_push"
 fi
 
 # git reset --hard
-if [ -z "$WARN" ] && printf '%s' "$CMD" | grep -qE 'git\s+reset\s+--hard' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'git\s+reset\s+--hard' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: git reset --hard discards all uncommitted changes."
   PATTERN="git_reset_hard"
 fi
 
 # git checkout . / git restore .
-if [ -z "$WARN" ] && printf '%s' "$CMD" | grep -qE 'git\s+(checkout|restore)\s+\.' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'git\s+(checkout|restore)\s+\.' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: discards all uncommitted changes in the working tree."
   PATTERN="git_discard"
 fi
 
 # kubectl delete
-if [ -z "$WARN" ] && printf '%s' "$CMD" | grep -qE 'kubectl\s+delete' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'kubectl\s+delete' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: kubectl delete removes Kubernetes resources. May impact production."
   PATTERN="kubectl_delete"
 fi
 
 # docker rm -f / docker system prune
-if [ -z "$WARN" ] && printf '%s' "$CMD" | grep -qE 'docker\s+(rm\s+-f|system\s+prune)' 2>/dev/null; then
+if [ -z "$WARN" ] && grep -qE 'docker\s+(rm\s+-f|system\s+prune)' <<< "$CMD" 2>/dev/null; then
   WARN="Destructive: Docker force-remove or prune. May delete running containers or cached images."
   PATTERN="docker_destructive"
 fi
@@ -293,7 +293,7 @@ $_GSTACK_HOME_DIR/projects/$SLUG/careful-patterns.txt"
       _PAT_RC=0
       printf '' | grep -qE -- "$_PAT" 2>/dev/null || _PAT_RC=$?
       [ "$_PAT_RC" -eq 2 ] && continue # invalid ERE — skip the line
-      if printf '%s' "$CMD" | grep -qE -- "$_PAT" 2>/dev/null; then
+      if grep -qE -- "$_PAT" <<< "$CMD" 2>/dev/null; then
         WARN="Project rule matched: $_PAT"
         PATTERN="project_rule"
         break
