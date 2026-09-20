@@ -17,7 +17,7 @@ export function pickDesignCountOutsideVoices(
     if (active.signature !== identity) return null;
     const q = call.questions[index]!;
     if (q.multiSelect || !/^outside(?: design)? voices$/i.test(q.header.trim()) ||
-        !/<gstack-qid:outside-voices-design>/.test(q.question)) return null;
+        !/<gstack-qid:(?:outside-voices-design|plan-design-review-outside-voices)>/.test(q.question)) return null;
     question = q.question;
     labels = q.options.map(option => option.label);
   } else {
@@ -31,11 +31,11 @@ export function pickDesignCountOutsideVoices(
     labels = active.options.map(option => option.label);
     while (labels.length > 2 && /^(?:Type something\.?|Chat about this)$/i.test(labels.at(-1)!.trim())) labels.pop();
   }
-  if (!/\b(?:want|run|include|enable)\b[^?]{0,90}\boutside design voices\b/i.test(question) ||
+  if (!/\b(?:want|run|include|enable)\b[^?]{0,90}\boutside(?: design)? voices\b/i.test(question) ||
       !/\b(?:before|for)\s+(?:the\s+)?(?:detailed\s+)?(?:design\s+)?review\b/i.test(question)) return null;
   labels = labels.map(label => label.trim().replace(/\s*\(recommended\)\s*$/i, ''));
   if (labels.length !== 2) return null;
-  const yes = labels.map(label => /^Yes,?\s+run outside design voices$/i.test(label));
+  const yes = labels.map(label => /^Yes,?\s+run outside(?: design)? voices$/i.test(label));
   const no = labels.map(label => /^No,?\s+proceed without$/i.test(label));
   if (yes.filter(Boolean).length !== 1 || no.filter(Boolean).length !== 1) return null;
   return no.findIndex(Boolean) + 1;

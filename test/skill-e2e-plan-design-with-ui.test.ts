@@ -21,6 +21,7 @@ import * as path from 'path';
 import {
   runPlanSkillCounting,
   designStep0Boundary,
+  nativePlanCallFingerprint,
 } from './helpers/claude-pty-runner';
 import { isDesignCountFirstReview, isDesignCountSetup, isDesignCompletionHandoff, pickDesignCountQuestion } from './helpers/design-count-review';
 import { isDesignArtifactGeneration } from './helpers/design-artifact-question';
@@ -40,6 +41,7 @@ describeE2E('/plan-design-review with UI scope (gate)', () => {
         followUpPrompt: fs.readFileSync(FIXTURE, 'utf8'),
         isLastStep0AUQ: designStep0Boundary,
         isFirstReviewAUQ: isDesignCountFirstReview,
+        isReviewAUQ: isDesignCountFirstReview,
         isSetupAUQ: isDesignCountSetup,
         isCompletionHandoffAUQ: isDesignCompletionHandoff,
         isArtifactGenerationAUQ: isDesignArtifactGeneration,
@@ -48,13 +50,15 @@ describeE2E('/plan-design-review with UI scope (gate)', () => {
         timeoutMs: 600_000,
       });
       const designQuestionObserved = observation.fingerprints.some(fp =>
-        !fp.preReview && !fp.administrative && isDesignCountFirstReview(fp));
+        !fp.preReview && !fp.administrative && fp.nativeCall &&
+        isDesignCountFirstReview(nativePlanCallFingerprint(fp.nativeCall, fp.observedAtMs, fp.preReview)));
       if ((observation.outcome !== 'ceiling_reached' && observation.outcome !== 'plan_ready') ||
           observation.reviewCount < 1 || !designQuestionObserved) {
         throw new Error(
           `plan-design-review with UI scope FAILED: outcome=${observation.outcome}\n` +
             `step0=${observation.step0Count} review=${observation.reviewCount}\n` +
-            `${observation.summary}\n--- evidence ---\n${observation.evidence}`,
+            `${observation.summary}\n--- questions ---\n${JSON.stringify(observation.fingerprints, null, 2)}\n` +
+            `--- evidence ---\n${observation.evidence}`,
         );
       }
       const NO_UI_PHRASE = /no\s+UI\s+scope|isn'?t\s+applicable/i;

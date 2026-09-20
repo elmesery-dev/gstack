@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createPlanCountFixture } from './helpers/plan-count-fixture';
 import { getHermeticDirs } from './helpers/hermetic-env';
+import { nativePlanCallFingerprint } from './helpers/claude-pty-runner';
+import { isDesignCountFirstReview } from './helpers/design-count-review';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 const PROMPT = '# Seeded settings plan\n\nReview each issue separately.\n' +
@@ -167,6 +169,8 @@ try {
         { name: 'design', skillName: 'plan-design-review', prompt: PROMPT, mode: 'complete', files: { 'DESIGN.md': '# Approved design\nKeep the existing layout.\n' } },
         { name: 'design-direct', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding' },
         { name: 'design-named-target', skillName: 'plan-design-review', prompt: fs.readFileSync(path.join(ROOT, 'test/fixtures/plans/ui-heavy-feature.md'), 'utf8'), mode: 'direct-finding', namedTarget: true },
+        { name: 'design-tool-diagnostic', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding', toolDiagnostic: true },
+        { name: 'design-gate-positive', skillName: 'plan-design-review', prompt: PROMPT, mode: 'direct-finding', gateFilter: true },
         { name: 'design-batched', skillName: 'plan-design-review', prompt: PROMPT, mode: 'batched-finding' },
         { name: 'failed-native', skillName: 'plan-design-review', prompt: PROMPT, mode: 'failed-call' },
         { name: 'native-permission-policy', skillName: 'plan-eng-review', prompt: PROMPT, mode: 'native-permission-policy', report: path.join(dir, 'native-policy-report.md') },
@@ -415,6 +419,13 @@ process.stdin.on('data', (data) => {
   }
   firstInput = false;
   if (process.env.FIXTURE_MODE === 'exit') process.exit(7);
+  if (process.env.FIXTURE_TOOL_DIAGNOSTIC === 'true') render('Unknown command: --help\n');
+  if (process.env.FIXTURE_GATE_FILTER === 'true') {
+    ask([questionMetadata('Focus', 'D2 — Review all 7 design dimensions, or focus on specific areas?', ['All 7 dimensions', 'Choose areas'])]);
+    answer();
+    ask([questionMetadata('Outside voices', 'D3 — Want outside design voices before the detailed review?\nA fresh reviewer checks completeness. <gstack-qid:outside-voices-design>', ['Yes, run outside voices (recommended)', 'No, proceed without'])]);
+    answer();
+  }
   if (process.env.FIXTURE_MODE === 'damaged-menu') {
     render('☐Stripe event types\nWhich event should the handler accept?\n❯1.Specify one canonical event\n2.Accept all events\n' +
       '·'.repeat(4200) + '\nMinimum required test cases:\n1.Happy path\n2.Email failure\n3.DB timeout\n4.Unknown event\n5.Unknown user\n❯1\n');
@@ -444,7 +455,8 @@ process.stdin.on('data', (data) => {
       ask([questionMetadata('Missing answer', 'Should the save retry be idempotent?', ['Yes', 'No'])]);
       native('user', [{ type: 'tool_result', tool_use_id: 'question-' + callId, is_error: true, content: 'Question rejected' }]);
     }
-    const questions = [questionMetadata('Button style', 'D1 — How should the four header buttons differ? <gstack-qid:plan-design-review-button-hierarchy>', ['Filled primary', 'Ghost buttons'])];
+    const detail = process.env.FIXTURE_GATE_FILTER === 'true' ? ' Specify the primary button treatment.'.repeat(30) : '';
+    const questions = [questionMetadata('Button style', 'D1 — How should the four header buttons differ?' + detail + ' <gstack-qid:plan-design-review-button-hierarchy>', ['Filled primary', 'Ghost buttons'])];
     if (process.env.FIXTURE_MODE === 'batched-finding') questions.push(questionMetadata('Loading', 'D2 — Define the loading state <gstack-qid:plan-design-review-loading>', ['Add spinner', 'Keep blank']));
     ask(questions);
     render('\r☐Buttonstyle\r│D1—Howshouldthe4headerbuttonsbedifferentiated?<gstack-qid:plan-design-review-butn-hierarchy>\r❯1.Filledprimary\r2.Ghostbuttons\r');
@@ -486,10 +498,12 @@ process.stdin.resume();
       const runnerUrl = pathToFileURL(path.join(ROOT, 'test/helpers/claude-pty-runner.ts')).href;
       const hermeticUrl = pathToFileURL(path.join(ROOT, 'test/helpers/hermetic-env.ts')).href;
       const devexUrl = pathToFileURL(path.join(ROOT, 'test/helpers/devex-count-fixture.ts')).href;
+      const designUrl = pathToFileURL(path.join(ROOT, 'test/helpers/design-count-review.ts')).href;
       fs.writeFileSync(workerPath, `
 import { runPlanSkillCounting, designFirstReviewAUQ } from ${JSON.stringify(runnerUrl)};
 import { getHermeticDirs } from ${JSON.stringify(hermeticUrl)};
 import { devexReviewModePick } from ${JSON.stringify(devexUrl)};
+import { isDesignCountFirstReview } from ${JSON.stringify(designUrl)};
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 const shared = getHermeticDirs().gstackHome;
@@ -505,19 +519,20 @@ const results = await Promise.all(cases.map(async (item) => ({
     followUpPrompt: item.prompt,
     fixtureFiles: item.files,
     expectedPlanPath: item.report,
-    isLastStep0AUQ: () => false,
+    isLastStep0AUQ: item.gateFilter ? fp => fp.nativeCall?.questions[0]?.header === 'Focus' : () => false,
     isFirstReviewAUQ: ['direct-finding', 'batched-finding', 'failed-call'].includes(item.mode) ? designFirstReviewAUQ : undefined,
-    isReviewAUQ: item.custom ? fp => fp.promptSnippet.includes('routing-proof-after-240') : undefined,
+    isReviewAUQ: item.gateFilter ? isDesignCountFirstReview : item.custom ? fp => fp.promptSnippet.includes('routing-proof-after-240') : undefined,
     pickAUQ: item.mode === 'native-permission-policy' ? () => 2
       : ['late-mode', 'batched-mode'].includes(item.mode) ? devexReviewModePick
       : item.custom ? fp => fp.promptSnippet.includes('routing-proof-after-240') ? 1 : null : undefined,
-    reviewCountCeiling: 8,
+    reviewCountCeiling: item.gateFilter ? 1 : 8,
     timeoutMs: item.mode === 'permission-lifecycle' ? 35000 : 28000,
     firstAUQPick: () => ['late-mode', 'batched-mode'].includes(item.mode) ? 1 : 2,
     env: {
       FIXTURE_RECORD: item.record, FIXTURE_SKILL: item.skillName, FIXTURE_MODE: item.mode,
       FIXTURE_EXPECTED_REPORT: item.report ?? '',
       FIXTURE_CUSTOM: String(item.custom ?? false),
+      FIXTURE_TOOL_DIAGNOSTIC: String(item.toolDiagnostic ?? false), FIXTURE_GATE_FILTER: String(item.gateFilter ?? false),
       FIXTURE_SKIP_INDEX: String(item.skipIndex ?? ''), FIXTURE_CONFIG_BIN: ${JSON.stringify(path.join(ROOT, 'bin/gstack-config'))},
       FIXTURE_SKIP_LABEL: item.skipLabel ?? '',
       GSTACK_HOME: ${JSON.stringify(hostState)}, GSTACK_STATE_ROOT: ${JSON.stringify(hostState)},
@@ -587,7 +602,7 @@ await Bun.write(${JSON.stringify(resultPath)}, JSON.stringify({ results, onboard
           expect(() => process.kill(startup.pid, 0)).toThrow();
           const result = results.find((result) => result.name === item.name);
           expect(result.observation.outcome, `${item.name}: ${JSON.stringify(result.observation)}`).toBe(item.mode === 'exit' ? 'exited'
-            : ['missing-transcript', 'failed-call'].includes(item.mode) ? 'transcript_unavailable' : 'completion_summary');
+            : ['missing-transcript', 'failed-call'].includes(item.mode) ? 'transcript_unavailable' : item.gateFilter ? 'ceiling_reached' : 'completion_summary');
           const artifacts = result.observation.artifactDir;
           expect(result.observation.artifactError).toBeUndefined();
           expect(fs.existsSync(artifacts)).toBe(true); // Survives the temporary fixture's cleanup.
@@ -596,11 +611,20 @@ await Bun.write(${JSON.stringify(resultPath)}, JSON.stringify({ results, onboard
           expect(captured.capture.cwd).toBe(startup.cwd);
           expect(fs.readFileSync(path.join(artifacts, 'terminal.raw.log'), 'utf8')).toContain(item.mode === 'exit' ? 'STARTUP_DIAGNOSTIC' : 'GSTACK REVIEW REPORT');
           expect(fs.readFileSync(path.join(artifacts, 'terminal.visible.log'), 'utf8')).toContain(item.mode === 'exit' ? 'STARTUP_DIAGNOSTIC' : 'GSTACK REVIEW REPORT');
-          if (['direct-finding', 'batched-finding', 'failed-call'].includes(item.mode)) {
+          if (['direct-finding', 'batched-finding', 'failed-call'].includes(item.mode) && !item.gateFilter) {
             expect(result.observation.reviewCount).toBe(1);
             expect(result.observation.step0Count).toBe(0);
             expect(result.observation.fingerprints).toHaveLength(1);
             expect(result.observation.fingerprints[0].nativeCall.questions).toHaveLength(item.mode === 'batched-finding' ? 2 : 1);
+          }
+          if (item.gateFilter) {
+            expect(result.observation.reviewCount).toBe(1);
+            expect(result.observation.step0Count).toBe(2);
+            expect(result.observation.fingerprints.map(fp => fp.preReview)).toEqual([true, true, false]);
+            expect(result.observation.fingerprints.at(-1).nativeCall.questions[0].header).toBe('Button style');
+            const finding = result.observation.fingerprints.at(-1);
+            expect(finding.promptSnippet.length).toBe(240);
+            expect(isDesignCountFirstReview(nativePlanCallFingerprint(finding.nativeCall, finding.observedAtMs, finding.preReview))).toBe(true);
           }
           if (item.mode === 'damaged-menu') {
             expect(events.filter(event => event.type === 'input-during-prose')).toEqual([]);

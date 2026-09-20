@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { capturePlanCountQuestion, nativePlanCallFingerprint } from './helpers/claude-pty-runner';
 import { pickDesignCountOutsideVoices } from './helpers/design-count-outside';
+import { isDesignCountFirstReview } from './helpers/design-count-review';
 import type { NativePlanQuestionCall } from './helpers/plan-count-transcript';
 
 const packet: NativePlanQuestionCall = {
@@ -100,5 +101,35 @@ describe('Design count fixture outside-review choice', () => {
       mutate(call);
       expect(pickDesignCountOutsideVoices(outside, { ...outside, nativeCall: call })).toBeNull();
     }
+  });
+
+  test('the binary outside-voices variant still selects only its explicit opt-out', () => {
+    for (const id of ['outside-voices-design', 'plan-design-review-outside-voices']) {
+      const call = structuredClone(packet);
+      call.questions = [call.questions[1]!];
+      const q = call.questions[0]!;
+      q.question = `D3 — Want outside voices before the detailed review? <gstack-qid:${id}>`;
+      q.options[0]!.label = 'Yes, run outside voices (recommended)';
+      const native = nativePlanCallFingerprint(call, 0, true);
+      expect(pickDesignCountOutsideVoices(native, native)).toBe(2);
+      const visible = capturePlanCountQuestion(screen(0, call), new Set(), 0, true)!;
+      expect(pickDesignCountOutsideVoices(visible, visible)).toBe(2);
+      q.options[1]!.label = 'No, leave the design defect unfixed';
+      const product = nativePlanCallFingerprint(call, 0, true);
+      expect(pickDesignCountOutsideVoices(product, product)).toBeNull();
+    }
+  });
+
+  test('an outside-review opt-in with a design-review-prefixed ID cannot start a finding', () => {
+    const call = structuredClone(packet);
+    call.questions = [call.questions[1]!];
+    const q = call.questions[0]!;
+    q.question = 'D3 — Want outside voices before the detailed review?\n' +
+      'Project/branch/task: main branch; design review of PLAN.md before the 7 passes. ' +
+      '<gstack-qid:plan-design-review-outside-voices>';
+    call.answered = true;
+    call.unansweredQuestionIndices = [];
+    call.answers = { [q.question]: q.options[0]!.label };
+    expect(isDesignCountFirstReview(nativePlanCallFingerprint(call, 0, true))).toBe(false);
   });
 });

@@ -3638,7 +3638,7 @@ export const designFirstReviewAUQ: Step0BoundaryPredicate = (fp) => {
   // question ID as well, and exclude its scope/focus/onboarding identities.
   const id = /<gstack-qid:\s*plan-design-review-([a-z0-9-]+)/i.exec(fp.promptSnippet)?.[1];
   if (id && /(?:^|[│\s])D\s*\d+\s*[—–-]/i.test(fp.promptSnippet) &&
-      !/(?:^|-)(?:scope|focus|setup|routing|onboarding|posture|mockups?|target)(?:-|$)/i.test(id) &&
+      !/(?:^|-)(?:scope|focus|setup|routing|onboarding|posture|mockups?|target|outside(?:-design)?-voices)(?:-|$)/i.test(id) &&
       !designStep0Boundary(fp)) return true;
   // Explicit pass headings are also review evidence; an initial assessment
   // that merely mentions reviewing seven passes does not match this shape.
