@@ -202,8 +202,6 @@ hidden, or scope would change. Reuse prior answers only for the same scope.
 Plain terms:
 - **Required choice:** a mode, scope, deferral, TODO, spec, outside-review or
   finding decision needed before the next step.
-- **Permitted plan:** an allowed file path or host active plan. Without one,
-  present the complete working text in chat as **not persisted**.
 - **Pending:** recorded in the ledger and waiting for approval.
 - **Settled:** answered by the user, directly instructed, or auto-authorized by
   the preamble.
@@ -247,22 +245,20 @@ Describe the 12-month ideal and whether this plan moves toward it.
 
 ### 0D. Alternatives (MANDATORY)
 
-0D has two cases:
 - **Admin question:** mode selection, setup, navigation and document promotion.
   Ask that step's listed options with the preamble question tool. Log answer and
   provenance. This does not approve implementation, scope, TODO remedies or outside-review findings.
 - **Plan decision:** scope additions/cuts, approach choices, TODOs, specs and
-  review/outside findings. Run steps 1–4 below. Their checkpoints belong to their
-  enclosing step; they are not additional passes through 0D.
+  review/outside findings. Run steps 1–4 below, including their save checkpoints.
 
 Use each menu only for its step. If an admin answer also changes scope, approach,
 TODO or finding, handle it as a Plan decision.
 
-**Entry check.** The entry check below selects a route; it is not a fifth step.
-Initial 0D after 0C scans for unresolved approach. If no choice needs an answer,
-return to the invoking step (0E on this initial visit). Otherwise run steps 1–4:
-A) current/requested plan; B) smallest scoped alternative; C) larger/rewrite only
-with evidence. Explain a lone viable path; ask only if approval is missing.
+**Initial visit after 0C:** Identify unresolved approach choices. If none need an
+answer, proceed directly to 0E. Otherwise use steps 1–4 to compare A) the
+current/requested plan, B) the smallest scoped alternative, and C) a larger
+approach or rewrite only when evidence supports it. Explain a lone viable path;
+ask only if approval is missing.
 
 **1. Check sources and prior answers.**
 Compare input, source and actual answers. Correct facts, flag approval conflicts
@@ -297,7 +293,8 @@ Build one `currentDecision` to save and send, using the preamble:
   destructive one-way choices use its hard-stop exception.
 
 Without a prescribed menu, offer 2–3 options; prefer 3 for non-trivial plans.
-No implementation: use S and state zero work.
+For an option with no implementation, use effort S and state zero implementation
+work, never effort 0.
 Weigh diff size and long-term architecture equally, including rewrites.
 
 In Proposed, compare every commitment in the labels, descriptions and pros/cons:
@@ -306,7 +303,8 @@ In Proposed, compare every commitment in the labels, descriptions and pros/cons:
 Commitment | Source/approval or pending | Current | A | B | C
 ```
 
-Use offered columns, including D. Show unchanged, shared and pending values;
+Include one column per offered option; add D when the prescribed menu has four
+options. Show unchanged, shared and pending values;
 shared frameworks do not merge independent choices. Keep other rows fixed or
 pending; preserve requirements, tests and fixes. Offer no unrelated work.
 
@@ -314,7 +312,7 @@ Score this row's coverage differences in the Commitment comparison: 10 = all
 edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
 "Note: options differ in kind, not coverage — no completeness score."
 
-**Pre-question checkpoint:** Before each decision using this procedure:
+**Pre-question checkpoint:**
 
 - **Row.** Find exactly one row by its assigned ID. Check owner, Current/Proposed,
   Status and Exact approval and scope. Repair missing/duplicate rows in step 2.
@@ -367,9 +365,14 @@ storage policy before taking another row.
 If all options are declined, continue only with a viable current approach retained
 by the answer; otherwise leave the row unresolved and stop for direction.
 
-**Continue after 0D:** Return to the invoking step without another question.
-- Initial pass after 0C: proceed to 0E once required choices are settled.
-- Later call: resume its next instruction; do not restart Step 0 or mode selection.
+**Continue after 0D:** Resume by decision type:
+- Initial approach choice: proceed to 0E once required choices are settled.
+- Scope, spec, feasibility or TODO choice: resume the calling step after its 0D instruction.
+- Review-section finding: continue to that section's **Apply** check.
+- Outside finding: process the next finding, then finish Outside Voice.
+- Late change during closing: repeat Approval readiness and refresh affected
+  outputs as directed in Closing sequence.
+Reuse the recorded answer at that destination; do not ask again or restart mode selection.
 
 When returning, carry both resolved findings and genuine no-issue outcomes. Say
 "No issues, moving on." only when there are none.
@@ -414,13 +417,16 @@ After this route, continue to Review Sections for the full review, outputs and r
 
 ### 0F. Expansion Framing (shared by EXPANSION and SELECTIVE EXPANSION)
 
-Lead with the user's experience, then give the concrete change, effort and impact.
-
-For SELECTIVE EXPANSION, balance benefits/tradeoffs and make no unsupported
-promises; recommend neutrally. The recommendation may be a transport default;
-still put `(recommended)` on one option; the user decides.
+Prepare pending candidates for 0G: user experience, concrete addition, S/M/L/XL
+effort, risk and impact. Explain ambition enthusiastically in SCOPE EXPANSION;
+balance benefits and tradeoffs without unsupported promises in SELECTIVE
+EXPANSION. Mark one option `(recommended)` when presenting choices; this label
+does not approve scope. The user decides each proposal in 0G.
 
 ### 0G. Mode-Specific Analysis
+In expansion modes, extend 0F's pending list with this analysis, then resolve
+each proposal individually.
+
 **For SCOPE EXPANSION:**
 1. **10x check:** Describe 10x value for 2x effort.
 2. **Platonic ideal:** What would the best engineer with unlimited time and perfect taste build? Start with the user's experience.
@@ -462,13 +468,8 @@ does not settle pending implementation choices; keep those rows visible.
 
 ### 0H. Persist CEO Plan (EXPANSION and SELECTIVE EXPANSION only)
 
-0H order: prepare and save/present both inputs, run spec review on those exact
-inputs, then present both for scope-document approval. That approval confirms
-only the CEO archive and working-plan text; the next feasibility step reopens
-sequence, capacity or feasibility blockers through 0D before Review Sections.
-
-Prepare the complete amended working plan and the CEO scope summary below.
-Keep behavior, requirements and scope consistent; the summary cannot replace or
+Prepare the complete amended working plan and separate CEO scope summary with
+consistent behavior, requirements and scope. The summary cannot replace or
 reference itself as the plan.
 
 **Save or present both inputs under the storage policy.** For a permitted CEO summary directory, prepare:
@@ -483,7 +484,9 @@ echo "CEO_PLANS=$CEO_PLANS"
 
 Use `{printed CEO_PLANS}/{YYYY-MM-DD}-{feature-slug}.md`. Archive plans >30 days old or from merged/deleted branches only with approval.
 
-**Otherwise:** Present unsaved inputs in full under the storage policy. Summary format:
+**Otherwise:** Present unsaved inputs in full under the storage policy.
+
+**CEO summary format — use for both saved and chat output:**
 
 ```markdown
 ---

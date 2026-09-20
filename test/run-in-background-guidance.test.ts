@@ -161,7 +161,7 @@ const BOUNDED_OUTSIDE_VOICE_SITES = new Set([
 function boundedOutsideVoice(content: string): string {
   // Host postprocessing can expand the preceding CODEX_MODE list (for example
   // broken_install/model_unusable). Pin the actual bounded dispatch section.
-  return content.match(/\*\*Bounded outside-voice wait[\s\S]*?(?=\*\*Cross-model tension:\*\*)/)?.[0] ?? '';
+  return content.match(/\*\*Bounded outside-voice wait[\s\S]*?(?=\*\*(?:Integrate reviewer findings|Cross-model tension):\*\*)/)?.[0] ?? '';
 }
 function hasBoundedOutsideVoiceWait(content: string): boolean {
   const fallback = boundedOutsideVoice(content);
@@ -171,8 +171,8 @@ function hasBoundedOutsideVoiceWait(content: string): boolean {
     '`<status>`\n   must be `completed`', '`<output>` must be nonempty', 'must be no outer\n   `<error>`',
     'identifiable complete', 'Reject raw or in-progress transcripts',
     'call TaskStop with the same ID', 'Ignore partial or late results',
-    'Skip Cross-model tension. Persist an unavailable result',
-    'STATUS = "unavailable", SOURCE = "none", OUTSIDE_STATUS = "unavailable"'].every(part => fallback.includes(part));
+    'STATUS = "unavailable", SOURCE = "none", OUTSIDE_STATUS = "unavailable"'].every(part => fallback.includes(part))
+    && /Skip (?:Integrate reviewer findings and )?Cross-model tension\. Persist an unavailable result/.test(fallback);
 }
 
 describe('outside-voice dispatch contract', () => {

@@ -1635,9 +1635,9 @@ describe('SPEC_REVIEW_LOOP resolver', () => {
     expect(source).toContain('## Plan under review\n{working plan path, or');
     const template = source.replace(/\s+/g, ' ');
     expect(template).toContain('the complete amended working plan');
-    expect(template).toContain('Prepare the complete amended working plan and the CEO scope summary below');
-    expect(template).toContain('Keep behavior, requirements and scope consistent');
-    expect(template).toContain('the summary cannot replace or reference itself as the plan');
+    expect(template).toContain('Prepare the complete amended working plan and separate CEO scope summary');
+    expect(template).toContain('consistent behavior, requirements and scope');
+    expect(template).toContain('The summary cannot replace or reference itself as the plan');
   });
 
   test('CEO shares both inputs after spec review and owns unresolved concerns in its scope document', () => {
@@ -2375,7 +2375,7 @@ describe('Design approval reconciliation', () => {
     expect(check).toContain('stop here, read the file and redo the review.');
     const decisions = main.slice(main.indexOf('### 0D.'), main.indexOf('### 0E.')).replace(/\s+/g, ' ');
     expect(decisions).toMatch(/Ask one row per call with that object unchanged, without recomposing/);
-    expect(decisions).toContain('0D has two cases');
+    expect(decisions).toContain('Run steps 1–4 below, including their save checkpoints');
     expect(decisions).toContain('**Admin question:** mode selection, setup, navigation and document promotion');
     expect(decisions).toContain('This does not approve implementation, scope, TODO remedies or outside-review findings');
     expect(decisions).toContain('**Plan decision:** scope additions/cuts, approach choices, TODOs, specs and review/outside findings');
@@ -2393,10 +2393,13 @@ describe('Design approval reconciliation', () => {
     expect(decisions).toContain('When returning, carry both resolved findings and genuine no-issue outcomes');
     expect(decisions).toContain('Say "No issues, moving on." only when there are none');
     const outside = extractMarkdownSection(section, '**Cross-model tension:**').replace(/\s+/g, ' ');
-    expect(outside).toContain('If the only reviewer is same-harness/native fallback');
-    expect(outside).toContain('do not synthesize cross-model agreement');
-    expect(outside).toContain('Native fallback findings still count as review findings');
-    expect(outside).toContain('Apply Outside Voice Integration Rule to any concrete finding');
+    expect(outside).toContain('compare reviews only if an external reviewer completed');
+    expect(outside).toContain('For a same-harness/native fallback, skip this comparison');
+    expect(outside).toContain('do not write a CROSS-MODEL line');
+    const findings = extractMarkdownSection(section, '**Integrate reviewer findings:**').replace(/\s+/g, ' ');
+    expect(findings).toContain('either an external reviewer or the bounded native fallback completed with a valid report');
+    expect(findings).toContain('Native fallback findings count as findings from the current harness');
+    expect(findings).toContain('Apply Outside Voice Integration Rule to every finding');
   });
 
   test('Eng cannot exit with unasked findings listed only in an unresolved-decisions report', () => {
@@ -4447,10 +4450,10 @@ describe('plan-mode-info resolver (handshake-replacement)', () => {
     expect(content.indexOf(reopenRule!)).toBeGreaterThan(approachIdx);
     expect(content.indexOf(reopenRule!)).toBeLessThan(presentIdx);
     const gate = content.slice(stopIdx, modeIdx);
-    expect(approach).toContain("Initial 0D after 0C scans for unresolved approach");
-    expect(approach).toContain("Otherwise run steps 1–4: A) current/requested plan");
-    expect(gate).toContain("Initial pass after 0C: proceed to 0E once required choices are settled");
-    expect(gate).toContain("Return to the invoking step without another question");
+    expect(approach).toContain('**Initial visit after 0C:** Identify unresolved approach choices');
+    expect(approach).toContain('Otherwise use steps 1–4 to compare A) the current/requested plan');
+    expect(gate).toContain('Initial approach choice: proceed to 0E once required choices are settled');
+    expect(gate).toContain('Reuse the recorded answer at that destination; do not ask again or restart mode selection');
     expect(gate).not.toContain("When this step's required decisions are settled, go to 0E if you came from 0C");
     expect(gate).toContain('even for a lone option');
     expect(approach).toContain('Recommendations are not approval');

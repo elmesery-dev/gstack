@@ -14,11 +14,11 @@ import { runCapturedCommand } from './helpers/sync-command-capture';
 const compactProse = (value: string) => value.replace(/\s+/g, ' ').trim();
 
 describe('CI workflow clarity regressions', () => {
-  test('CEO defines narrow depth and separates the 0D entry check from its four steps', () => {
+  test('CEO defines narrow depth and sends settled initial choices directly to mode selection', () => {
     const source = compactProse(readFileSync('plan-ceo-review/SKILL.md.tmpl', 'utf8'));
     expect(source).toContain('For one narrow decision, apply every section to that choice and its dependencies');
-    expect(source).toContain('The entry check below selects a route; it is not a fifth step');
-    expect(source).toContain('If no choice needs an answer, return to the invoking step');
+    expect(source).toContain('Run steps 1–4 below, including their save checkpoints');
+    expect(source).toContain('If none need an answer, proceed directly to 0E');
     expect(source).not.toContain('skip the lookup and ask below');
   });
 
@@ -58,7 +58,7 @@ describe('CI workflow clarity regressions', () => {
       const mode = host.name === 'codex' ? 'under_current_harness' : 'under_codex';
       expect([...new Set(source.match(/under_codex|under_current_harness/g))]).toEqual([mode]);
       expect(source).toContain('A completed native fallback uses SOURCE=in-host, OUTSIDE_STATUS=unavailable, and STATUS=clean or issues_found from its findings');
-      expect(source).toContain('Sections 1-10/11 and current findings and decision ledger');
+      expect(compactProse(source)).toContain('Sections 1-10/11, findings and decision ledger; the final report is written later in Required Outputs');
       expect(source).not.toContain('Sections 1-10/11 and current report');
     }
   });
@@ -854,7 +854,8 @@ describe('outside-voice commitment queue', () => {
         const tmplPath = `${skillName}/sections/review-sections.md.tmpl`;
         expect(readFileSync(tmplPath, 'utf8')).toContain('{{CODEX_PLAN_REVIEW}}');
         const generated = generateCodexPlanReview({ skillName, tmplPath, host: host.name, paths: HOST_PATHS[host.name]! });
-        const start = generated.indexOf('**Cross-model tension:**');
+        const start = generated.indexOf(skillName === 'plan-ceo-review'
+          ? '**Integrate reviewer findings:**' : '**Cross-model tension:**');
         const end = generated.indexOf('**Persist the result:**', start);
         expect(start).toBeGreaterThan(0);
         expect(end).toBeGreaterThan(start);

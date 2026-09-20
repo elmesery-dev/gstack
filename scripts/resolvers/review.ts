@@ -1049,7 +1049,7 @@ ${outsideVoiceFor(ctx).label.toUpperCase()} SAYS (plan review — outside voice)
 \`\`\`
 
 This fence is the only external-provider output surface. Native fallback prints
-only its \`OUTSIDE VOICE (...)\` subagent report; never print both for one review.
+only its \`OUTSIDE VOICE (...)\` subagent report; never print both for one review.${ceo ? '\n\nAfter a completed external review, go directly to **Integrate reviewer findings** below. Run Native fallback only for a provider failure.' : ''}
 
 ${ceo ? `**Native fallback — provider unavailable or execution failed, with reviews enabled:**
 
@@ -1119,7 +1119,7 @@ voice. Execute the four steps once:
    final reviewer report. Reject raw or in-progress transcripts; do not extract
    finding fragments from them. Terminal status or warning markers alone do not
    establish report completeness. If any check fails or the report cannot be identified, follow step 4. Otherwise present it under an \`OUTSIDE VOICE (${outsideVoiceFor(ctx).nativeLabel} subagent):\`
-   header, then continue to Cross-model tension.
+   header, then continue to ${ceo ? '**Integrate reviewer findings**' : 'Cross-model tension'}.
 4. On any noncompletion (timeout, error, missing/mismatched result, failed/killed
    status, raw transcript or empty report), call TaskStop with the same ID as
    \`task_id\`. TaskOutput timeout does not stop the agent. Record the stop result;
@@ -1129,7 +1129,7 @@ voice. Execute the four steps once:
 **Unavailable path:** "Outside voice unavailable. Continuing to ${needsApprovalReadiness ? 'planning decisions and Approval readiness' : 'outputs'}."
 Do not retry with a general-purpose agent. Report missing outside-voice coverage.
 Ignore partial or late results for critique, agreement, clean status or coverage.
-Skip Cross-model tension. Persist an unavailable result using the command below
+${ceo ? 'Skip Integrate reviewer findings and Cross-model tension.' : 'Skip Cross-model tension.'} Persist an unavailable result using the command below
 with STATUS = "unavailable", SOURCE = "none", OUTSIDE_STATUS = "unavailable";
 then continue directly to ${needsApprovalReadiness ? 'the remaining planning decisions and Approval readiness' : 'outputs'}. The storage policy still applies.
 Do not record a clean review when no reviewer completed within the accepted wait.
@@ -1147,21 +1147,12 @@ For these questions, use the following four-option menus instead of the ordinary
 
 Report all findings, dispositions and remaining disagreements after resolving the questions. An answer to one row does not resolve the finding's other pending rows. Preserve /autoplan's authorized auto-decisions, audit trail and User Challenge rules; challenges wait for its final gate.
 
-` : ctx.skillName === 'plan-ceo-review' ? `**Cross-model tension:**
+` : ctx.skillName === 'plan-ceo-review' ? `**Integrate reviewer findings:**
 
-Enter this block only after an external reviewer completed and the current
-native review exists. Current native review means this skill's completed
-Sections 1-10/11 and current findings and decision ledger; the final report is
-written later in Required Outputs. If the only reviewer is same-harness/native
-fallback, or if the external review was disabled, unavailable, timed out,
-cancelled, raw/incomplete or same-harness-only with unknown model identity, do
-not synthesize cross-model agreement. Record only OUTSIDE COVERAGE and do not
-write a CROSS-MODEL line.
-
-Native fallback findings still count as review findings from the current
-harness. Apply Outside Voice Integration Rule to any concrete finding: correct
-facts directly, and route material scope, policy, implementation or test changes
-through 0D.
+Enter after either an external reviewer or the bounded native fallback completed
+with a valid report. Apply Outside Voice Integration Rule to every finding from
+that report. Native fallback findings count as findings from the current harness,
+but never as outside coverage. Disabled or unavailable reviews skip this block.
 
 Record the reviewer and evidence in the same six-column ledger. Use 0D for new or reopened choices, including both saves and the actual answer; do not start a second procedure.
 
@@ -1175,6 +1166,19 @@ Use 0D's rules for independent choices, fixed/pending commitments, required proo
 Keep preserves the current disposition; investigation and deferral do not authorize implementation. In /autoplan, preserve authorized auto-decisions, the audit trail and User Challenge rules; challenges wait for the final gate. One answer does not resolve other pending rows.
 
 Report every finding, its disposition, required verification and remaining disagreement, including findings that needed only factual correction.
+
+**Cross-model tension:**
+
+After integrating findings, compare reviews only if an external reviewer
+completed. The native review is this skill's already completed Sections 1-10/11,
+findings and decision ledger; the final report is written later in Required
+Outputs. Describe agreement and disagreement with recorded provider and known
+model identities; unknown model identity stays unknown.
+
+For a same-harness/native fallback, skip this comparison and go to **Persist the
+result**. Record only OUTSIDE COVERAGE and do not write a CROSS-MODEL line. A
+disabled, unavailable, timed-out, cancelled or raw/incomplete external result
+also supplies no cross-model agreement or clean-review credit.
 
 ` : ctx.skillName === 'plan-devex-review' ? `**Cross-model tension:**
 
