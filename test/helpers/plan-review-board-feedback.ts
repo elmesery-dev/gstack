@@ -153,17 +153,7 @@ export function createDesignReviewPicker({ cwd, deadlineAt }: { cwd: string; dea
     const child = spawnSync(process.execPath, ['-e', SUBMIT], {
       input: JSON.stringify({ stateFile, url, deadlineAt: childDeadline, alreadySubmitted: submitted.has(url) }),
       encoding: 'utf8', timeout: Math.max(1, childDeadline - Date.now()), killSignal: 'SIGKILL', maxBuffer: 16 * 1024,
-      env: {
-        PATH: process.env.PATH ?? '',
-        ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-        // Windows command discovery needs its module path and startup cache.
-        // LOCALAPPDATA supplies the cache location when no override is set.
-        ...(process.platform === 'win32' ? {
-          ...(process.env.PSModulePath ? { PSModulePath: process.env.PSModulePath } : {}),
-          ...(process.env.PSModuleAnalysisCachePath ? { PSModuleAnalysisCachePath: process.env.PSModuleAnalysisCachePath } : {}),
-          ...(process.env.LOCALAPPDATA ? { LOCALAPPDATA: process.env.LOCALAPPDATA } : {}),
-        } : {}),
-      },
+      env: { PATH: process.env.PATH ?? '', ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
     });
     if (child.error || child.signal || child.status !== 0) {
       throw new Error(`Design feedback failed: ${child.error?.message ?? child.signal ?? `exit ${child.status}`}\n${child.stderr?.slice(-2000) ?? ''}`,

@@ -364,20 +364,11 @@ test('a state file naming a real unrelated process does not confer daemon owners
   await expectUnsubmitted(published);
 });
 
-test('the Windows submission child keeps its native module paths and cache without inheriting credentials or state overrides', async () => {
+test('the submission child keeps its minimal environment without inheriting credentials or state overrides', async () => {
   const published = await board();
-  const nativePlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
-  // Windows uses its real module path and cache so this exercises native CIM.
-  // Other hosts only adapt the parent branch; the real child keeps its native
-  // identity probe and still submits to the real owned daemon.
-  const nativeKeys = ['PSModulePath', 'PSModuleAnalysisCachePath', 'LOCALAPPDATA'];
-  const windowsPaths = process.platform === 'win32'
-    ? Object.fromEntries(nativeKeys.flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []))
-    : { PSModulePath: 'captured-windows-module-search-path',
-      PSModuleAnalysisCachePath: 'captured-windows-module-cache', LOCALAPPDATA: 'captured-windows-local-appdata' };
-  expect(windowsPaths.PSModulePath).toBeTruthy();
   const overrides = {
-    ...windowsPaths,
+    PSModulePath: 'fixture-unowned-module-path',
+    PSModuleAnalysisCachePath: 'fixture-unowned-module-cache',
     ANTHROPIC_API_KEY: 'fixture-provider-secret',
     OPENAI_API_KEY: 'fixture-provider-secret',
     GSTACK_HOME: 'fixture-unowned-state',
@@ -388,15 +379,14 @@ test('the Windows submission child keeps its native module paths and cache witho
   const spawned = spyOn(childProcess, 'spawnSync').mockImplementation(actualSpawn);
   try {
     Object.assign(process.env, overrides);
-    Object.defineProperty(process, 'platform', { value: 'win32' });
     expect(picker()(question(published.url))).toBe(1);
     expect(spawned).toHaveBeenCalledTimes(1);
     const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
-    for (const [key, value] of Object.entries(windowsPaths)) expect(options.env?.[key]).toBe(value);
+    expect(options.env?.PATH).toBe(process.env.PATH ?? '');
     expect(Object.keys(options.env!).sort()).toEqual([
-      'PATH', ...Object.keys(windowsPaths), ...(process.env.SystemRoot ? ['SystemRoot'] : []),
+      'PATH', ...(process.env.SystemRoot ? ['SystemRoot'] : []),
     ].sort());
-    for (const key of Object.keys(overrides).filter(key => !nativeKeys.includes(key))) {
+    for (const key of Object.keys(overrides)) {
       expect(options.env?.[key]).toBeUndefined();
     }
     expect(options.timeout).toBeGreaterThan(0);
@@ -405,7 +395,6 @@ test('the Windows submission child keeps its native module paths and cache witho
     expect(written).toMatchObject({ preferred: 'A', regenerated: false, boardId: published.id });
   } finally {
     spawned.mockRestore();
-    Object.defineProperty(process, 'platform', nativePlatform);
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -432,8 +421,9 @@ import { mock } from 'bun:test';
 import * as processApi from 'node:child_process';
 import * as fs from 'node:fs';
 const execute = processApi.execFileSync;
+const queryExecutable = Bun.which('pwsh.exe', { PATH: process.env.PATH ?? '' }) ?? 'powershell.exe';
 mock.module('child_process', () => ({ ...processApi, execFileSync(command, args, options) {
-  if (command !== 'pwsh.exe') return execute(command, args, options);
+  if (command !== queryExecutable) return execute(command, args, options);
   fs.writeFileSync(${JSON.stringify(queryOptions)}, JSON.stringify(options));
   return execute(process.execPath, ['-e', ${JSON.stringify(`import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(queryPid)}, String(process.pid)); await Bun.sleep(10_000);`)}], options);
 } }));

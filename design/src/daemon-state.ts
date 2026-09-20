@@ -172,7 +172,11 @@ export function readCmdline(pid: number, timeoutMs?: number): string {
       }).trim();
     }
     if (process.platform === "win32") {
-      return execFileSync("pwsh.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      // Prefer installed PowerShell: Windows PowerShell 5.1 cold startup can
+      // exceed the query budget before executing its command. Keep the same
+      // bounded CIM query and legacy fallback when the newer host is absent.
+      const powershell = Bun.which("pwsh.exe", { PATH: process.env.PATH ?? "" }) ?? "powershell.exe";
+      return execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command",
         "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
         `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop).CommandLine`,
       ], {
