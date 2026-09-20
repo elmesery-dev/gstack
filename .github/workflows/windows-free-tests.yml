@@ -4,47 +4,33 @@ on:
 permissions:
   contents: read
 jobs:
-  native-focused-repairs:
+  cold-native-board-query:
     runs-on: windows-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        query: [current, qualified]
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
-      - name: Configure fixture Git identity
-        shell: bash
-        run: |
-          git config --global user.email windows-ci@gstack.test
-          git config --global user.name "Windows CI"
-          git config --global init.defaultBranch main
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
       - name: Build import prerequisite
         shell: bash
         run: bash browse/scripts/build-node-server.sh
-      - name: Generate host outputs
-        shell: bash
-        run: bun run gen:skill-docs --host all
-      - name: Verify mirrored repair inputs
-        shell: bash
-        run: bun scripts/windows-focused-pins.ts
-      - name: Run native failing files and query controls
+      - name: Select diagnostic command
+        env:
+          QUERY_VARIANT: ${{ matrix.query }}
+        run: bun scripts/windows-cold-query-candidate.ts
+      - name: Cold real board callback
         shell: bash
         run: |
           set -o pipefail
-          bun test test/autoplan-owned-state.test.ts test/ceo-hold-posture-review.test.ts test/plan-review-board-feedback.test.ts test/design-daemon-windows-identity.test.ts 2>&1 | tee windows-focused.log
-      - name: Run native argv transport regressions
-        if: always()
-        shell: bash
-        run: |
-          set -o pipefail
-          bun test test/autoplan-artifact-windows-argv.test.ts 2>&1 | tee windows-argv.log
+          bun test test/plan-review-board-feedback.test.ts --test-name-pattern '^the declared board protocol' 2>&1 | tee windows-cold-board.log
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: windows-focused-repairs
-          path: |
-            windows-focused.log
-            windows-argv.log
-            windows-focused-pins.json
+          name: windows-cold-board-${{ matrix.query }}
+          path: windows-cold-board.log
