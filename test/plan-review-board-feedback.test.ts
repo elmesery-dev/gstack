@@ -364,6 +364,44 @@ test('a state file naming a real unrelated process does not confer daemon owners
   await expectUnsubmitted(published);
 });
 
+test('the submission child keeps its minimal environment without inheriting credentials or state overrides', async () => {
+  const published = await board();
+  const overrides = {
+    PSModulePath: 'fixture-unowned-module-path',
+    PSModuleAnalysisCachePath: 'fixture-unowned-module-cache',
+    ANTHROPIC_API_KEY: 'fixture-provider-secret',
+    OPENAI_API_KEY: 'fixture-provider-secret',
+    GSTACK_HOME: 'fixture-unowned-state',
+    DESIGN_DAEMON_STATE_FILE: 'fixture-unowned-daemon.json',
+  };
+  const saved = new Map(Object.keys(overrides).map(key => [key, process.env[key]]));
+  const actualSpawn = childProcess.spawnSync;
+  const spawned = spyOn(childProcess, 'spawnSync').mockImplementation(actualSpawn);
+  try {
+    Object.assign(process.env, overrides);
+    expect(picker()(question(published.url))).toBe(1);
+    expect(spawned).toHaveBeenCalledTimes(1);
+    const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
+    expect(options.env?.PATH).toBe(process.env.PATH ?? '');
+    expect(Object.keys(options.env!).sort()).toEqual([
+      'PATH', ...(process.env.SystemRoot ? ['SystemRoot'] : []),
+    ].sort());
+    for (const key of Object.keys(overrides)) {
+      expect(options.env?.[key]).toBeUndefined();
+    }
+    expect(options.timeout).toBeGreaterThan(0);
+    expect(options.timeout).toBeLessThanOrEqual(2000);
+    const written = JSON.parse(fs.readFileSync(feedbackPath(published), 'utf8'));
+    expect(written).toMatchObject({ preferred: 'A', regenerated: false, boardId: published.id });
+  } finally {
+    spawned.mockRestore();
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('an expired absolute deadline refuses before HTTP', async () => {
   const published = await board();
   expect(() => picker(Date.now() - 1)(question(published.url))).toThrow();
@@ -383,8 +421,9 @@ import { mock } from 'bun:test';
 import * as processApi from 'node:child_process';
 import * as fs from 'node:fs';
 const execute = processApi.execFileSync;
+const queryExecutable = Bun.which('pwsh.exe', { PATH: process.env.PATH ?? '' }) ?? 'powershell.exe';
 mock.module('child_process', () => ({ ...processApi, execFileSync(command, args, options) {
-  if (command !== 'powershell.exe') return execute(command, args, options);
+  if (command !== queryExecutable) return execute(command, args, options);
   fs.writeFileSync(${JSON.stringify(queryOptions)}, JSON.stringify(options));
   return execute(process.execPath, ['-e', ${JSON.stringify(`import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(queryPid)}, String(process.pid)); await Bun.sleep(10_000);`)}], options);
 } }));
@@ -436,19 +475,25 @@ Date.now = () => now() + 2000;
   const actualSpawn = childProcess.spawnSync;
   const spawned = spyOn(childProcess, 'spawnSync').mockImplementation((command, args, options) =>
     actualSpawn(command, ['--preload', preload, ...args!], options as any));
+  // Bind the assertion to the admission clock, not time spent building the
+  // question before the picker starts its unchanged two-second child budget.
+  const started = Date.now();
+  const clock = spyOn(Date, 'now').mockReturnValue(started);
   try {
-    const started = Date.now();
     expect(() => picker()(question(published.url))).toThrow('Design feedback deadline exhausted');
     expect(spawned).toHaveBeenCalledTimes(1);
     const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
     expect(options.timeout).toBeLessThanOrEqual(2000);
     const input = JSON.parse(options.input as string);
-    expect(input.deadlineAt).toBeLessThanOrEqual(started + 2000);
+    expect(input.deadlineAt).toBe(started + 2000);
     expect(fs.existsSync(queried)).toBe(false);
     const result = spawned.mock.results[0]!.value as childProcess.SpawnSyncReturns<string>;
     expect(result.error).toBeUndefined();
     expect(result.signal).toBeNull();
-  } finally { spawned.mockRestore(); }
+  } finally {
+    clock.mockRestore();
+    spawned.mockRestore();
+  }
   await expectUnsubmitted(published);
 });
 
