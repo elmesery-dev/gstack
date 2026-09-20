@@ -16,6 +16,7 @@ interface Fixture {
   writeReport?: boolean;
   exitReason?: string;
   missingRead?: string;
+  windowsPaths?: boolean;
 }
 
 // Run the actual paid registration and actual capture helper in an isolated
@@ -44,7 +45,7 @@ mock.module(${JSON.stringify(path.join(ROOT, 'test/helpers/session-runner.ts'))}
     return {
       exitReason: input.exitReason, output: input.output,
       toolCalls: guard.requiredReads.filter(section => section !== input.missingRead).map(section => ({
-        tool: 'Read', input: { file_path: path.join(opts.workingDirectory, input.skill, 'sections', section) },
+        tool: 'Read', input: { file_path: (input.windowsPaths ? path.win32 : path).join(opts.workingDirectory, input.skill, 'sections', section) },
       })), transcript: [],
     };
   },
@@ -75,6 +76,13 @@ test('accepts the exact completed HTML report without generic review keywords', 
   expect(/report|review|summary|design doc|handoff/i.test(report)).toBe(false);
   const result = exercise();
   expect(result.code, result.output).toBe(0);
+}, 20_000);
+
+test('the registered case credits native Windows section paths and still rejects a missing Read', () => {
+  expect(exercise({ windowsPaths: true }).code).toBe(0);
+  const missing = exercise({ windowsPaths: true, missingRead: 'doctrine.md' });
+  expect(missing.code).toBe(1);
+  expect(missing.output).toContain('"missing"');
 }, 20_000);
 
 test.each([

@@ -165,17 +165,25 @@ describe('CSO native Windows build contract', () => {
     expect(smoke['continue-on-error']).not.toBe(true);
   });
 
-  test.skipIf(!windows)('Windows build refuses output path escapes before invoking MSVC',()=>{
+  // Each PowerShell invocation has its own deadline. A serial loop placed all
+  // five cold starts under Bun's default five-second timeout.
+  const pathEscapeCases = [
+    ['launcher outside stage', (stage: string, outside: string) => [path.join(outside, 'gstack-cso-launcher.exe'), path.join(stage, 'gstack-cso-publish-lock.exe')]],
+    ['launcher in stage parent', (stage: string) => [path.join(stage, '..', 'gstack-cso-launcher.exe'), path.join(stage, 'gstack-cso-publish-lock.exe')]],
+    ['wrong launcher name', (stage: string) => [path.join(stage, 'wrong.exe'), path.join(stage, 'gstack-cso-publish-lock.exe')]],
+    ['lock outside stage', (stage: string, outside: string) => [path.join(stage, 'gstack-cso-launcher.exe'), path.join(outside, 'gstack-cso-publish-lock.exe')]],
+    ['wrong lock name', (stage: string) => [path.join(stage, 'gstack-cso-launcher.exe'), path.join(stage, 'wrong-lock.exe')]],
+  ] as const;
+  test.skipIf(!windows).each(pathEscapeCases)('Windows build rejects %s before invoking MSVC',(_name, outputs)=>{
     const script=path.join(ROOT,'scripts/build-cso-windows.ps1'),outside=fs.mkdtempSync(path.join(os.tmpdir(),'cso-bin-evil-'));
     const stage=fs.mkdtempSync(path.join(ROOT,'bin','.gstack-cso-stage.path-test.'));
-    const validOutput=path.join(stage,'gstack-cso-launcher.exe'),validLock=path.join(stage,'gstack-cso-publish-lock.exe'),digest='a'.repeat(64);
+    const [output,lock]=outputs(stage,outside),digest='a'.repeat(64);
     try{
-      for(const [output,lock] of [[path.join(outside,'gstack-cso-launcher.exe'),validLock],[path.join(stage,'..','gstack-cso-launcher.exe'),validLock],[path.join(stage,'wrong.exe'),validLock],[validOutput,path.join(outside,'gstack-cso-publish-lock.exe')],[validOutput,path.join(stage,'wrong-lock.exe')]]){
-        const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-RepoRoot',ROOT,'-OutputPath',output,'-LockOutputPath',lock,'-CoreSha256',digest,'-GitExePath',Bun.which('git')!],{encoding:'utf8',timeout:30_000});
-        expect(result.status).not.toBe(0);expect(`${result.stdout}${result.stderr}`).toContain('direct, non-reparse staging directory');
-      }
+      const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',script,'-RepoRoot',ROOT,'-OutputPath',output,'-LockOutputPath',lock,'-CoreSha256',digest,'-GitExePath',Bun.which('git')!],{encoding:'utf8',timeout:30_000});
+      expect(result.error).toBeUndefined();expect(result.signal).toBeNull();expect(result.status).not.toBeNull();
+      expect(result.status).not.toBe(0);expect(`${result.stdout}${result.stderr}`).toContain('direct, non-reparse staging directory');
     }finally{fs.rmSync(stage,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});}
-  });
+  },35_000);
 });
 
 (windows ? describe : describe.skip)('CSO native Windows startup', () => {

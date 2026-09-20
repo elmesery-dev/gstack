@@ -275,6 +275,50 @@ describe('Autoplan parent publication guard', () => {
     expect(await withNativeProjectDirectory(same.f.cwd, () => runPublicationHook(same.f.input, ROOT))).toEqual({});
   });
 
+  test('the literal init parser retains Windows drive and UNC identities', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'autoplan/bin/phase-publication-hook.ts'), 'utf8');
+    const fn = source.slice(source.indexOf('function initArguments('), source.indexOf('\nfunction invocation('));
+    const parse = new Function('path', 'fs', 'process', 'ownPath',
+      new Bun.Transpiler({ loader: 'ts' }).transformSync(fn) + '\nreturn initArguments;')(
+      path.win32, { realpathSync: (file: string) => file }, { platform: 'win32' },
+      (value: unknown) => typeof value === 'string' && path.win32.isAbsolute(value) && path.win32.normalize(value) === value);
+    for (const root of [String.raw`C:\repo`, String.raw`\\server\share\repo`]) {
+      const args = ['source.md', 'active.md', 'restore.md'].map(file => path.win32.join(root, file));
+      const script = path.win32.join(root, 'bin/gstack-autoplan-snapshot.ts');
+      const singleQuoted = [script, ...args].map(value => `'${value}'`);
+      const command = `bun ${singleQuoted[0]} init ${singleQuoted.slice(1).join(' ')}`;
+      expect(parse(command, root)).toEqual(args);
+      const forward = [script, ...args].map(value => '"' + value.replaceAll('\\', '/') + '"');
+      expect(parse(`bun ${forward[0]} init ${forward.slice(1).join(' ')}`, root)).toEqual(args);
+      if (!root.startsWith('\\\\')) {
+        const native = [script, ...args].map(value => '"' + value + '"');
+        expect(parse(`bun ${native[0]} init ${native.slice(1).join(' ')}`, root)).toEqual(args);
+      }
+      for (const bad of [command + ' && true', command.replace('source.md', String.raw`..\source.md`),
+        command.replace('source.md', 'nested/../source.md'), command.replace(script, path.win32.join(root, 'foreign.ts'))]) {
+        expect(parse(bad, root)).toBeUndefined();
+      }
+    }
+  });
+
+  test('native hook accepts platform paths without evaluating shell escapes', async () => {
+    // The same actual hook receives native separators in Windows CI.
+    const f = fixture();
+    f.message(); f.current(); f.journal();
+    expect(await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT))).toEqual({});
+    const command = f.events[0]!.input!.command as string;
+    for (const suffix of ['; true', ' && true', ' | cat']) {
+      f.events[0]!.input!.command = command + suffix; f.journal();
+      const output: any = await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT));
+      expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+    for (const escaped of ['\\$HOME', '\\`whoami\\`', '\\"quoted']) {
+      f.events[0]!.input!.command = command.replace(f.source, f.source + escaped); f.journal();
+      const output: any = await withNativeProjectDirectory(f.cwd, () => runPublicationHook(f.input, ROOT));
+      expect(output.hookSpecificOutput.permissionDecision).toBe('deny');
+    }
+  });
+
   test('native project ownership preserves the absent-env same-directory adapter', async () => {
     const f = fixture(); f.message(); f.current(); f.journal();
     expect(await withNativeProjectDirectory(undefined, () => runPublicationHook(f.input, ROOT))).toEqual({});
@@ -357,7 +401,7 @@ describe('Autoplan parent publication guard', () => {
   }
 
   for (const mutation of ['no-close', 'partial-close', 'error-close', 'missing-ack', 'foreign-session', 'duplicate-use',
-    'pre-close-publication', 'after-current-publication', 'changed-plan', 'mutable-packet', 'aliased-packet', 'wrong-init',
+    'pre-close-publication', 'after-current-publication', 'changed-plan', 'modified-immutable-packet', 'aliased-packet', 'wrong-init',
     'failed-init', 'missing-init', 'forged-init-command', 'wrong-restore', 'pending-phase', 'ambiguous-order'] as const) {
     test(`rejects ${mutation}`, () => {
       const f = fixture(); f.message(); f.current();
@@ -370,7 +414,12 @@ describe('Autoplan parent publication guard', () => {
       if (mutation === 'pre-close-publication') f.events.splice(4, 0, ...f.events.splice(6, 1));
       if (mutation === 'after-current-publication') f.events.push(...f.events.splice(6, 1));
       if (mutation === 'changed-plan') fs.writeFileSync(f.active, fs.readFileSync(f.active, 'utf8').replace('Keep documented behavior.', 'Change behavior.'));
-      if (mutation === 'mutable-packet') fs.chmodSync(f.packet.closePacketPath, 0o644);
+      if (mutation === 'modified-immutable-packet') {
+        fs.chmodSync(f.packet.closePacketPath, 0o644);
+        // Windows has no POSIX write-bit contract; preserve the rejection
+        // through the actual artifact bytes instead of a no-op chmod.
+        if (process.platform === 'win32') fs.appendFileSync(f.packet.closePacketPath, '\nChanged after the native Read.\n');
+      }
       if (mutation === 'aliased-packet') { const alias = path.join(f.cwd, 'packet'); fs.renameSync(f.packet.closePacketPath, alias); fs.symlinkSync(alias, f.packet.closePacketPath); }
       if (mutation === 'wrong-init') (f.events[1] as any).content = JSON.stringify({ ...f.init, activePlan: f.source });
       if (mutation === 'failed-init') (f.events[1] as any).isError = true;
@@ -791,7 +840,11 @@ describe('Autoplan authenticated phase consumption', () => {
       const manifest = path.join(path.dirname(next.method), 'methodology.json');
       if (invalid === 'foreign-restore') { const x = JSON.parse(fs.readFileSync(manifest, 'utf8')); x.restorePath = f.source; fs.chmodSync(manifest, 0o644); fs.writeFileSync(manifest, JSON.stringify(x)); fs.chmodSync(manifest, 0o444); }
       if (invalid === 'foreign-active') { const file = path.join(path.dirname(next.snapshot.snapshotPath), 'snapshot.json'); const x = JSON.parse(fs.readFileSync(file, 'utf8')); x.activePlan = f.source; fs.chmodSync(file, 0o644); fs.writeFileSync(file, JSON.stringify(x)); fs.chmodSync(file, 0o444); }
-      if (invalid === 'mutable') fs.chmodSync(next.method, 0o644);
+      if (invalid === 'mutable') {
+        fs.chmodSync(next.method, 0o644);
+        // The manifest hash remains mandatory on Windows, where mode bits do not.
+        if (process.platform === 'win32') fs.appendFileSync(next.method, '\nChanged after methodology preparation.\n');
+      }
       if (invalid === 'aliased') { const file = next.method + '.saved'; fs.renameSync(next.method, file); fs.symlinkSync(file, next.method); }
       nextInput(f, invalid === 'foreign-active' ? next.snapshot.nativePromptPath : next.method);
     }

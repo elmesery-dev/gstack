@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, posix } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { prepareMethodology, createSnapshot } from '../bin/gstack-autoplan-snapshot';
@@ -410,7 +410,7 @@ describe('the seeded launcher HOME registry preserves the phase publication boun
     expect(homeEntry.observedPrematurePhaseEntry).toBeNull();
     expect(homeEntry.events[1]!.file!.content).toBe(f.instruction.content);
     expect(homeEntry.assistantMessages).toHaveLength(35);
-    expect(homeEntry.events[0]!.input!.file_path).toBe(join(homeEntry.ownedSkillStateRoot, '..', '.claude', 'skills', 'gstack', 'autoplan', 'sections', 'design-phase.md'));
+    expect(homeEntry.events[0]!.input!.file_path).toBe(posix.join(homeEntry.ownedSkillStateRoot, '..', '.claude', 'skills', 'gstack', 'autoplan', 'sections', 'design-phase.md'));
     registerAutoplanPhaseInstructionAliases([f.instruction], f.config);
     expect(f.audit()).toBeNull(); // Original registration reproduces the missing alias.
     f.register();

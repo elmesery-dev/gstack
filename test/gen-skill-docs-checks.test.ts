@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -126,6 +126,24 @@ describe('generator artifact and dry-run contract', () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('ERROR (codex)');
     expect(result.stderr).toContain('ENOTDIR');
+    expect(inventory(outputRoot)).toEqual(before);
+  });
+
+  test('Windows ENOENT for a file ancestor remains an error instead of stale output', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(base, 'windows-not-dir-'));
+    fs.writeFileSync(path.join(outputRoot, '.agents'), 'not a directory');
+    const before = inventory(outputRoot), original = fs.readFileSync;
+    const mock = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: any[]) => {
+      if (String(file).startsWith(path.join(outputRoot, '.agents') + path.sep)) {
+        throw Object.assign(new Error('Windows: child cannot be found'), { code: 'ENOENT' });
+      }
+      return (original as any)(file, ...args);
+    }) as typeof fs.readFileSync);
+    let result: GenerationResult;
+    try { result = await runGeneration({ host: 'codex', dryRun: true, outputRoot }); }
+    finally { mock.mockRestore(); }
+    expect(result!.exitCode).toBe(1);
+    expect(result!.diagnostics).toContainEqual(expect.objectContaining({ kind: 'error', host: 'codex', message: expect.stringContaining('ENOTDIR') }));
     expect(inventory(outputRoot)).toEqual(before);
   });
 

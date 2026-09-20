@@ -108,6 +108,12 @@ describe('test-free-shards: Windows curation', () => {
     });
   });
 
+  test('still detects a direct bin shebang launch', () => {
+    withTempFile(`spawnSync(path.join(ROOT, 'bin', 'tool'), [], { timeout: 1000 });`, (f) => {
+      expect(detectWindowsFragility(f)?.reason).toBe('spawns bin/ shebang script (Windows CreateProcess does not parse shebangs)');
+    });
+  });
+
   test('curateWindowsSafe partitions files into safe + excluded', () => {
     const files = collectFreeTestFiles(ROOT);
     const result = curateWindowsSafe(files, ROOT);
@@ -116,6 +122,10 @@ describe('test-free-shards: Windows curation', () => {
     // Windows taskkill supervision instead of disappearing behind curation.
     expect(result.safe).toContain('test/claude-code-runner.test.ts');
     expect(result.safe).toContain('test/claude-code-windows-job.test.ts');
+    // These replay real callbacks with injected subprocess/SDK boundaries.
+    // Fixture-only bin paths must not hide the native PATH/supervision checks.
+    expect(result.safe).toContain('test/setup-gbrain-remote-caller.test.ts');
+    expect(result.safe).toContain('test/cso-windows-build-contract.test.ts');
     // Sanity: at least one excluded entry, since we know test/ship-version-sync.test.ts uses /bin/bash
     expect(result.excluded.length).toBeGreaterThan(0);
     // Every excluded entry has a non-empty reason

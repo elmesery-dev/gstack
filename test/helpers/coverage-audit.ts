@@ -16,7 +16,9 @@ function outputText(content: unknown): string {
  * display the same bytes. A command, assistant claim or pending call is no proof.
  */
 export function requireCoverageFileReads(transcript: any[], cwd: string, files: CoverageFile[]): void {
-  const required = ['src/billing.ts', 'test/billing.test.ts'].map(file => path.join(cwd, file)).sort();
+  // A retained transcript keeps the originating filesystem's path namespace.
+  const paths = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(cwd) ? path.win32 : path.posix;
+  const required = ['src/billing.ts', 'test/billing.test.ts'].map(file => paths.join(cwd, file)).sort();
   if (!isDeepStrictEqual(files.map(file => file.path).sort(), required)
     || files.some(file => typeof file.content !== 'string' || !file.content.trim())) {
     throw new Error('Coverage audit: source and test expectations are required');
@@ -53,14 +55,14 @@ export function requireCoverageFileReads(transcript: any[], cwd: string, files: 
       const numbered = text.split('\n').map(line => line.replace(/^\s*\d+(?:\t|→)/, '')).join('\n');
       for (const file of files) {
         if (call.name === 'Read' && (typeof call.input?.file_path !== 'string'
-          || path.resolve(cwd, call.input.file_path) !== file.path)) continue;
+          || paths.resolve(cwd, call.input.file_path) !== file.path)) continue;
         if (call.name === 'Bash' && typeof call.input?.command !== 'string') continue;
         const expected = file.content.replace(/\r\n/g, '\n').trim();
         if (expected && (text.includes(expected) || numbered.includes(expected))) read.add(file.path);
       }
     }
   }
-  const missing = files.filter(file => !read.has(file.path)).map(file => path.relative(cwd, file.path));
+  const missing = files.filter(file => !read.has(file.path)).map(file => paths.relative(cwd, file.path));
   if (missing.length) throw new Error(`Coverage audit: no successful complete file read: ${missing.join(', ')}`);
 }
 

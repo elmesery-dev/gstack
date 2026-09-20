@@ -169,11 +169,15 @@ function checkpointResult(result: Event, entered: Event[], init: Invocation): { 
 /** Only the documented literal init argv, optionally after literal cd. No shell evaluation. */
 function initArguments(command: unknown, root: string): string[] | undefined {
   if (typeof command !== 'string') return;
-  const literal = String.raw`(?:"[^"\n\r$\x60\\]*"|'[^'\n\r]*'|[^\s"'\\$\x60;&|<>]+)`;
+  // Bash keeps backslashes before ordinary characters in double quotes (e.g.
+  // a native Windows path); escapes, substitutions and shell operators stay out.
+  const literal = String.raw`(?:"(?:[^"\n\r$\x60\\]|\\[^"$\x60\\\n\r])*"|'[^'\n\r]*'|[^\s"'\\$\x60;&|<>]+)`;
   const normalized = command.replace(/\\\r?\n/g, ' ');
   const match = new RegExp(String.raw`^\s*(?:cd\s+${literal}\s*(?:\n|&&)\s*)?(?:bun|${literal}/bun)\s+(${literal})\s+init\s+(${literal})\s+(${literal})\s+(${literal})\s*$`).exec(normalized);
   if (!match) return;
-  const args = match.slice(1).map(x => /^["']/.test(x!) ? x!.slice(1, -1) : x!);
+  const args = match.slice(1).map(x => /^["']/.test(x!) ? x!.slice(1, -1) : x!)
+    // Git Bash accepts forward slashes; retain all other canonical-path checks.
+    .map(x => process.platform === 'win32' ? x.replaceAll('/', '\\') : x);
   if (!args.every(ownPath) || fs.realpathSync(args[0]!) !== path.join(root, 'bin', 'gstack-autoplan-snapshot.ts')) return;
   return args.slice(1);
 }

@@ -1,4 +1,4 @@
-import { basename, isAbsolute, normalize } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { nativePlanCallFingerprint } from './claude-pty-runner';
 import { nativeCeoModeAnswer, type CeoPostureSource } from './ceo-mode-option';
@@ -57,11 +57,13 @@ export function buildCeoHoldPostureReview(input: CeoHoldPostureReviewInput): Pla
   if (modeTime.answeredAt < input.selectionStartedAt || decisionTime.requestedAt <= modeTime.answeredAt) fail('decision precedes actual mode answer');
   if (transcript.calls.filter(call => call.sessionId === mode.sessionId && call.answered &&
       Date.parse(call.answeredAt ?? '') > modeTime.answeredAt).length !== 1) fail('more than one post-mode answer');
-  if (!isAbsolute(source.path) || normalize(source.path) !== source.path || !source.content.trim()) fail('missing original source identity');
-  const name = basename(source.path);
+  // Saved native evidence can originate on another host; never reinterpret it.
+  const paths = /^(?:[A-Za-z]:[\\/]|\\\\)/.test(source.path) ? win32 : posix;
+  if (!paths.isAbsolute(source.path) || paths.normalize(source.path) !== source.path || !source.content.trim()) fail('missing original source identity');
+  const name = paths.basename(source.path);
   for (const call of [mode, decision]) {
     const context = /Project\/branch\/task:([^\n]*)/i.exec(call.questions[0]!.question)?.[1] ?? '';
-    const plans = [...new Set(context.match(/(?<![\w./-])[\w./-]+\.md(?![\w./-])/gi) ?? [])];
+    const plans = [...new Set(context.match(/(?<![\w.:/\\-])[\w.:/\\-]+\.md(?![\w.:/\\-])/gi) ?? [])];
     if (plans.length !== 1 || (plans[0] !== name && plans[0] !== source.path)) fail('native source context differs from original plan');
   }
   const decisionContext = /Project\/branch\/task:([^\n]*)/i.exec(decision.questions[0]!.question)?.[1] ?? '';

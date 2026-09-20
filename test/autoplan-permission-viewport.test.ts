@@ -68,11 +68,11 @@ afterEach(() => { screen.dispose(); fs.rmSync(cwd, { recursive: true, force: tru
 test.each(['create', 'edit', 'overwrite'] as const)('a taller-than120 owned file needs fresh paints, grants once, and restores only after ACK (%s)', async operation => {
   useOperation(operation);
   const name = operation === 'edit' ? 'Edit' : 'Write';
-  expect((await sample()).text).not.toContain(' file\n .claude/plans/review.md');
+  expect((await sample()).text).not.toContain(` file\n ${path.join('.claude','plans','review.md')}`);
   expect(() => reserve({ text: card().split('\r\n').slice(-120).join('\n') })).toThrow('cannot be bound');
   await tick(); expect(resizes).toEqual([240]); expect(sends).toEqual([]);
   await tick(); expect(resizes).toEqual([240, 480]); expect(sends).toEqual([]);
-  expect((await sample()).text).toContain(' file\n .claude/plans/review.md');
+  expect((await sample()).text).toContain(` file\n ${path.join('.claude','plans','review.md')}`);
   await tick(); await tick();
   expect(sends).toEqual(['1\r']); expect(resizes).toEqual([240, 480]);
   Object.assign(native.permissionRequests[0]!, { result: 'completed', nativeToolId: 'actual-edit', nativeResultAtMs: 2 });
@@ -111,7 +111,7 @@ test('a 600-line owned Edit recovers its complete path only after the third fres
   expect((await sample()).text).not.toContain(' Edit file');
   expect(sends).toEqual([]); expect(granted.size).toBe(0);
   await tick(); expect(resizes).toEqual([240, 480, 960]);
-  expect((await sample()).text).toContain(' Edit file\n .claude/plans/review.md');
+  expect((await sample()).text).toContain(` Edit file\n ${path.join('.claude','plans','review.md')}`);
   await tick(); await tick();
   expect(sends).toEqual(['1\r']);
   expect([...granted]).toEqual(['request:owned-edit']);
@@ -132,7 +132,7 @@ test('wrapped physical diff rows recover within the cap without treating logical
   expect((await screen.snapshot()).lines.some(line => line.wrapped)).toBe(true);
   expect((await sample()).text).not.toContain(' Edit file');
   await tick(); expect((await sample()).text).not.toContain(' Edit file');
-  await tick(); expect((await sample()).text).toContain(' Edit file\n .claude/plans/review.md');
+  await tick(); expect((await sample()).text).toContain(` Edit file\n ${path.join('.claude','plans','review.md')}`);
   await tick(); expect(sends).toEqual(['1\r']); expect(resizes).toEqual([240, 480]);
   Object.assign(native.permissionRequests[0]!, { result: 'completed', nativeToolId: 'wrapped-edit', nativeResultAtMs: 2 });
   await tick(); expect(resizes).toEqual([240, 480, 120]);

@@ -45,9 +45,9 @@ for(const kind of ['replacement','symlink'])test.skipIf(process.platform==='win3
 for(const kind of ['owned','legacy','unanswered','failed','foreign','changed','completed'])test(`captured pending Edit ${kind} keeps native acknowledgment and containment gates`,()=>{
   const s=state(),root=temp(),cwd=path.join(root,'gstack-autoplan-chain-S3FSi5'),config=path.join(root,'config');fs.mkdirSync(cwd);
   const oldRoot=captured.file.slice(0,captured.file.indexOf('/projects/'));
-  const file=path.join(s.env.GSTACK_HOME!,path.relative(oldRoot,captured.file));
+  const file=path.join(s.env.GSTACK_HOME!,path.posix.relative(oldRoot,captured.file));
   fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,captured.before);
-  const events=JSON.parse(JSON.stringify(captured.events).replaceAll(oldRoot,s.env.GSTACK_HOME!)) as NativePublicToolEvent[];
+  const events=JSON.parse(JSON.stringify(captured.events).replaceAll(JSON.stringify(captured.file).slice(1,-1),JSON.stringify(file).slice(1,-1))) as NativePublicToolEvent[];
   const current=events.at(-1)!,now=Date.now(),delta=now-1000-Date.parse(current.timestamp),started=captured.commandStartedAt+delta;
   for(const e of events)e.timestamp=new Date(Date.parse(e.timestamp)+delta).toISOString();
   fs.utimesSync(file,new Date(now-2000),new Date(now-2000));

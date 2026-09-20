@@ -959,6 +959,22 @@ export async function runGeneration(settings: GenerationOptions = {}): Promise<G
           existing = fs.readFileSync(outputPath, 'utf-8');
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+          // Windows reports ENOENT for a child of a regular file. Distinguish
+          // that filesystem error from a missing artifact without writing.
+          let parent = path.dirname(outputPath);
+          while (true) {
+            try {
+              if (!fs.statSync(parent).isDirectory()) {
+                throw Object.assign(new Error(`ENOTDIR: output ancestor is not a directory: ${parent}`, { cause: error }), { code: 'ENOTDIR' });
+              }
+              break;
+            } catch (ancestorError) {
+              if ((ancestorError as NodeJS.ErrnoException).code !== 'ENOENT') throw ancestorError;
+              const next = path.dirname(parent);
+              if (next === parent) throw error;
+              parent = next;
+            }
+          }
         }
         if (existing !== content) {
           diagnostics.push({ kind: 'stale', relativePath, host, message: `STALE: ${relativePath}` });

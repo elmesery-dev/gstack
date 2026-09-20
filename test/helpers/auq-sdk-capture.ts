@@ -356,7 +356,7 @@ ${fullPlanReview ? `- Save the evolving plan and review outputs to ${outFile} wi
   for (const c of result.toolCalls) {
     if (c.tool !== 'Read') continue;
     const fp = String(c.input?.file_path ?? '');
-    const m = fp.match(/sections\/([A-Za-z0-9._-]+\.md)/);
+    const m = fp.match(/(?:^|[\\/])sections[\\/]([A-Za-z0-9._-]+\.md)(?=$|[?#])/);
     if (m) readSections.add(m[1]);
   }
 

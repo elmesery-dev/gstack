@@ -370,6 +370,88 @@ test('an expired absolute deadline refuses before HTTP', async () => {
   await expectUnsubmitted(published);
 });
 
+test('a slow Windows identity query is terminated before its submission actor deadline', async () => {
+  const published = await board();
+  const queryPid = path.join(cwd, 'query.pid');
+  const queryOptions = path.join(cwd, 'query-options.json');
+  const preload = path.join(cwd, 'windows-query-adapter.ts');
+  const stateModule = path.resolve(import.meta.dir, '../design/src/daemon-state.ts');
+  // Exercise the actual picker and its child script. Substitute only the native
+  // CIM executable with a real stalled process whose PID we can prove is gone.
+  fs.writeFileSync(preload, `
+import { mock } from 'bun:test';
+import * as processApi from 'node:child_process';
+import * as fs from 'node:fs';
+const execute = processApi.execFileSync;
+mock.module('child_process', () => ({ ...processApi, execFileSync(command, args, options) {
+  if (command !== 'powershell.exe') return execute(command, args, options);
+  fs.writeFileSync(${JSON.stringify(queryOptions)}, JSON.stringify(options));
+  return execute(process.execPath, ['-e', ${JSON.stringify(`import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(queryPid)}, String(process.pid)); await Bun.sleep(10_000);`)}], options);
+} }));
+await import(${JSON.stringify(stateModule)});
+Object.defineProperty(process, 'platform', { value: 'win32' });
+`);
+  const actualSpawn = childProcess.spawnSync;
+  const spawned = spyOn(childProcess, 'spawnSync').mockImplementation((command, args, options) =>
+    actualSpawn(command, ['--preload', preload, ...args!], options as any));
+  let pid: number | undefined;
+  try {
+    expect(() => picker()(question(published.url))).toThrow('No matching owned design daemon');
+    expect(spawned).toHaveBeenCalledTimes(1);
+    const result = spawned.mock.results[0]!.value as childProcess.SpawnSyncReturns<string>;
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).not.toBe(0);
+    const options = JSON.parse(fs.readFileSync(queryOptions, 'utf8'));
+    expect(options.timeout).toBeGreaterThan(0);
+    expect(options.timeout).toBeLessThan(1900);
+    pid = Number(fs.readFileSync(queryPid, 'utf8'));
+    expect(pid).toBeGreaterThan(0);
+    expect(() => process.kill(pid!, 0)).toThrow();
+  } finally {
+    spawned.mockRestore();
+    if (pid === undefined && fs.existsSync(queryPid)) pid = Number(fs.readFileSync(queryPid, 'utf8'));
+    if (pid && Number.isSafeInteger(pid)) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+  }
+  await expectUnsubmitted(published);
+});
+
+test('a submission child past its deadline never starts a native identity query', async () => {
+  const published = await board();
+  const queried = path.join(cwd, 'query-started');
+  const preload = path.join(cwd, 'expired-query-adapter.ts');
+  const stateModule = path.resolve(import.meta.dir, '../design/src/daemon-state.ts');
+  fs.writeFileSync(preload, `
+import { mock } from 'bun:test';
+import * as fs from 'node:fs';
+mock.module('child_process', () => ({ execFileSync() {
+  fs.writeFileSync(${JSON.stringify(queried)}, 'unexpected native query');
+  throw new Error('native query must not start');
+} }));
+await import(${JSON.stringify(stateModule)});
+Object.defineProperty(process, 'platform', { value: 'win32' });
+const now = Date.now.bind(Date);
+Date.now = () => now() + 2000;
+`);
+  const actualSpawn = childProcess.spawnSync;
+  const spawned = spyOn(childProcess, 'spawnSync').mockImplementation((command, args, options) =>
+    actualSpawn(command, ['--preload', preload, ...args!], options as any));
+  try {
+    const started = Date.now();
+    expect(() => picker()(question(published.url))).toThrow('Design feedback deadline exhausted');
+    expect(spawned).toHaveBeenCalledTimes(1);
+    const options = spawned.mock.calls[0]![2] as childProcess.SpawnSyncOptionsWithStringEncoding;
+    expect(options.timeout).toBeLessThanOrEqual(2000);
+    const input = JSON.parse(options.input as string);
+    expect(input.deadlineAt).toBeLessThanOrEqual(started + 2000);
+    expect(fs.existsSync(queried)).toBe(false);
+    const result = spawned.mock.results[0]!.value as childProcess.SpawnSyncReturns<string>;
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+  } finally { spawned.mockRestore(); }
+  await expectUnsubmitted(published);
+});
+
 test.skipIf(process.platform === 'win32')('a stalled owned daemon obeys the remaining deadline and leaves no fetch child', async () => {
   const published = await board();
   const owned = readStateFile(stateFile)!;

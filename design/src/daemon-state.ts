@@ -153,10 +153,12 @@ export function isProcessAlive(pid: number): boolean {
 
 /**
  * Read the cmdline of a running process. Returns "" on any error.
- * Linux: /proc/<pid>/cmdline (NUL-separated argv). macOS: `ps -p PID -o command=`.
+ * Linux: /proc/<pid>/cmdline. macOS: ps. Windows: the native CIM process query.
  */
-export function readCmdline(pid: number): string {
-  if (!isProcessAlive(pid)) return "";
+export function readCmdline(pid: number, timeoutMs?: number): string {
+  if (!Number.isSafeInteger(pid) || !isProcessAlive(pid)) return "";
+  const timeout = timeoutMs === undefined ? undefined : Math.floor(timeoutMs);
+  if (timeout !== undefined && (!Number.isSafeInteger(timeout) || timeout <= 0)) return "";
   try {
     if (process.platform === "linux") {
       const raw = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8");
@@ -166,6 +168,18 @@ export function readCmdline(pid: number): string {
       return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
+        ...(timeout === undefined ? {} : { timeout }),
+      }).trim();
+    }
+    if (process.platform === "win32") {
+      return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); " +
+        `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction Stop).CommandLine`,
+      ], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: Math.min(2000, timeout ?? 2000),
+        windowsHide: true,
       }).trim();
     }
     return "";
@@ -181,9 +195,9 @@ export function readCmdline(pid: number): string {
  * where readCmdline is unsupported (or fails), this returns false — safer
  * to skip the signal than to risk killing the wrong process.
  */
-export function verifyIdentity(pid: number, marker: string): boolean {
+export function verifyIdentity(pid: number, marker: string, timeoutMs?: number): boolean {
   if (!marker) return false;
-  return readCmdline(pid).includes(marker);
+  return readCmdline(pid, timeoutMs).includes(marker);
 }
 
 /**

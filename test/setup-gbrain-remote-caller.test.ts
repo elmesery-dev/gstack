@@ -16,7 +16,7 @@ type Mode = 'success' | 'max-turns' | 'missing-registration' | 'missing-mode' | 
   | 'returned-api-error' | 'returned-execution-error' | 'returned-budget-error'
   | 'final-retain-error' | 'failed-retain-error' | 'cleanup-error' | 'close-error'
   | 'sdk-error' | 'deadline' | 'slow-setup' | 'rate-limit' | 'late' | 'owned-http';
-async function fixture(modes: Mode[], budget = 300_000) {
+async function fixture(modes: Mode[], budget = 300_000, pathApi = path) {
   const evidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'remote-caller-evidence-'));
   const callbacks: Array<() => Promise<void>> = [], finalizers: Array<() => Promise<void>> = [];
   const rows: any[] = [], calls: any[] = [], publicTrace: string[] = [], homes: string[] = [], observedInputs: any[] = [];
@@ -58,7 +58,7 @@ async function fixture(modes: Mode[], budget = 300_000) {
         sockets.push(socket); socket.on('error', () => {});
         await new Promise<void>(resolve => socket.once('connect', resolve));
       }
-      const bin = input.options.env.PATH.split(path.delimiter)[0];
+      const bin = input.options.env.PATH.split(pathApi.delimiter)[0];
       if (mode !== 'missing-registration') fs.writeFileSync(path.join(bin, 'claude-calls.log'), 'claude mcp add --transport http gbrain\n');
       fs.writeFileSync(path.join(input.options.cwd, 'CLAUDE.md'), mode === 'leaked-token' ? input.options.env.GBRAIN_MCP_TOKEN : mode === 'missing-mode' ? '# Test project\n' : '# Test project\nMode: remote-http\n');
       yield { type: 'assistant', session_id: 'synthetic', message: { id: 'final', role: 'assistant', content: [privateBlock,
@@ -101,7 +101,7 @@ async function fixture(modes: Mode[], budget = 300_000) {
       expect(timeout).toBe(budget + OFFICE_HOURS_BUN_GRACE_MS); callbacks.push(callback);
     }, expect, afterAll: (cb: () => Promise<void>) => finalizers.push(cb), query: fakeQuery, randomUUID,
     CAPTURE_MS: budget, describeE2ETier: () => (_name: string, cb: () => void) => cb(), e2eTierEnabled: () => true,
-    fs: fsAdapter, os, path, http: httpAdapter, runAgentSdkTest: (opts: any) => {
+    fs: fsAdapter, os, path: pathApi, http: httpAdapter, runAgentSdkTest: (opts: any) => {
       calls.push(opts); homes.push(opts.workingDirectory);
       expect(opts.maxTurns).toBe(25); expect(opts.maxRetries).toBe(3); expect(opts.signal).toBeInstanceOf(AbortSignal);
       expect(opts.allowedTools).toEqual(['Read', 'Grep', 'Glob', 'Bash', 'Write', 'Edit']);
@@ -163,6 +163,16 @@ test('remote caller preserves successful and max-turns-with-artifacts outcomes a
   expect(result.rows[1].exit_reason).toBe('error_max_turns');
   expect(result.homes[0]).not.toBe(result.homes[1]);
   expect(result.evidence.every(e => e.fixture.claudeCalls.includes('mcp add'))).toBe(true);
+});
+
+test('remote caller builds a Windows-delimited PATH that reaches its owned registration log', async () => {
+  const result = await fixture(['success'], 300_000, { ...path, delimiter: ';' });
+  expect(result.errors).toEqual([undefined]);
+  expect(result.rows[0].passed).toBe(true);
+  expect(result.evidence[0].fixture.claudeCalls).toContain('mcp add');
+  const entries = result.observedInputs[0].options.env.PATH.split(';');
+  expect(entries[0]).toContain('setup-gbrain-remote-bin-');
+  expect(entries[1]).toBe(path.join(path.resolve(import.meta.dir, '..'), 'bin'));
 });
 
 test('all original remote registration, token, persistence and public error assertions remain required', async () => {

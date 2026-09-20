@@ -205,7 +205,12 @@ export async function runCodexSkill(opts: {
   if (signal?.aborted || Date.now() >= deadline) return emptyResult(124);
 
   // Preflight and setup are part of the budget, not extra time before it.
-  const whichResult = Bun.spawnSync(['which', 'codex'], { timeout: Math.max(1, Math.min(30_000, deadline - Date.now())) });
+  // Bun's implicit child environment retains the launch-time PATH. Use the
+  // current environment so preflight and the actual spawn see the same shims.
+  const whichResult = Bun.spawnSync(['which', 'codex'], {
+    env: process.env,
+    timeout: Math.max(1, Math.min(30_000, deadline - Date.now())),
+  });
   if (signal?.aborted || Date.now() >= deadline) return emptyResult(124);
   if (whichResult.exitCode !== 0) {
     if (whichResult.signalCode) throw new CodexHarnessError('Codex binary lookup did not complete');

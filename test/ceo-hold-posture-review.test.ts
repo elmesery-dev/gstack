@@ -142,6 +142,23 @@ test.each(['/foreign/PLAN.md','../PLAN.md','./PLAN.md','file:///foreign/PLAN.md'
     expect(()=>buildCeoHoldPostureReview(f)).toThrow('native source context');
   });
 
+test.each(['C:\\owned\\PLAN.md', '\\\\server\\share\\PLAN.md'])(
+  'retained native Windows source identity is independent of the replay host: %s', sourcePath => {
+    const f=input(), previous=f.source.path; f.source.path=sourcePath;
+    for(const e of f.publicTools) {
+      if(e.input?.file_path===previous)e.input.file_path=sourcePath;
+      if(e.file?.filePath===previous)e.file.filePath=sourcePath;
+    }
+    for(const call of [mode(f),decision(f)]) {
+      const q=call.questions[0]!, answer=call.answers![q.question];
+      q.question=q.question.replace('PLAN.md',sourcePath); call.answers={[q.question]:answer};
+      event(f,call.toolUseId,'use').input={questions:clone(call.questions)};
+    }
+    expect(buildCeoHoldPostureReview(f)!.plan).toBe(f.source.content);
+    f.source.path=path.win32.dirname(sourcePath)+'\\nested\\..\\PLAN.md';
+    expect(()=>buildCeoHoldPostureReview(f)).toThrow('missing original source identity');
+  });
+
 test('pinned native omitted multiSelect default remains false without rewriting retained request bytes',()=>{
   const f=input();revise(f,q=>{delete q.multiSelect;});
   const original=clone(f);const review=buildCeoHoldPostureReview(f)!;

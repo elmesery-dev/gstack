@@ -39,6 +39,17 @@ for (const [name, tool, decorate] of [
   expect(() => requireCoverageFileReads(captured(tool, decorate as any), cwd, files)).not.toThrow();
 });
 
+for (const cwd of ['C:\\owned\\coverage', '\\\\server\\share\\coverage']) {
+  test(`native Windows Read paths preserve complete coverage evidence: ${cwd}`, () => {
+    const windowsFiles = files.map(file => ({ ...file, path: path.win32.join(cwd, path.posix.relative('/owned/coverage', file.path)) }));
+    const rows = captured('Read'); rows[0].cwd = cwd;
+    windowsFiles.forEach((file, i) => { rows[1 + i * 2].message.content[0].input.file_path = file.path; });
+    expect(() => requireCoverageFileReads(rows, cwd, windowsFiles)).not.toThrow();
+    rows[1].message.content[0].input.file_path = path.win32.join(cwd, '..', 'foreign', 'billing.ts');
+    expect(() => requireCoverageFileReads(rows, cwd, windowsFiles)).toThrow('no successful complete file read');
+  });
+}
+
 test('one shell result can contain both complete files without parsing command syntax', () => {
   const rows = captured();
   rows[1].message.content[0].input.command = 'sed -n 1,999p src/billing.ts; cat test/billing.test.ts';
@@ -232,10 +243,10 @@ mock.module(path.join(root, 'test/helpers/session-runner.ts'), () => ({ runSkill
     output: mode === 'diagram' ? 'No diagram.' : 'Coverage\\nsrc/billing.ts\\n├── processPayment: happy path [TESTED]\\n└── refundPayment [UNTESTED] [GAP]',
     model: 'recorded-model', firstResponseMs: 1, maxInterTurnMs: 1,
     costEstimate: { estimatedCost: 0.37, turnsUsed: 2, estimatedTokens: 100 },
-    toolCalls: paths.map(file => ({ tool: 'Bash', input: { command: 'cat -n '+file }, output: '' })),
+    toolCalls: paths.map((file,i) => ({ tool: 'Bash', input: { command: 'cat -n '+['src/billing.ts','test/billing.test.ts'][i] }, output: '' })),
     transcript: [{ type: 'system', subtype: 'init', cwd: opts.workingDirectory, ...native },
       ...contents.flatMap((content, i) => [{ type: 'assistant', ...native, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'read-'+i,
-        name: 'Bash', input: { command: 'cat -n '+paths[i] } }] } },
+        name: 'Bash', input: { command: 'cat -n '+['src/billing.ts','test/billing.test.ts'][i] } }] } },
       { type: 'user', ...native, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'read-'+i,
         content: mode === 'missing' && i === 1 ? '' : content.split('\\n').map((line,n) => String(n+1).padStart(6)+'\\t'+line).join('\\n'), is_error: false }] } }])],
   };

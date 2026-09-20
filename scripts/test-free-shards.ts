@@ -314,6 +314,18 @@ const KNOWN_WINDOWS_SAFE: Array<{ file: string; reason: string }> = [
     reason: 'invokes the runner via Bun argv; fake CLI and timeout descendant assertions cover native Windows taskkill',
   },
   {
+    file: 'test/setup-gbrain-remote-caller.test.ts',
+    // bin is an expected PATH component; the adapter injects the SDK boundary
+    // and never launches a shebang. Keep the native delimiter cases in CI.
+    reason: 'replays the registered SDK callback with fixture-only bin paths; covers native Windows PATH composition',
+  },
+  {
+    file: 'test/cso-windows-build-contract.test.ts',
+    // bin is a temporary staging directory. The adapter injects spawnSync;
+    // real PowerShell/native execution remains in cso-windows-launcher.
+    reason: 'replays the native build callbacks with an injected subprocess; bin paths are staging fixtures, not shebang launches',
+  },
+  {
     file: 'test/setup-windows-rerun-refresh.test.ts',
     // Trips the "spawns bin/ shebang script" pattern via path.join(..., 'bin',
     // 'tool.sh') fixture paths, but every spawn goes through test/helpers/bash-script.ts

@@ -214,7 +214,8 @@ describeE2E('/setup-gbrain Path 4 (Remote MCP) — happy path', () => {
           const binary = resolveClaudeBinary();
           const childEnv = {
             GSTACK_HOME: gstackHome, GBRAIN_MCP_TOKEN: SECRET_TOKEN,
-            PATH: `${fakeBinDir}:${path.join(path.resolve(import.meta.dir, '..'), 'bin')}:${process.env.PATH ?? '/usr/bin:/bin:/opt/homebrew/bin'}`,
+            PATH: [fakeBinDir, path.join(path.resolve(import.meta.dir, '..'), 'bin'),
+              process.env.PATH ?? ['/usr/bin', '/bin', '/opt/homebrew/bin'].join(path.delimiter)].join(path.delimiter),
           };
           const skillPath = path.join(gstackHome, 'setup-gbrain-SKILL.md');
           fs.writeFileSync(skillPath, buildSetupGbrainFixture(['brain-init.md', 'claude-md-persist.md']));

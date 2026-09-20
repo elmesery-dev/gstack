@@ -75,8 +75,12 @@ const state = readStateFile(input.stateFile);
 if (!fs.lstatSync(input.stateFile).isFile() || !state
   || !Number.isSafeInteger(state.pid) || state.pid <= 0
   || !Number.isSafeInteger(state.port) || state.port <= 0 || state.port > 65535
-  || new URL(input.url).port !== String(state.port)
-  || !verifyIdentity(state.pid, CMDLINE_MARKER)) throw new Error('No matching owned design daemon');
+  || new URL(input.url).port !== String(state.port)) throw new Error('No matching owned design daemon');
+// The parent has already clamped this deadline to the 2s submission budget.
+// Leave time to reap a timed-out native query before the parent kills us.
+const identityBudget = input.deadlineAt - Date.now() - 100;
+if (identityBudget <= 0) throw new Error('Design feedback deadline exhausted');
+if (!verifyIdentity(state.pid, CMDLINE_MARKER, identityBudget)) throw new Error('No matching owned design daemon');
 const remaining = input.deadlineAt - Date.now();
 if (remaining <= 0) throw new Error('Design feedback deadline exhausted');
 if (input.alreadySubmitted) {
