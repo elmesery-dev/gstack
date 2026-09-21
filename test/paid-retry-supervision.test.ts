@@ -152,9 +152,9 @@ test('quality, ordinary tiers and the six existing finding registrations are unc
 });
 
 const cliOptions = (step: { run: string; env?: Record<string, string> }) => {
-  const prefix = 'bun run scripts/test-paid-shards.ts ';
-  expect(step.run).toContain(prefix);
-  const args = step.run.slice(step.run.indexOf(prefix) + prefix.length)
+  const prefix = /\bbun(?: --no-install)? run scripts\/test-paid-shards\.ts /.exec(step.run);
+  expect(prefix).not.toBeNull();
+  const args = step.run.slice(prefix!.index + prefix![0].length)
     .replace(/\$\{\{\s*matrix\.slice\s*\}\}/g, '1').trim().split(/\s+/);
   return parseCliOptions(args, step.env ?? {});
 };
