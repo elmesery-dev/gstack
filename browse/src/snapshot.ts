@@ -24,6 +24,9 @@ import { TEMP_DIR, isPathWithin } from './platform';
 import { escapeEnvelopeSentinels } from './content-security';
 import { stripLoneSurrogates } from './sanitize';
 import { guardScreenshotPath } from './screenshot-size-guard';
+import { SNAPSHOT_FLAGS, type SnapshotOptions } from './snapshot-flags';
+
+export { SNAPSHOT_FLAGS } from './snapshot-flags';
 
 // Roles considered "interactive" for the -i flag
 const INTERACTIVE_ROLES = new Set([
@@ -32,44 +35,6 @@ const INTERACTIVE_ROLES = new Set([
   'option', 'searchbox', 'slider', 'spinbutton', 'switch', 'tab',
   'treeitem',
 ]);
-
-interface SnapshotOptions {
-  interactive?: boolean;       // -i: only interactive elements
-  compact?: boolean;           // -c: remove empty structural elements
-  depth?: number;              // -d N: limit tree depth
-  selector?: string;           // -s SEL: scope to CSS selector
-  diff?: boolean;              // -D / --diff: diff against last snapshot
-  annotate?: boolean;          // -a / --annotate: annotated screenshot
-  outputPath?: string;         // -o / --output: path for annotated screenshot
-  cursorInteractive?: boolean; // -C / --cursor-interactive: scan cursor:pointer etc.
-  heatmap?: string;            // -H / --heatmap: JSON color map for ref overlays
-}
-
-/**
- * Snapshot flag metadata — single source of truth for CLI parsing and doc generation.
- *
- * Imported by:
- *   - gen-skill-docs.ts (generates {{SNAPSHOT_FLAGS}} tables)
- *   - skill-parser.ts (validates flags in SKILL.md examples)
- */
-export const SNAPSHOT_FLAGS: Array<{
-  short: string;
-  long: string;
-  description: string;
-  takesValue?: boolean;
-  valueHint?: string;
-  optionKey: keyof SnapshotOptions;
-}> = [
-  { short: '-i', long: '--interactive', description: 'Interactive elements only (buttons, links, inputs) with @e refs. Also auto-enables cursor-interactive scan (-C) to capture dropdowns and popovers.', optionKey: 'interactive' },
-  { short: '-c', long: '--compact', description: 'Compact (no empty structural nodes)', optionKey: 'compact' },
-  { short: '-d', long: '--depth', description: 'Limit tree depth (0 = root only, default: unlimited)', takesValue: true, valueHint: '<N>', optionKey: 'depth' },
-  { short: '-s', long: '--selector', description: 'Scope to CSS selector', takesValue: true, valueHint: '<sel>', optionKey: 'selector' },
-  { short: '-D', long: '--diff', description: 'Unified diff against previous snapshot (first call stores baseline)', optionKey: 'diff' },
-  { short: '-a', long: '--annotate', description: 'Annotated screenshot with red overlay boxes and ref labels', optionKey: 'annotate' },
-  { short: '-o', long: '--output', description: 'Output path for annotated screenshot (default: <temp>/browse-annotated.png)', takesValue: true, valueHint: '<path>', optionKey: 'outputPath' },
-  { short: '-C', long: '--cursor-interactive', description: 'Cursor-interactive elements (@c refs — divs with pointer, onclick). Auto-enabled when -i is used.', optionKey: 'cursorInteractive' },
-  { short: '-H', long: '--heatmap', description: 'Color-coded overlay screenshot from JSON map: \'{"@e1":"green","@e3":"red"}\'. Valid colors: green, yellow, red, blue, orange, gray.', takesValue: true, valueHint: '<json>', optionKey: 'heatmap' },
-];
 
 interface ParsedNode {
   indent: number;

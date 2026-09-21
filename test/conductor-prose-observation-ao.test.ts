@@ -23,6 +23,7 @@ async function observe(frames:string[],verdict:'waiting'|'working',required?:boo
     submitPlanSeed: async () => {}, PlanSeedTimeout: class extends Error {},
     isRejectedSlashCommand:predicates.isRejectedSlashCommand,
     isProseAUQVisible:predicates.isProseAUQVisible,isPlanReadyVisible:predicates.isPlanReadyVisible,
+    isUnknownSlashCommandVisible:predicates.isUnknownSlashCommandVisible,
     isScopeGateQuestionVisible:predicates.isScopeGateQuestionVisible,isScopeGateAutoSelectVisible:predicates.isScopeGateAutoSelectVisible,
     classifyVisible:predicates.classifyVisible,extractPlanFilePath:predicates.extractPlanFilePath,findNativeAutoDecision:()=>null,
     judgePtyState:()=>{judged++;return {state:verdict,reasoning:'synthetic fixed verdict'};},

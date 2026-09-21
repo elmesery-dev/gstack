@@ -139,6 +139,7 @@ async function mockedObservation(frames: string[], verdict: 'waiting' | 'working
     submitPlanSeed: async () => {}, PlanSeedTimeout: class extends Error {},
     isRejectedSlashCommand: predicates.isRejectedSlashCommand,
     isProseAUQVisible: predicates.isProseAUQVisible, isPlanReadyVisible: predicates.isPlanReadyVisible,
+    isUnknownSlashCommandVisible: predicates.isUnknownSlashCommandVisible,
     isScopeGateQuestionVisible: predicates.isScopeGateQuestionVisible,
     isScopeGateAutoSelectVisible: predicates.isScopeGateAutoSelectVisible,
     classifyVisible, extractPlanFilePath, findNativeAutoDecision: () => null,

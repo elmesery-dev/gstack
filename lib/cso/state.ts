@@ -111,7 +111,9 @@ export function recoverAtomicNoReplaceJson(target:string,options:AtomicNoReplace
   if(targetStat.nlink!==2)throw new CsoError('UNSAFE_PATH',`${options.label} has an unrecognized hard-link count`);
   const canonical=recoveryJson(target,2,options,targetStat),matches=atomicTempCandidates(target).flatMap(candidate=>{try{const observed=fs.lstatSync(candidate.path);return observed.dev===canonical.identity.dev&&observed.ino===canonical.identity.ino?[{...candidate,observed}]:[];}catch{return[];}});
   if(matches.length!==1){
-    let settled:fs.Stats|undefined;try{settled=fs.lstatSync(target);}catch{}
+    let settled:fs.Stats|undefined;try{settled=fs.lstatSync(target);}catch(error:any){
+      if(matches.length===0&&error?.code==='ENOENT')throw new AtomicPublicationTransition(`${options.label} was removed during candidate enumeration`);
+    }
     if(settled&&publicationLinkTransition(targetStat,settled,2,options))throw new AtomicPublicationTransition(`${options.label} interrupted publication settled during candidate enumeration`);
     throw new CsoError('UNSAFE_PATH',`${options.label} hard link does not match one recognized interrupted publication`);
   }

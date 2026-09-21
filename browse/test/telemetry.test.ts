@@ -33,8 +33,6 @@ afterAll(async () => {
 });
 
 async function readEvents(): Promise<any[]> {
-  // Wait briefly for fire-and-forget appends to flush.
-  await new Promise((r) => setTimeout(r, 30));
   try {
     const raw = await fs.readFile(TELEMETRY_FILE, 'utf8');
     return raw.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -47,7 +45,7 @@ describe('telemetry: signals fire to ~/.gstack/analytics/browse-telemetry.jsonl'
   it('logTelemetry writes a JSONL line with ts injected', async () => {
     const { logTelemetry, _resetTelemetryCache } = await import('../src/telemetry');
     _resetTelemetryCache();
-    logTelemetry({ event: 'domain_skill_saved', host: 'test.com', scope: 'project', state: 'quarantined', bytes: 42 });
+    await logTelemetry({ event: 'domain_skill_saved', host: 'test.com', scope: 'project', state: 'quarantined', bytes: 42 });
     const events = await readEvents();
     expect(events).toHaveLength(1);
     expect(events[0].event).toBe('domain_skill_saved');
@@ -60,7 +58,7 @@ describe('telemetry: signals fire to ~/.gstack/analytics/browse-telemetry.jsonl'
     process.env.GSTACK_TELEMETRY_OFF = '1';
     const { logTelemetry, _resetTelemetryCache } = await import('../src/telemetry');
     _resetTelemetryCache();
-    logTelemetry({ event: 'cdp_method_called', domain: 'X', method: 'y' });
+    await logTelemetry({ event: 'cdp_method_called', domain: 'X', method: 'y' });
     const events = await readEvents();
     expect(events).toHaveLength(0);
     process.env.GSTACK_TELEMETRY_OFF = '0';
@@ -72,6 +70,8 @@ describe('telemetry: signals fire to ~/.gstack/analytics/browse-telemetry.jsonl'
     // logTelemetry on a missing directory doesn't throw.
     const { logTelemetry, _resetTelemetryCache } = await import('../src/telemetry');
     _resetTelemetryCache();
-    expect(() => logTelemetry({ event: 'noop_test' })).not.toThrow();
+    let completed: Promise<void> | undefined;
+    expect(() => { completed = logTelemetry({ event: 'noop_test' }); }).not.toThrow();
+    await completed;
   });
 });

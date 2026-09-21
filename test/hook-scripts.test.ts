@@ -287,6 +287,23 @@ describe('check-careful.sh', () => {
     });
   });
 
+  test.each([
+    ['rm -rf node_modules\nrm -rf /', 'recursive delete'],
+    ['rm${IFS}-rf${IFS}/', 'obfuscation'],
+    ['psql -c "DROP DATABASE production"', 'SQL DROP'],
+    ['psql -c "TRUNCATE users"', 'SQL TRUNCATE'],
+    ['git push --force origin feature', 'force-push'],
+    ['git reset --hard', 'reset --hard'],
+    ['git restore .', 'uncommitted changes'],
+    ['kubectl delete pod app', 'kubectl delete'],
+    ['docker system prune', 'Docker'],
+  ])('keeps %s visible before large multiline content', (command, reason) => {
+    const { exitCode, output } = runHook(CAREFUL_SCRIPT, carefulInput(`${command}\n# ${'x'.repeat(100_000)}`));
+    expect(exitCode).toBe(0);
+    expect(output.hookSpecificOutput?.permissionDecision).toBe('ask');
+    expect(output.hookSpecificOutput?.permissionDecisionReason).toContain(reason);
+  });
+
   // --- Shell obfuscation ---
 
   describe('shell obfuscation', () => {
@@ -675,6 +692,16 @@ describe('check-careful.sh', () => {
     test('a project pattern adds an ask rule', () => {
       withPatternFile('# infra safety\nterraform\\s+destroy\n', (gstackHome) => {
         const { exitCode, output } = runHook(CAREFUL_SCRIPT, carefulInput('terraform destroy -auto-approve'), { GSTACK_HOME: gstackHome });
+        expect(exitCode).toBe(0);
+        expect(output.hookSpecificOutput?.permissionDecision).toBe('ask');
+        expect(output.hookSpecificOutput?.permissionDecisionReason).toContain('Project rule');
+      });
+    });
+
+    test('a project pattern matches before large multiline content', () => {
+      withPatternFile('terraform\\s+destroy\n', (gstackHome) => {
+        const { exitCode, output } = runHook(CAREFUL_SCRIPT,
+          carefulInput(`terraform destroy\n# ${'x'.repeat(100_000)}`), { GSTACK_HOME: gstackHome });
         expect(exitCode).toBe(0);
         expect(output.hookSpecificOutput?.permissionDecision).toBe('ask');
         expect(output.hookSpecificOutput?.permissionDecisionReason).toContain('Project rule');

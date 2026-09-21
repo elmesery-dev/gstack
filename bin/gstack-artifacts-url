@@ -103,8 +103,8 @@ parse_url() {
 }
 
 parsed=$(parse_url "$url")
-host=$(echo "$parsed" | head -1)
-owner_repo=$(echo "$parsed" | tail -1)
+host="${parsed%%$'\n'*}"
+owner_repo="${parsed##*$'\n'}"
 
 case "$mode" in
   to)

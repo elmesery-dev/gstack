@@ -361,6 +361,7 @@ export const E2E_TOUCHFILES: Record<string, string[]> = {
     'test/helpers/plan-count-fixture.ts', 'test/plan-count-fixture.test.ts',
     'test/plan-count-prerequisite-n.test.ts', 'test/fixtures/ceo-prerequisite-n-call.json', 'test/fixtures/eng-prerequisite-77.json',
     'test/helpers/plan-count-transcript.ts', 'test/plan-count-cross-cwd-ancestry.test.ts', 'test/fixtures/plan-count-cross-cwd-ancestry-0bcd.json', 'test/plan-count-session-cwd.test.ts',
+    'test/helpers/design-ui-scope.ts', 'test/design-ui-scope.test.ts', 'test/fixtures/plan-design-ui-scope.json',
     "test/plan-scope-recovery-av.test.ts",
     "test/fixtures/plan-scope-recovery-av.json",
     "test/fixtures/design-scope-checkpoint-at.json",'plan-design-review/**', 'test/fixtures/plans/ui-heavy-feature.md', 'test/helpers/claude-pty-runner.ts', 'test/plan-count-design-ui-recovery.test.ts', 'test/fixtures/design-ui-boxed-question.json', 'test/helpers/hermetic-skill-runtime.ts', 'test/hermetic-skill-runtime.test.ts', 'test/helpers/pty-trust-dialog.ts', 'test/pty-trust-dialog.test.ts', 'test/skill-e2e-plan-design-with-ui.test.ts', 'test/plan-count-truncated-border.test.ts', 'test/fixtures/eng-d2-truncated-border-0bcd.json', 'test/plan-count-truncated-question.test.ts', 'test/plan-count-clipped-elision.test.ts', 'test/fixtures/eng-d1-clipped-elision-1579.json', 'test/fixtures/eng-d2-planning-prelude-4d.json', 'test/fixtures/ceo-approach-z-call.json', 'test/fixtures/ceo-approach-z-screen.txt',

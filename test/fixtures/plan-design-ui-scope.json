@@ -1,0 +1,540 @@
+{
+  "source": {
+    "commit": "980abc21",
+    "workflowRun": 35533668862,
+    "attempt": 2,
+    "retainedRange": "focus through first design issue"
+  },
+  "calls": [
+    {
+      "sessionId": "75bfb2cc-901f-445b-84dc-6b1c483fe9eb",
+      "toolUseId": "toolu_01Sh1T4EU8cmj9rokTaS8pKR",
+      "questions": [
+        {
+          "question": "D2 — Review all 7 design dimensions, or focus?\nProject/branch/task: `main`, reviewing PLAN.md (User Dashboard Page).\nELI10: I've rated the plan 4/10 on design completeness. The biggest gaps are: no content hierarchy (which panel wins after login?), undesigned first-time-user empty state (a new user lands on three empty boxes), and no tokens (fonts, spacing, colors are all TBD with no DESIGN.md). Next I'll generate visual mockups with the gstack designer, then walk the 7 review passes (Interaction States, AI Slop Risk, Information Architecture, User Journey, Responsive, Accessibility, Specificity), asking you a decision per gap.\nStakes if we pick wrong: a narrow focus is faster but leaves the skipped dimensions at their current ~3/10 and the implementer guesses; the full pass takes longer but every gap gets an explicit decision.\nRecommendation: A because with no DESIGN.md and a greenfield page, every dimension is under-specified; skipping any leaves guesswork in the plan.\nCompleteness: A=10/10, B=6/10, C=4/10\nNet: full rigor now vs. speed now and rework later.",
+          "header": "Focus",
+          "multiSelect": false,
+          "options": [
+            {
+              "label": "All 7 dimensions (recommended)",
+              "description": "✅ Every gap gets a decision; the plan becomes buildable without designer guesses (human: ~half a day / CC: ~20 min). ✅ Catches cross-cutting issues like partial failure and toast/mobile collisions. ❌ Longer session with more decision prompts to answer."
+            },
+            {
+              "label": "Hierarchy + states + journey only",
+              "description": "✅ Hits the three highest-impact gaps: what's first, empty/error states, post-login arc. ✅ Roughly half the questions of the full pass. ❌ Responsive, a11y, and token specificity stay unspecified and get improvised in code."
+            },
+            {
+              "label": "Mockups + hierarchy only",
+              "description": "✅ Fastest route to a visual direction you can react to. ✅ Good if a DESIGN.md is coming separately via /design-consultation. ❌ States, journey, a11y, and toast/modal patterns remain at 3/10; implementer decides them."
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "failed": false,
+      "answers": {
+        "D2 — Review all 7 design dimensions, or focus?\nProject/branch/task: `main`, reviewing PLAN.md (User Dashboard Page).\nELI10: I've rated the plan 4/10 on design completeness. The biggest gaps are: no content hierarchy (which panel wins after login?), undesigned first-time-user empty state (a new user lands on three empty boxes), and no tokens (fonts, spacing, colors are all TBD with no DESIGN.md). Next I'll generate visual mockups with the gstack designer, then walk the 7 review passes (Interaction States, AI Slop Risk, Information Architecture, User Journey, Responsive, Accessibility, Specificity), asking you a decision per gap.\nStakes if we pick wrong: a narrow focus is faster but leaves the skipped dimensions at their current ~3/10 and the implementer guesses; the full pass takes longer but every gap gets an explicit decision.\nRecommendation: A because with no DESIGN.md and a greenfield page, every dimension is under-specified; skipping any leaves guesswork in the plan.\nCompleteness: A=10/10, B=6/10, C=4/10\nNet: full rigor now vs. speed now and rework later.": "All 7 dimensions (recommended)"
+      },
+      "unansweredQuestionIndices": [],
+      "answeredAt": "2026-09-20T20:04:52.389Z"
+    },
+    {
+      "sessionId": "75bfb2cc-901f-445b-84dc-6b1c483fe9eb",
+      "toolUseId": "toolu_017khLgsWGurNVwJXUyRcR3G",
+      "questions": [
+        {
+          "question": "D3 — Run outside design voices before the detailed review?\nProject/branch/task: `main`, reviewing PLAN.md (User Dashboard Page), 7-dimension pass approved.\nELI10: Before I do my own 7-pass review, I can pull in two independent opinions: Codex (OpenAI's model) checks the plan against a set of design hard rules and litmus checks (brand clarity, one visual anchor, cards earning their existence, etc.), and a fresh Claude subagent with no context does a completeness review. Where they agree with me, findings get pre-loaded; where they disagree, you see both sides.\nStakes if we pick wrong: skipping means single-model blind spots go unchallenged; running costs a few minutes and, if Codex isn't installed or authed, only the Claude subagent contributes (tagged single-model).\nRecommendation: A because this plan is greenfield with no DESIGN.md, so independent eyes on hierarchy and slop risk are cheap insurance.\nNote: options differ in kind, not coverage — no completeness score.\nNet: a few minutes of wall time for cross-model disagreement you can actually see.",
+          "header": "Outside voices",
+          "multiSelect": false,
+          "options": [
+            {
+              "label": "Yes, run outside voices (recommended)",
+              "description": "✅ Codex litmus scorecard plus an independent Claude completeness review, synthesized into the passes. ✅ Disagreements surface explicitly instead of hiding in one model's taste. ❌ Adds a few minutes; Codex may be unavailable in this environment."
+            },
+            {
+              "label": "No, proceed without",
+              "description": "✅ Straight into the 7-pass review, fastest path to decisions. ✅ No dependency on Codex install or auth state. ❌ Single-model review; slop and hierarchy calls rest on one opinion."
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "failed": false,
+      "answers": {
+        "D3 — Run outside design voices before the detailed review?\nProject/branch/task: `main`, reviewing PLAN.md (User Dashboard Page), 7-dimension pass approved.\nELI10: Before I do my own 7-pass review, I can pull in two independent opinions: Codex (OpenAI's model) checks the plan against a set of design hard rules and litmus checks (brand clarity, one visual anchor, cards earning their existence, etc.), and a fresh Claude subagent with no context does a completeness review. Where they agree with me, findings get pre-loaded; where they disagree, you see both sides.\nStakes if we pick wrong: skipping means single-model blind spots go unchallenged; running costs a few minutes and, if Codex isn't installed or authed, only the Claude subagent contributes (tagged single-model).\nRecommendation: A because this plan is greenfield with no DESIGN.md, so independent eyes on hierarchy and slop risk are cheap insurance.\nNote: options differ in kind, not coverage — no completeness score.\nNet: a few minutes of wall time for cross-model disagreement you can actually see.": "No, proceed without"
+      },
+      "unansweredQuestionIndices": [],
+      "answeredAt": "2026-09-20T20:05:46.775Z"
+    },
+    {
+      "sessionId": "75bfb2cc-901f-445b-84dc-6b1c483fe9eb",
+      "toolUseId": "toolu_01EtwDxVuEn7oDvi26nmncsC",
+      "questions": [
+        {
+          "question": "D4 — Enable cross-project learnings search?\nProject/branch/task: `main`, reviewing PLAN.md; about to start Pass 1 (Information Architecture).\nELI10: gstack saves small \"learnings\" (pitfalls, patterns) from each session. It can search learnings from your other projects on this machine to find ones that apply here. This stays local; nothing leaves your machine. Useful for solo developers; skip if you work across client codebases where cross-contamination is a concern.\nStakes if we pick wrong: enabling on a multi-client machine could surface one client's patterns while working on another; disabling just means each project learns on its own. Both are one-line config flips.\nRecommendation: A because this is a one-time local setting and the fixture repo has no learnings yet, so the wider net is the only way to find any.\nNote: options differ in kind, not coverage — no completeness score.\nNet: broader recall vs. strict per-project isolation.",
+          "header": "Learnings",
+          "multiSelect": false,
+          "options": [
+            {
+              "label": "Enable cross-project (recommended)",
+              "description": "✅ Past pitfalls from any project on this machine surface in reviews here. ✅ Fully local; a single gstack-config flag you can flip back anytime. ❌ On shared or multi-client machines, patterns from unrelated codebases may show up."
+            },
+            {
+              "label": "Keep project-scoped only",
+              "description": "✅ Strict isolation; nothing from other codebases influences this review. ✅ Safer default when you work on multiple client projects. ❌ This fresh repo has zero learnings, so the search returns nothing for now."
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "failed": false,
+      "answers": {
+        "D4 — Enable cross-project learnings search?\nProject/branch/task: `main`, reviewing PLAN.md; about to start Pass 1 (Information Architecture).\nELI10: gstack saves small \"learnings\" (pitfalls, patterns) from each session. It can search learnings from your other projects on this machine to find ones that apply here. This stays local; nothing leaves your machine. Useful for solo developers; skip if you work across client codebases where cross-contamination is a concern.\nStakes if we pick wrong: enabling on a multi-client machine could surface one client's patterns while working on another; disabling just means each project learns on its own. Both are one-line config flips.\nRecommendation: A because this is a one-time local setting and the fixture repo has no learnings yet, so the wider net is the only way to find any.\nNote: options differ in kind, not coverage — no completeness score.\nNet: broader recall vs. strict per-project isolation.": "Enable cross-project (recommended)"
+      },
+      "unansweredQuestionIndices": [],
+      "answeredAt": "2026-09-20T20:06:16.432Z"
+    },
+    {
+      "sessionId": "75bfb2cc-901f-445b-84dc-6b1c483fe9eb",
+      "toolUseId": "toolu_01PK7hitKrKsZrY1izfnAkrs",
+      "questions": [
+        {
+          "question": "D5 — Issue 1: Which panel is primary, and what's the order?\nProject/branch/task: `main`, PLAN.md User Dashboard, Pass 1 Information Architecture (3/10).\nELI10: The plan lists three panels with no order. Whatever the implementer puts top-left on desktop and first in the mobile stack becomes the thing every user sees first after login. Right now that's an accident. Quick Actions is the only panel that always has content (actions exist even with zero data), so it's the safest thing to anchor above the fold on a phone.\nStakes if we pick wrong: a first-time user's first screen after login is either an empty feed or an empty inbox, and a returning user hunts for the button they came to press.\nRecommendation: 1A because actions are never empty, activity is the scan target, and notifications are context; this also matches conventional dashboard wayfinding.\nCompleteness: 1A=10/10, 1B=8/10, 1C=8/10 (all define an order; A also handles the empty-first-login case)\nNet: always-useful anchor at top vs. feed-first convention vs. inbox-first urgency.",
+          "header": "Hierarchy",
+          "multiSelect": false,
+          "options": [
+            {
+              "label": "1A: Actions row → Activity primary → Notifications side (recommended)",
+              "description": "✅ Quick Actions as a compact row under the greeting is never empty, so the fold is never blank on first login. ✅ Activity as the wide primary column, Notifications as a narrower side column on lg, stacked second on sm/md. ❌ Unread notifications sit below actions and to the side; urgency relies on the badge count."
+            },
+            {
+              "label": "1B: Activity primary, Notifications side, Actions in side rail",
+              "description": "✅ Classic feed-first dashboard; returning users get scannable content immediately. ✅ Actions and notifications share a side rail, keeping the main column pure. ❌ First-time user's top-left region is an empty feed; actions buried in the rail on mobile."
+            },
+            {
+              "label": "1C: Notifications primary, Activity secondary, Actions row",
+              "description": "✅ Unread items are the most actionable content, so they lead. ✅ Read-all flow becomes the hero interaction. ❌ A quiet user (zero unread) sees an empty inbox first; activity feed loses its role as the scan target."
+            }
+          ]
+        }
+      ],
+      "answered": true,
+      "failed": false,
+      "answers": {
+        "D5 — Issue 1: Which panel is primary, and what's the order?\nProject/branch/task: `main`, PLAN.md User Dashboard, Pass 1 Information Architecture (3/10).\nELI10: The plan lists three panels with no order. Whatever the implementer puts top-left on desktop and first in the mobile stack becomes the thing every user sees first after login. Right now that's an accident. Quick Actions is the only panel that always has content (actions exist even with zero data), so it's the safest thing to anchor above the fold on a phone.\nStakes if we pick wrong: a first-time user's first screen after login is either an empty feed or an empty inbox, and a returning user hunts for the button they came to press.\nRecommendation: 1A because actions are never empty, activity is the scan target, and notifications are context; this also matches conventional dashboard wayfinding.\nCompleteness: 1A=10/10, 1B=8/10, 1C=8/10 (all define an order; A also handles the empty-first-login case)\nNet: always-useful anchor at top vs. feed-first convention vs. inbox-first urgency.": "1A: Actions row → Activity primary → Notifications side (recommended)"
+      },
+      "unansweredQuestionIndices": [],
+      "answeredAt": "2026-09-20T20:06:45.808Z"
+    }
+  ],
+  "additionalCaptures": [
+    {
+      "source": {
+        "commit": "f1928bee",
+        "workflowRun": 35535549200,
+        "attempt": 2,
+        "retainedRange": "outside voices through tenth design issue (available job-log tail)"
+      },
+      "calls": [
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01VKZeF87WqJiAedWw2JiLFF",
+          "questions": [
+            {
+              "question": "D3 — Run outside design voices before the detailed review?\nProject/branch/task: main, reviewing PLAN.md (User Dashboard Page); mockups unavailable (no OpenAI key), so this is the remaining independent-perspective step.\nELI10: Before I do the 7-pass review myself, I can pull in two independent reviewers: Codex (OpenAI's CLI) grades the plan against a set of design hard rules and litmus checks, and a fresh Claude subagent that has seen none of my notes does an independent completeness review. Their findings get folded into the passes so I'm not the only opinion in the room.\nStakes if we pick wrong: skip it and the review is single-voice; run it and it costs a couple of minutes, and Codex may be unavailable in this environment (then only the Claude subagent runs, tagged single-model).\nRecommendation: A because greenfield UI with no design system benefits most from a second and third set of eyes on hierarchy and missing states.\nNote: options differ in kind, not coverage — no completeness score.",
+              "header": "Outside voices",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "Yes, run outside voices (recommended)",
+                  "description": "✅ Independent hard-rejection and litmus checks catch generic-SaaS-card-grid drift before code exists\n✅ Findings pre-load into the 7 passes so we skip discovery and go straight to fixes (human: ~1 hr / CC: ~3 min)\n❌ Codex may be missing or unauthenticated here; then coverage is Claude-subagent only"
+                },
+                {
+                  "label": "No, proceed without",
+                  "description": "✅ Faster path straight into the 7 design passes and per-issue approvals\n✅ No dependency on external CLI availability\n❌ Single reviewer; blind spots in my own taste go unchallenged"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "D3 — Run outside design voices before the detailed review?\nProject/branch/task: main, reviewing PLAN.md (User Dashboard Page); mockups unavailable (no OpenAI key), so this is the remaining independent-perspective step.\nELI10: Before I do the 7-pass review myself, I can pull in two independent reviewers: Codex (OpenAI's CLI) grades the plan against a set of design hard rules and litmus checks, and a fresh Claude subagent that has seen none of my notes does an independent completeness review. Their findings get folded into the passes so I'm not the only opinion in the room.\nStakes if we pick wrong: skip it and the review is single-voice; run it and it costs a couple of minutes, and Codex may be unavailable in this environment (then only the Claude subagent runs, tagged single-model).\nRecommendation: A because greenfield UI with no design system benefits most from a second and third set of eyes on hierarchy and missing states.\nNote: options differ in kind, not coverage — no completeness score.": "No, proceed without"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:40:29.058Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01FdQL1KN9LerFiMj3MnrnnY",
+          "questions": [
+            {
+              "question": "D4 — Let gstack search learnings from your other projects on this machine?\nProject/branch/task: main, PLAN.md design review; one-time gstack setting before the review passes.\nELI10: gstack saves small lessons per project (pitfalls, patterns, preferences). It can also look across your other projects on this machine to spot patterns that apply here. Everything stays local; no data leaves the machine. Good for solo developers; skip if you work on multiple client codebases where cross-contamination is a concern.\nStakes if we pick wrong: enable on a multi-client machine and one client's patterns may color another's review; disable and each project learns from scratch.\nRecommendation: A because this is a fixture repo with zero learnings so far, and cross-project recall is the only way it gets smarter across sessions.\nNote: options differ in kind, not coverage — no completeness score.",
+              "header": "Learnings",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "Enable cross-project (recommended)",
+                  "description": "✅ Design pitfalls learned elsewhere (toast a11y, modal focus) surface here automatically\n✅ Stays on your machine; one config flag you can flip back any time\n❌ Patterns from unrelated codebases may show up where they don't apply"
+                },
+                {
+                  "label": "Keep project-scoped only",
+                  "description": "✅ Strict isolation between codebases; nothing bleeds across clients\n✅ Learnings still accumulate for this project on its own\n❌ Every new project starts cold, including this one right now"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "D4 — Let gstack search learnings from your other projects on this machine?\nProject/branch/task: main, PLAN.md design review; one-time gstack setting before the review passes.\nELI10: gstack saves small lessons per project (pitfalls, patterns, preferences). It can also look across your other projects on this machine to spot patterns that apply here. Everything stays local; no data leaves the machine. Good for solo developers; skip if you work on multiple client codebases where cross-contamination is a concern.\nStakes if we pick wrong: enable on a multi-client machine and one client's patterns may color another's review; disable and each project learns from scratch.\nRecommendation: A because this is a fixture repo with zero learnings so far, and cross-project recall is the only way it gets smarter across sessions.\nNote: options differ in kind, not coverage — no completeness score.": "Enable cross-project (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:41:00.666Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_017YabtVfvEXTzC6wAuVDVin",
+          "questions": [
+            {
+              "question": "Issue 1 — Which panel is primary on the dashboard, and what is the reading order?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 1 Information Architecture, currently 3/10.\nELI10: Three panels are listed as equals. A user who just logged in has one question: \"what happened while I was away?\" One panel has to own the first glance, and the other two have to visibly step back. This decision drives layout at every breakpoint, what goes above the fold on a phone, and where the loading skeleton draws attention. Principle: hierarchy as service; if everything competes, nothing wins.\nStakes if we pick wrong: on a 375px phone the user scrolls past two panels of stuff they didn't ask for before seeing the one that matters; the page reads as a widget mosaic.\nRecommendation: 1A because notifications are the \"while you were away\" answer, activity is the browse-able context, and quick actions are a launcher that should be reachable, not read.\nNote: options differ in kind, not coverage — no completeness score.",
+              "header": "Issue 1",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "1A: Notifications first (recommended)",
+                  "description": "✅ Order: Notifications (unread-first) > Activity feed > Quick Actions as a compact action bar; answers \"what changed\" in the first glance\n✅ Unread count becomes the page's single visual anchor, satisfying the one-anchor litmus\n❌ Users with zero notifications see the primary slot empty on every visit; the empty state must carry the page (handled in Pass 2)"
+                },
+                {
+                  "label": "1B: Activity feed first",
+                  "description": "✅ Activity is always populated for active accounts, so the primary slot rarely reads empty\n✅ Familiar feed pattern; users know how to scroll it\n❌ Buries unread notifications below a feed the user may not care about today; the actionable thing loses to the ambient thing"
+                },
+                {
+                  "label": "1C: Quick Actions first (launcher)",
+                  "description": "✅ Treats the dashboard as a launchpad: the user came to do something, so put the doing first\n✅ Works well when the product has 2-4 dominant tasks and the feed is secondary\n❌ Ignores the \"users land here after login\" context: a launcher doesn't tell them what happened; notifications and activity become an afterthought"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 1 — Which panel is primary on the dashboard, and what is the reading order?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 1 Information Architecture, currently 3/10.\nELI10: Three panels are listed as equals. A user who just logged in has one question: \"what happened while I was away?\" One panel has to own the first glance, and the other two have to visibly step back. This decision drives layout at every breakpoint, what goes above the fold on a phone, and where the loading skeleton draws attention. Principle: hierarchy as service; if everything competes, nothing wins.\nStakes if we pick wrong: on a 375px phone the user scrolls past two panels of stuff they didn't ask for before seeing the one that matters; the page reads as a widget mosaic.\nRecommendation: 1A because notifications are the \"while you were away\" answer, activity is the browse-able context, and quick actions are a launcher that should be reachable, not read.\nNote: options differ in kind, not coverage — no completeness score.": "1A: Notifications first (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:41:45.355Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01JNoKum3CkUH1TidSdGtexa",
+          "questions": [
+            {
+              "question": "Issue 2 — Add a screen-structure diagram (page frame + panel placement) to the plan?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 1 Information Architecture, now 6/10 after Issue 1.\nELI10: The plan says nothing about the page frame: is there a top nav, a page title, where the three panels sit on a wide screen versus a phone. Without this, the implementer picks a layout on the fly and the trunk test fails (cover everything but the nav: can you tell what site and page you're on?). I'd add an ASCII structure diagram for desktop (lg) and mobile (sm) that fixes panel placement per the approved order. Principle: users scan, they don't read; clearly defined areas are how they scan.\nStakes if we pick wrong: three equal-width columns or a stacked card mosaic, the hard-rejection pattern for app UI.\nRecommendation: 2A because the two-zone layout gives Notifications a real anchor position and keeps Quick Actions out of the reading flow.\nCompleteness: 2A=10/10, 2B=7/10, 2C=3/10",
+              "header": "Issue 2",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "2A: Two-zone layout, diagram at lg + sm (recommended)",
+                  "description": "✅ lg: sticky top nav; page header row with title + Quick Actions bar right-aligned; body is 2 columns, Notifications left (7/12) and Activity right (5/12)\n✅ sm: single column, Quick Actions as a horizontal scroll strip under the header, then Notifications, then Activity; diagram fixes both\n❌ Notifications-left at 7/12 gives the feed less room; long activity rows will truncate harder on lg"
+                },
+                {
+                  "label": "2B: Three-column body, diagram at lg only",
+                  "description": "✅ Each panel gets a column; simple grid, simple to build (human: ~1h / CC: ~5min)\n✅ Quick Actions visible as a full column on desktop\n❌ Three equal peers contradicts the approved Notifications-first hierarchy; mobile behavior stays unspecified"
+                },
+                {
+                  "label": "2C: Skip the diagram, prose only",
+                  "description": "✅ Zero extra planning time; implementer decides layout in code\n✅ Leaves room for the implementer's judgment\n❌ Layout by omission; the first review of a real screen becomes the layout discussion we could have had now"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 2 — Add a screen-structure diagram (page frame + panel placement) to the plan?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 1 Information Architecture, now 6/10 after Issue 1.\nELI10: The plan says nothing about the page frame: is there a top nav, a page title, where the three panels sit on a wide screen versus a phone. Without this, the implementer picks a layout on the fly and the trunk test fails (cover everything but the nav: can you tell what site and page you're on?). I'd add an ASCII structure diagram for desktop (lg) and mobile (sm) that fixes panel placement per the approved order. Principle: users scan, they don't read; clearly defined areas are how they scan.\nStakes if we pick wrong: three equal-width columns or a stacked card mosaic, the hard-rejection pattern for app UI.\nRecommendation: 2A because the two-zone layout gives Notifications a real anchor position and keeps Quick Actions out of the reading flow.\nCompleteness: 2A=10/10, 2B=7/10, 2C=3/10": "2A: Two-zone layout, diagram at lg + sm (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:42:15.329Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01D6hkqEL4BpbLKWUECMsBYE",
+          "questions": [
+            {
+              "question": "Issue 3 — Specify what the user sees in every state of every panel (state table with copy and actions)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, currently 3/10.\nELI10: The plan lists \"empty, loading, error\" per panel but never says what any of them look like or say. Left alone, an engineer ships \"No notifications.\" in gray text, and that's the first thing a brand-new user sees in the page's primary slot. I'd add a table covering loading / empty / error / success / partial for Notifications, Activity, and Quick Actions, with the exact copy, the primary action, and skeleton shape. Principle: empty states are features; every one needs warmth, a primary action, and context.\nStakes if we pick wrong: first-login dashboard reads as broken or abandoned; error states offer no recovery path.\nRecommendation: 3A because the first-run and zero-data cases are the ones most users hit first, and writing the copy now costs minutes.\nCompleteness: 3A=10/10, 3B=6/10, 3C=3/10",
+              "header": "Issue 3",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "3A: Full state table, copy + actions + skeletons (recommended)",
+                  "description": "✅ Every cell written: e.g. Notifications empty = \"You're all caught up\" + last-checked time; Activity empty on first login = \"Your activity will show up here\" + the top quick action as CTA\n✅ Error cells get a retry button scoped to that panel plus a plain-language reason; skeletons match row anatomy so layout doesn't jump (human: ~2h / CC: ~10min)\n❌ Copy is a proposal; product voice may want to rewrite it later"
+                },
+                {
+                  "label": "3B: Table with placeholders, copy written during implementation",
+                  "description": "✅ Locks the structure (which states exist per panel) without committing to words now\n✅ Faster to approve; leaves copy to whoever owns voice\n❌ Placeholders become the copy; \"No items found\" ships because nobody circles back"
+                },
+                {
+                  "label": "3C: Keep the one-line checklist as is",
+                  "description": "✅ No planning time spent\n✅ Implementer has freedom\n❌ Guaranteed \"No notifications.\" in the primary slot; error states with no retry"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 3 — Specify what the user sees in every state of every panel (state table with copy and actions)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, currently 3/10.\nELI10: The plan lists \"empty, loading, error\" per panel but never says what any of them look like or say. Left alone, an engineer ships \"No notifications.\" in gray text, and that's the first thing a brand-new user sees in the page's primary slot. I'd add a table covering loading / empty / error / success / partial for Notifications, Activity, and Quick Actions, with the exact copy, the primary action, and skeleton shape. Principle: empty states are features; every one needs warmth, a primary action, and context.\nStakes if we pick wrong: first-login dashboard reads as broken or abandoned; error states offer no recovery path.\nRecommendation: 3A because the first-run and zero-data cases are the ones most users hit first, and writing the copy now costs minutes.\nCompleteness: 3A=10/10, 3B=6/10, 3C=3/10": "3A: Full state table, copy + actions + skeletons (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:43:02.148Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_015dYhiwCXPuYiXYwwthqfoB",
+          "questions": [
+            {
+              "question": "Issue 4 — Shape the API response so each panel can fail independently?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 6/10.\nELI10: The plan wants per-panel error states but fetches everything in one GET /api/dashboard call. Those two goals conflict unless the response itself can say \"activity failed, notifications are fine.\" Today's shape ({ activity, notifications, quickActions }) can't express that, so any single slow or broken query takes down all three panels. This is a design decision because it determines whether the user ever sees a panel-level error or only whole-page failure. Principle: seeing the system, not the screen.\nStakes if we pick wrong: one slow activity query blanks the notifications the user came for; or three separate requests triple the latency on a cold phone connection.\nRecommendation: 4A because it keeps one round-trip (fast first paint on mobile) while letting each panel degrade on its own.\nCompleteness: 4A=10/10, 4B=8/10, 4C=4/10",
+              "header": "Issue 4",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "4A: One call, per-key result envelopes (recommended)",
+                  "description": "✅ Response becomes { notifications: {ok, data|error}, activity: {ok, data|error}, quickActions: {...} }; server runs the three queries in parallel with per-query timeouts and never fails the whole response for one key\n✅ One round trip preserves fast first paint on slow mobile; per-panel Retry hits the same endpoint with ?only=activity (human: ~3h / CC: ~15min)\n❌ Slightly more server code and a non-trivial response contract to document"
+                },
+                {
+                  "label": "4B: Three endpoints, one per panel",
+                  "description": "✅ Simplest failure isolation; each panel owns its fetch, retry, and cache\n✅ Panels can stream in independently as each resolves\n❌ Three round trips on login; on a bad connection the primary panel is no faster than before and the page flickers in three stages"
+                },
+                {
+                  "label": "4C: Keep single flat response, whole-page error only",
+                  "description": "✅ Zero contract change; simplest to build\n✅ One error state to design\n❌ Contradicts the plan's own per-panel error requirement; one slow query blanks everything the user logged in to see"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 4 — Shape the API response so each panel can fail independently?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 6/10.\nELI10: The plan wants per-panel error states but fetches everything in one GET /api/dashboard call. Those two goals conflict unless the response itself can say \"activity failed, notifications are fine.\" Today's shape ({ activity, notifications, quickActions }) can't express that, so any single slow or broken query takes down all three panels. This is a design decision because it determines whether the user ever sees a panel-level error or only whole-page failure. Principle: seeing the system, not the screen.\nStakes if we pick wrong: one slow activity query blanks the notifications the user came for; or three separate requests triple the latency on a cold phone connection.\nRecommendation: 4A because it keeps one round-trip (fast first paint on mobile) while letting each panel degrade on its own.\nCompleteness: 4A=10/10, 4B=8/10, 4C=4/10": "4A: One call, per-key result envelopes (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:43:55.568Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01LnFZiSt49gf7W5mJjVdG7R",
+          "questions": [
+            {
+              "question": "Issue 5 — Replace the \"Mark all as read\" confirmation modal with instant action + undo toast?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 7/10.\nELI10: The plan puts a confirmation modal in front of \"Mark all as read.\" Modals are for one-way doors (delete, pay, send). Marking read is low-stakes and reversible, so the convention (Gmail, GitHub, Slack) is: do it immediately, show a toast with Undo for a few seconds. A modal here makes the user answer a question they didn't ask, every time. Principle: the goodwill reservoir; punishing users with an extra step for a safe action depletes it.\nStakes if we pick wrong: keep the modal and the most-used action on the primary panel gains a click and a read; drop undo and a mis-tap wipes the unread list with no recovery.\nRecommendation: 5A because it removes a step from the page's most frequent action while keeping recovery.\nNote: options differ in kind, not coverage — no completeness score.",
+              "header": "Issue 5",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "5A: Instant + Undo toast, drop the modal (recommended)",
+                  "description": "✅ One click: unread dots clear optimistically, badge goes to 0, toast \"Marked 12 as read. [Undo]\" for 6s; Undo restores client state and calls the server\n✅ Removes the Modal component from this plan entirely (one less primitive to build and make accessible)\n❌ The 6-second undo window needs a live-region announcement and pause-on-hover, which the toast spec must cover (Issue 6)"
+                },
+                {
+                  "label": "5B: Keep modal, but only when unread > N",
+                  "description": "✅ Guards the rare large-clear case (say > 50 unread) where an accident costs more\n✅ Small clears stay one-click\n❌ Two behaviors for one button confuses users (\"why did it ask this time?\"); modal still has to be built and made accessible"
+                },
+                {
+                  "label": "5C: Keep the confirmation modal as planned",
+                  "description": "✅ Zero chance of accidental mass-mark; explicit intent\n✅ Modal primitive may be needed elsewhere later anyway\n❌ Adds friction to the primary panel's main action; mark-read is recoverable, so the modal solves a problem that doesn't exist"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 5 — Replace the \"Mark all as read\" confirmation modal with instant action + undo toast?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 7/10.\nELI10: The plan puts a confirmation modal in front of \"Mark all as read.\" Modals are for one-way doors (delete, pay, send). Marking read is low-stakes and reversible, so the convention (Gmail, GitHub, Slack) is: do it immediately, show a toast with Undo for a few seconds. A modal here makes the user answer a question they didn't ask, every time. Principle: the goodwill reservoir; punishing users with an extra step for a safe action depletes it.\nStakes if we pick wrong: keep the modal and the most-used action on the primary panel gains a click and a read; drop undo and a mis-tap wipes the unread list with no recovery.\nRecommendation: 5A because it removes a step from the page's most frequent action while keeping recovery.\nNote: options differ in kind, not coverage — no completeness score.": "5A: Instant + Undo toast, drop the modal (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:44:29.271Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01An1yzjWxro5Sx3VBjP4fHJ",
+          "questions": [
+            {
+              "question": "Issue 6 — Specify the toast system (position, timing, stacking, dismiss, screen reader behavior)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 8/10.\nELI10: \"Toast notification system for action feedback\" is a component name, not a spec. And after Issue 5 the toast carries Undo, so its timing and accessibility now decide whether a user can recover from a mis-click. I'd pin down: where it appears, how long it stays, what happens with several at once, how to dismiss, and how screen readers hear it (a live region, so the Undo offer is announced and reachable by keyboard). Principle: accessibility is not optional; specify it in the plan or it won't exist.\nStakes if we pick wrong: a screen-reader user never hears \"Undo\"; toasts stack over the Quick Actions bar on mobile; a 3-second toast makes Undo a race.\nRecommendation: 6A because the toast is now the recovery mechanism for the primary panel's main action.\nCompleteness: 6A=10/10, 6B=6/10",
+              "header": "Issue 6",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "6A: Full toast spec (recommended)",
+                  "description": "✅ Bottom-center on sm (above safe-area, never over the action strip), bottom-right on md+; 6s default, 10s when it carries an action, pause on hover/focus; max 3 stacked, oldest drops\n✅ role=status live region for info, role=alert for errors; action button is a real <button> reachable by Tab; Escape dismisses the focused toast; swipe-down dismisses on touch (human: ~3h / CC: ~15min)\n❌ More component surface to build and test than a fire-and-forget snackbar"
+                },
+                {
+                  "label": "6B: Minimal spec: position + duration only",
+                  "description": "✅ Enough to stop toasts landing over the action bar; quick to write\n✅ Leaves implementation freedom on stacking and a11y\n❌ No live region means Undo is invisible to assistive tech; stacking and dismiss get decided in code"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 6 — Specify the toast system (position, timing, stacking, dismiss, screen reader behavior)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 2 Interaction States, now 8/10.\nELI10: \"Toast notification system for action feedback\" is a component name, not a spec. And after Issue 5 the toast carries Undo, so its timing and accessibility now decide whether a user can recover from a mis-click. I'd pin down: where it appears, how long it stays, what happens with several at once, how to dismiss, and how screen readers hear it (a live region, so the Undo offer is announced and reachable by keyboard). Principle: accessibility is not optional; specify it in the plan or it won't exist.\nStakes if we pick wrong: a screen-reader user never hears \"Undo\"; toasts stack over the Quick Actions bar on mobile; a 3-second toast makes Undo a race.\nRecommendation: 6A because the toast is now the recovery mechanism for the primary panel's main action.\nCompleteness: 6A=10/10, 6B=6/10": "6A: Full toast spec (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:45:09.113Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01YTEyoxMNs3gNr8P34hzqpP",
+          "questions": [
+            {
+              "question": "Issue 7 — What happens when the user clicks a notification row or an activity row?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 3 User Journey, currently 4/10.\nELI10: The primary panel is a list of notifications, and the plan never says what a row does when clicked. Is it a link to the thing being notified about? Does clicking mark it read? Same for activity rows. Without this, an engineer either makes rows inert (dead-end dashboard) or invents a destination. Principle: seeing the system, not the screen; the dashboard exists to route the user onward.\nStakes if we pick wrong: inert rows make the primary panel read-only wallpaper; rows that navigate without marking read leave the unread badge stuck.\nRecommendation: 7A because it matches the convention users already know from every inbox, and it keeps the badge honest.\nCompleteness: 7A=10/10, 7B=7/10, 7C=3/10",
+              "header": "Issue 7",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "7A: Whole row is a link; click marks read then navigates (recommended)",
+                  "description": "✅ Notification row = <a href={targetUrl}> covering the full row (44px min height); click optimistically marks that item read, then navigates; unread dot fades before route change\n✅ Activity row links to its object (e.g. the document, the comment); rows with no target render as plain text, not fake links (human: ~2h / CC: ~10min)\n❌ Requires each notification and activity item to carry a targetUrl from the API; items without one need the plain-text fallback"
+                },
+                {
+                  "label": "7B: Row expands inline; explicit \"Open\" link inside",
+                  "description": "✅ User previews the full message without leaving the dashboard\n✅ Mark-read happens on expand, so badge stays honest\n❌ Two clicks to reach the object; expand/collapse adds state and a11y (aria-expanded) that the inbox convention doesn't need"
+                },
+                {
+                  "label": "7C: Rows are static; only \"Mark all as read\" is interactive",
+                  "description": "✅ Simplest build; no per-item endpoints\n✅ No risk of mis-navigation\n❌ Primary panel becomes a read-only log; users have to hunt elsewhere for the thing they were notified about"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 7 — What happens when the user clicks a notification row or an activity row?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 3 User Journey, currently 4/10.\nELI10: The primary panel is a list of notifications, and the plan never says what a row does when clicked. Is it a link to the thing being notified about? Does clicking mark it read? Same for activity rows. Without this, an engineer either makes rows inert (dead-end dashboard) or invents a destination. Principle: seeing the system, not the screen; the dashboard exists to route the user onward.\nStakes if we pick wrong: inert rows make the primary panel read-only wallpaper; rows that navigate without marking read leave the unread badge stuck.\nRecommendation: 7A because it matches the convention users already know from every inbox, and it keeps the badge honest.\nCompleteness: 7A=10/10, 7B=7/10, 7C=3/10": "7A: Whole row is a link; click marks read then navigates (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:45:58.362Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_015ZD7y9iw62qs78kvuc7hoY",
+          "questions": [
+            {
+              "question": "Issue 8 — Does the page header carry a greeting/summary line, and what does it say?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 3 User Journey, now 8/10.\nELI10: The structure diagram shows \"Good morning, Sam. 3 unread.\" under the Dashboard title as a placeholder. That line can do real work (a one-sentence status the user reads before scanning panels) or it can be happy talk that wastes the most valuable line on the page. On visit #500 a time-of-day greeting is noise; a status sentence still earns its place. Principle: omit, then omit again; every word must carry information.\nStakes if we pick wrong: a greeting that feels generated and gets ignored, or a bare title with no summary, so the user has to scan the panels to learn there's nothing new.\nRecommendation: 8A because a status sentence reinforces the Notifications anchor and reads true on the first visit and the thousandth.\nNote: options differ in kind, not coverage — no completeness score.",
+              "header": "Issue 8",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "8A: Status sentence only, no greeting (recommended)",
+                  "description": "✅ Copy variants: \"3 unread notifications.\" / \"You're all caught up.\" / \"2 unread, 5 new activity items since yesterday.\"; no name, no time-of-day\n✅ Doubles as the page-level live summary for screen readers (aria-describedby on the h1)\n❌ Feels less personal than a greeting; if that warmth matters to the brand this is the wrong call"
+                },
+                {
+                  "label": "8B: Greeting + status (\"Good morning, Sam. 3 unread.\")",
+                  "description": "✅ Warmer first impression for new users; name confirms which account is logged in\n✅ Still carries the status count\n❌ Time-of-day greetings are the most common generated-dashboard tell; on daily visits it's read as filler"
+                },
+                {
+                  "label": "8C: Title only, no second line",
+                  "description": "✅ Maximum subtraction; the panels speak for themselves\n✅ One less string to localize\n❌ User must scan panels to learn there's nothing new; loses the cheap page-level screen-reader summary"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 8 — Does the page header carry a greeting/summary line, and what does it say?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 3 User Journey, now 8/10.\nELI10: The structure diagram shows \"Good morning, Sam. 3 unread.\" under the Dashboard title as a placeholder. That line can do real work (a one-sentence status the user reads before scanning panels) or it can be happy talk that wastes the most valuable line on the page. On visit #500 a time-of-day greeting is noise; a status sentence still earns its place. Principle: omit, then omit again; every word must carry information.\nStakes if we pick wrong: a greeting that feels generated and gets ignored, or a bare title with no summary, so the user has to scan the panels to learn there's nothing new.\nRecommendation: 8A because a status sentence reinforces the Notifications anchor and reads true on the first visit and the thousandth.\nNote: options differ in kind, not coverage — no completeness score.": "8A: Status sentence only, no greeting (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:46:30.592Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_01JySFYtMJF5AxpGUDe3WTtf",
+          "questions": [
+            {
+              "question": "Issue 9 — Specify the row anatomy for notifications and activity items (fields, truncation, timestamps, unread indicator, pagination)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 4 AI Slop Risk, currently 4/10.\nELI10: The plan says \"rows\" and nothing more. Without a row spec, every generated dashboard produces the same thing: avatar circle, bold name, gray sentence, timestamp on the right, all the same weight. A designed row decides what the eye hits first (the object, not the actor), how a 47-character name behaves, whether the time reads \"3m\" or \"Sep 20, 2:14 PM\", and how unread is marked. Principle: specificity over vibes; edge cases (long names, zero results) are user experiences.\nStakes if we pick wrong: rows overflow on long names, timestamps wrap, unread is a colored left border (blacklist item #8), and the page reads as template output.\nRecommendation: 9A because the row is the unit the user reads 20 times per visit; it's where care is most visible.\nCompleteness: 9A=10/10, 9B=6/10",
+              "header": "Issue 9",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "9A: Full row spec, both panels + pagination (recommended)",
+                  "description": "✅ Notification: 8px unread dot (accent) in a fixed 16px gutter, title 16px medium 1-line truncate, summary 14px muted 1-line truncate, time right-aligned tabular relative (\"3m\", \"2h\", \"Tue\", \"Sep 3\") with full datetime in title attr\n✅ Activity: 24px avatar, sentence \"<Actor> <verb> <Object>\" where Object is medium-weight and actor truncates at 24ch with ellipsis; time same format; page size 20 / 10 with \"Load more\" (human: ~2h / CC: ~10min)\n❌ Fixes v1 rows to single-line truncation; multi-line notification bodies need a later revision"
+                },
+                {
+                  "label": "9B: Field list only, visual treatment left to implementation",
+                  "description": "✅ Locks the data each row needs from the API without dictating pixels\n✅ Faster to approve\n❌ Truncation, timestamp format, and unread indicator get invented in code; the colored-left-border default is likely"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 9 — Specify the row anatomy for notifications and activity items (fields, truncation, timestamps, unread indicator, pagination)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 4 AI Slop Risk, currently 4/10.\nELI10: The plan says \"rows\" and nothing more. Without a row spec, every generated dashboard produces the same thing: avatar circle, bold name, gray sentence, timestamp on the right, all the same weight. A designed row decides what the eye hits first (the object, not the actor), how a 47-character name behaves, whether the time reads \"3m\" or \"Sep 20, 2:14 PM\", and how unread is marked. Principle: specificity over vibes; edge cases (long names, zero results) are user experiences.\nStakes if we pick wrong: rows overflow on long names, timestamps wrap, unread is a colored left border (blacklist item #8), and the page reads as template output.\nRecommendation: 9A because the row is the unit the user reads 20 times per visit; it's where care is most visible.\nCompleteness: 9A=10/10, 9B=6/10": "9A: Full row spec, both panels + pagination (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:47:23.064Z"
+        },
+        {
+          "sessionId": "03736bff-d38b-4f3e-a849-84f17064a75b",
+          "toolUseId": "toolu_017iCDG42LbcVXfXdtAsDXSg",
+          "questions": [
+            {
+              "question": "Issue 10 — Define the plan's design tokens (typeface, type scale, color roles as CSS variables, spacing, radius)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 5 Design System, currently 2/10.\nELI10: Decisions 1-9 use names like text-muted, accent, surface-hover, 16px/14px, but nothing defines them. Tailwind's defaults will fill the gaps: system-ui font, gray-500 text, blue-600 accent. That's the exact \"assembled, not designed\" look. I'd add a small token block: one typeface (a real one, not the system stack), a 4-step type scale, ~8 color roles as CSS variables mapped into Tailwind's theme, a spacing scale, and one radius. These are proposals to be replaced by DESIGN.md if you run /design-consultation later. Principle: specificity over vibes; name the font, the spacing scale, the interaction pattern.\nStakes if we pick wrong: the dashboard ships in Tailwind default blue on gray with system-ui, and every later screen inherits it.\nRecommendation: 10A because the tokens are cheap to write now and every component in this plan is blocked on them.\nCompleteness: 10A=10/10, 10B=6/10, 10C=2/10",
+              "header": "Issue 10",
+              "multiSelect": false,
+              "options": [
+                {
+                  "label": "10A: Full token block, CSS variables into Tailwind theme (recommended)",
+                  "description": "✅ Typeface: Instrument Sans (body/UI, Operate-surface approved), tabular-nums enabled; scale 12/14/16/20/28 with named roles; 8 color roles as --color-* vars (bg, surface, surface-hover, border, text, text-muted, accent, danger) with light values now and dark slots reserved\n✅ Spacing 4/8/12/16/24/32, one radius (6px) for buttons and toasts only, no radius on rows or panels; focus ring, selection color, and scrollbar themed from the palette (human: ~3h / CC: ~15min)\n❌ Specific picks (typeface, accent hue) are my taste until a DESIGN.md exists; you may want to swap them"
+                },
+                {
+                  "label": "10B: Roles only, values TBD",
+                  "description": "✅ Names the variables so components reference roles, not raw Tailwind colors\n✅ Defers taste calls (font, hue) to /design-consultation\n❌ Values default to Tailwind's until someone fills them; the first shipped screen is still default-blue"
+                },
+                {
+                  "label": "10C: Use Tailwind defaults, no tokens",
+                  "description": "✅ Zero setup; fastest to build\n✅ Familiar to any Tailwind dev\n❌ Fails universal rules (no color variables, default font stack); generated-dashboard look guaranteed"
+                }
+              ]
+            }
+          ],
+          "answered": true,
+          "failed": false,
+          "answers": {
+            "Issue 10 — Define the plan's design tokens (typeface, type scale, color roles as CSS variables, spacing, radius)?\nProject/branch/task: main, PLAN.md User Dashboard; Pass 5 Design System, currently 2/10.\nELI10: Decisions 1-9 use names like text-muted, accent, surface-hover, 16px/14px, but nothing defines them. Tailwind's defaults will fill the gaps: system-ui font, gray-500 text, blue-600 accent. That's the exact \"assembled, not designed\" look. I'd add a small token block: one typeface (a real one, not the system stack), a 4-step type scale, ~8 color roles as CSS variables mapped into Tailwind's theme, a spacing scale, and one radius. These are proposals to be replaced by DESIGN.md if you run /design-consultation later. Principle: specificity over vibes; name the font, the spacing scale, the interaction pattern.\nStakes if we pick wrong: the dashboard ships in Tailwind default blue on gray with system-ui, and every later screen inherits it.\nRecommendation: 10A because the tokens are cheap to write now and every component in this plan is blocked on them.\nCompleteness: 10A=10/10, 10B=6/10, 10C=2/10": "10A: Full token block, CSS variables into Tailwind theme (recommended)"
+          },
+          "unansweredQuestionIndices": [],
+          "answeredAt": "2026-09-20T20:48:12.161Z"
+        }
+      ]
+    }
+  ],
+  "additionalQuestionCaptures": [
+    {
+      "source": {
+        "commit": "269b5747",
+        "workflowRun": 35537130656,
+        "attempt": 2,
+        "retainedRange": "final question, options and answer; owning IDs precede the retained log tail"
+      },
+      "question": {
+        "question": "D10 — Issue 6: 'Mark all as read' — confirmation modal (as planned) or immediate action with an Undo toast?\nProject/branch/task: dashboard plan on main; plan line 13 specifies a modal dialog.\nELI10: A confirmation dialog asks 'are you sure?' before doing something. It's right for deleting data. For marking notifications read, it's an extra click every time, and the user learns to dismiss it without reading. The alternative is: do it instantly, show a small toast 'Marked 3 as read. Undo' for 5 seconds, and flip them back if they tap Undo. Same safety, zero friction.\nStakes if we pick wrong: Modal: a daily annoyance that trains users to click through dialogs (which then makes real destructive dialogs less safe). Undo without a backend path: a toast that lies.\nRecommendation: 6A because the action is reversible and low-stakes; modals should be reserved for one-way doors. Principle: clicks don't matter, thinking does; goodwill reservoir.\nCompleteness: 6A=10/10, 6B=7/10, 6C=5/10\nNet: frictionless with a small backend addition vs. friction with no backend change.",
+        "header": "Mark read",
+        "multiSelect": false,
+        "options": [
+          {
+            "label": "6A Immediate + Undo toast, drop the modal (recommended)",
+            "description": "✅ Click -> rows fade to read state optimistically, badge goes to 0, toast 'Marked {n} as read. Undo' for 6s; Undo restores the exact set. ✅ Removes the modal component from scope entirely; toast system already in plan. ❌ Needs a backend 'mark unread by id list' (or a single reversible batch endpoint) so Undo is real, not cosmetic. (human: ~3h / CC: ~20 min)"
+          },
+          {
+            "label": "6B Keep the modal, make it a one-line dialog",
+            "description": "✅ No backend change; matches the plan as written. ✅ Dialog: 'Mark 3 notifications as read?' [Cancel] [Mark read], focus on Cancel, Esc closes. ❌ Adds a click to a daily action; trains users to dismiss dialogs; modal + focus trap must still be built and tested. (human: ~2h / CC: ~15 min)"
+          },
+          {
+            "label": "6C Immediate, plain success toast, no Undo",
+            "description": "✅ Simplest: click, rows update, toast 'Marked as read'. ✅ No modal, no undo endpoint. ❌ Accidental click has no recovery; unread state is lost for that session."
+          }
+        ]
+      },
+      "answer": "6A Immediate + Undo toast, drop the modal (recommended)"
+    }
+  ]
+}

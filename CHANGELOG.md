@@ -7,21 +7,14 @@
 
 Plan reviews now keep decisions, report checks, and publication checks in order when permissions, stale choices, or host metadata writes fail. Coverage audits for `/review`, `/ship`, and plan reviews read concrete source and test files before drawing their diagrams, so gaps are tied to code paths instead of diff and config noise.
 
+Generation now validates every host and expected artifact, and Codex evaluation records retain failed execution and assertions. Plan reviews carry approved decisions through scope changes and save complete reports before declaring completion. CEO and engineering reviews save and verify each question before asking it; Autoplan reads and verifies the current plan, then publishes the parent phase report before advancing.
+
 ### Fixed
 - `/plan-ceo-review` and `/plan-eng-review` preserve scoped decisions, required save/read-back checks, and report publication before declaring completion or advancing to the next section.
 - Coverage audits read source and test files in a dedicated step before mapping `[OK]` and `[GAP]` rows, while keeping framework and config context separate.
 - `/plan-eng-review` clarifies setup gates, targeted audit timing, report ordering, and Outside Voice output surfaces without losing saved-question verification.
 - The plan-count timeout fixture closes stdin without forcing process exit before diagnostics can be captured.
 - Ship host golden files and parity size guards match the generated Codex, Factory, and plan-review outputs.
-
-## [1.87.5.0] - 2026-09-16
-
-**Checks preserve the result.**
-**Reviews finish before they advance.**
-
-Generation now validates every host and expected artifact, and Codex evaluation records retain failed execution and assertions. Plan reviews carry approved decisions through scope changes and save complete reports before declaring completion. CEO and engineering reviews save and verify each question before asking it; Autoplan reads and verifies the current plan, then publishes the parent phase report before advancing.
-
-### Fixed
 - Skill generation awaits every artifact across all hosts. Freshness checks detect missing output, validate generated content, preserve files and directories during dry runs, and report generation errors instead of accepting partial output.
 - Codex evaluation records follow the runner result and assertions. Timeouts, failed validations, inherited output pipes, and interrupted attempts retain their actual outcomes, captured usage, and bounded cleanup.
 - Paid test supervision allows each file to finish its existing cases and configured retries. CI and detached-run limits cover the full schedule without increasing model work budgets.
@@ -38,6 +31,44 @@ Generation now validates every host and expected artifact, and Codex evaluation 
 - CEO, engineering and Autoplan instructions fit their existing prompt-size limits while retaining approval, saved-question verification and report-publication requirements. Engineering uses one section-loading step and one approval check, with explicit rules for independent choices and unchanged question payloads.
 - Review fixtures provide the application context and independent contracts their assertions require, declare supported editing and feedback interfaces, and verify existing rollback behavior. The DX count scenario covers a bounded onboarding decision checkpoint and defers independent roadmap work. Design evaluations submit real board feedback before acknowledging it and grant image reads only inside their owned artifact directory. Sol evaluations generate skills in private storage without replacing checkout caches. Native fixtures match complete permission text and offered handoff choices. Shared helper and source-template dependencies select the affected evaluations; overlay tests distinguish correctness from performance measurements.
 - Contributor instructions require focused reproductions and adjacent checks before paid evaluations, independent scheduling, launcher preflight with executed-case counts, reuse of passing checks with unchanged inputs, and one full free-suite acceptance run after the code is frozen. Recurring parser failures require checking the supported input class against the pinned runtime.
+
+## [1.87.5.0] - 2026-09-17
+
+**Tests finish sooner without dropping checks.**
+**CI stops waiting on unused tooling.**
+
+This release speeds up gstack's development feedback loop. Terminal-driven checks react to new output instead of waiting through a fixed polling interval. Synthetic CLIs can announce when their input handlers are ready, while real CLI sessions retain their startup grace and input debounces. Completed processes no longer stay alive just to finish unused timeout timers.
+
+### The three numbers that matter
+
+Measured on the same Linux machine with Bun 1.4.0. Run each named file with `bun test <file>` on the previous release and this version. The polyfill and daemon numbers are three-run wall-time medians on both sides; the permission baseline is one observed run, and its after value is a three-run median. These are individual test-file measurements, not whole-suite or production latency claims.
+
+| Test file | Before | After | Δ |
+|---|---:|---:|---:|
+| `browse/test/bun-polyfill.test.ts` | 17.30s | 1.29s | −93% |
+| `design/test/daemon-discovery.test.ts` | 17.78s | 11.99s | −33% |
+| `test/plan-count-file-permission.test.ts` | 97.05s | 30.92s | −68% |
+
+The permission suite still makes all 115 assertions, including its deliberate stale-prompt delay. Terminal observations are capped at four per second so animated output cannot turn faster responses into a busy loop.
+
+### What this means for contributors
+
+Local test runs spend less time waiting after work is already complete. CI planning no longer pulls the execution image or waits for image lookup before producing its manifest; executors still require both prerequisites, and missing or failed results still fail reconciliation. Run `bun run test` for the complete free suite.
+
+### Itemized changes
+
+#### For contributors
+
+- Wake plan-count checks on output and exit, retain a silent metadata fallback, and settle output bursts before reading split redraws. Three synthetic CLI suites use explicit startup readiness without changing real-CLI startup behavior.
+- Cancel unused PTY and Node deadlines, stop already-exited daemon fixtures immediately, clear cookie-picker fixture sessions between suites, and await watchdog shutdown with a bounded completion signal.
+- Await telemetry append completion in consent tests instead of assuming disk writes finish within 30ms. Consent checks and error swallowing are unchanged.
+- Run gate and periodic CI planners directly on pinned Bun without dependency installation. Reports also skip unused installs; fork restrictions, executor images, and failure checks remain intact.
+- Retain failed eval shard logs from the hidden CI cache directory without uploading unrelated cache files.
+- Inject the CSO Git-pointer race at its first bounded read, preserving the original rejection assertion.
+- Preload the UI-positive design-review eval in an isolated plan fixture and require an answered native design question, rather than accepting scope or outside-review menus. Bind command-rejection checks to the invoked skill, not a child tool's diagnostics.
+- Generate skill documentation in a fresh checkout without importing browser runtime dependencies. Keep snapshot flag metadata and public exports unchanged.
+- Eliminate early-reader pipe races in artifact URL normalization and safety-hook matching. Multiline commands retain their warnings even with large trailing content.
+- Treat a publication removed by another CSO recovery helper during candidate enumeration as a bounded retry; replacement inodes still fail closed.
 
 ## [1.87.4.0] - 2026-09-16
 

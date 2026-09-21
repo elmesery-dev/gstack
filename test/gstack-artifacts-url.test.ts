@@ -22,6 +22,16 @@ function run(args: string[]): { code: number; stdout: string; stderr: string } {
 }
 
 describe('gstack-artifacts-url', () => {
+  test('normalization does not depend on external line readers', () => {
+    for (const url of ['git@github.com:team/repo.git', 'https://github.com/team/repo.git']) {
+      const result = spawnSync(Bun.which('bash')!, [URL_BIN, '--to', 'https', url], {
+        env: { PATH: '' }, encoding: 'utf8', timeout: 30_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe('https://github.com/team/repo');
+    }
+  });
+
   test('--to ssh from canonical https', () => {
     const r = run(['--to', 'ssh', 'https://github.com/garrytan/gstack-artifacts-garrytan']);
     expect(r.code).toBe(0);

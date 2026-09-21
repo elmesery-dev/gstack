@@ -97,10 +97,10 @@ export interface TelemetryEvent {
 }
 
 /** Fire-and-forget log. Never throws. */
-export function logTelemetry(payload: TelemetryEvent): void {
-  if (isTelemetryDisabled()) return;
+export function logTelemetry(payload: TelemetryEvent): Promise<void> {
+  if (isTelemetryDisabled()) return Promise.resolve();
   const enriched = { ...payload, ts: new Date().toISOString() };
-  ensureDir()
+  return ensureDir()
     .then(() => fs.appendFile(telemetryFile(), JSON.stringify(enriched) + '\n', 'utf8'))
     .catch(() => {
       // Telemetry must never crash the caller. If the disk is full or perms
