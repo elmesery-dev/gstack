@@ -179,10 +179,41 @@ Bun auto-loads `.env` — no extra config. Conductor workspaces inherit `.env` f
 | 2+3 | `bun run test:evals` | ~$4 combined | E2E + LLM-as-judge (runs both) |
 
 ```bash
+bun run test:quick           # Measured fast free subset for ordinary edits; not full acceptance
+bun run eval:bg:pr           # Changed fast live probes + selected quality judges, detached
 bun run test                 # Final full free acceptance after focused repairs and source freeze
 bun run test:e2e             # Tier 2: E2E only (needs EVALS=1, can't run inside Claude Code)
 bun run test:evals           # Tier 2 + 3 combined (~$4.35/run)
 ```
+
+The PR paid gate uses an explicit short behavioral profile. Every selected quality
+judge remains included; the manifest lists deferred behaviors separately from
+passes. Unknown source dependencies restore the full gate. A new prompt without
+registered coverage fails planning. Known broad behaviors remain visibly deferred
+when their prompts change; they do not silently gain PR-pass credit. The full
+gate and periodic censuses run fresh weekly and on manual
+dispatch of `evals-periodic.yml`; `bun run eval:bg:release` runs both locally.
+Some broad behavioral failures will therefore be found after the PR gate.
+
+CI enables verified first-attempt reuse for the 14 workflow quality judges for
+24 hours within the same PR. The other 11 quality cases and all dynamic agent
+cases stay fresh. Local runs stay fresh unless the complete scoped cache and
+runtime configuration is supplied. The key includes complete prompt bytes, generated inputs,
+fixtures, runner/rubric code, installed dependencies, model settings and runtime.
+The current assertions validate a reused score again. Records retain the original
+run, revision and time; reuse never renews that time. Failed, retried, partial or
+unknown-input results cannot be reused.
+`EVALS_FRESH=1` bypasses reuse; periodic and release runs always bypass it.
+
+Timing goals are under one minute for edit feedback, 3–5 minutes for typical PR
+checks, and 60–90 seconds for complete free test execution across isolated CI
+machines. They are targets, not timeout reductions or guarantees. The complete
+local suite keeps six workers and currently takes roughly 4–5 minutes; use
+`test:quick` for the shorter edit loop. CI setup, build and queue time are reported
+separately. Refresh measurements with `bun run test:free --record-durations`;
+the required free CI lane packs the complete inventory across isolated runners,
+then checks every shard's receipt before reporting success. Local worker counts
+remain bounded to avoid browser/process contention.
 
 Follow [Validation discipline in AGENTS.md](AGENTS.md#validation-discipline):
 reproduce known failures with focused checks, verify adjacent source and

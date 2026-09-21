@@ -15,6 +15,29 @@ export interface WorkflowJudgeInput {
   text: string;
 }
 
+/** Exact existing rubric/request text; extraction must not resample a new prompt. */
+export function buildWorkflowJudgePrompt(opts: { judgeContext: string; judgeGoal: string }, input: WorkflowJudgeInput): string {
+  return `You are evaluating the quality of ${opts.judgeContext} for an AI coding agent.
+
+The agent reads these source files to learn ${opts.judgeGoal}. Shared preamble definitions and
+external tools/files are documented separately; do not penalize their absence from this bundle.
+On-demand sections retain their original file boundaries and Read instructions; the section
+index refers to those files, not duplicate work. The bundle order is not execution order.
+Judge the actual instructions, including contradictory ordering or missing decisions.
+
+Rate on three dimensions (1-5 scale):
+- **clarity** (1-5): Can an agent follow the instructions without ambiguity?
+- **completeness** (1-5): Are all steps, decision points, and outputs well-defined?
+- **actionability** (1-5): Can an agent execute this workflow and produce the expected deliverables?
+
+Respond with ONLY valid JSON:
+{"clarity": N, "completeness": N, "actionability": N, "reasoning": "brief explanation"}
+
+Here is the source-file bundle to evaluate:
+
+${input.text}`;
+}
+
 export function readWorkflowJudgeInput(opts: {
   root: string;
   skillPath: string;

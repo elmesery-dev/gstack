@@ -4,7 +4,7 @@ name: Periodic Evals
 # tests can't rot invisibly — the class where the autoplan-dual-voice E2E was
 # silently broken for months until a lucky local diff selected it. Engine:
 # scripts/test-paid-shards.ts (the same runner local eval:bg:periodic uses):
-# one planner manifest, 6 ordinary slices plus dedicated Autoplan slice 7, and a FAIL-CLOSED report — a slice
+# one planner manifest, 6 ordinary slices plus overlay and Autoplan slices, and a FAIL-CLOSED report — a slice
 # whose artifact never landed is a failure, not an absence. The gate-census
 # job is the weekly EVALS_ALL backstop for the gate tier (PR lanes are
 # diff-billed, so without it the full gate census might never execute
@@ -21,6 +21,9 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/ci
+  EVALS_PROFILE: full
+  EVALS_FRESH: "1"
+  EVALS_CACHE_PURPOSE: periodic
 
 jobs:
   build-image:
@@ -93,7 +96,7 @@ jobs:
       - name: Emit run manifest (ALL periodic tests minus reasoned excludes)
         env:
           EVALS_ALL: "1"
-        run: EVALS_TIER=periodic bun --no-install run scripts/test-paid-shards.ts --tier periodic --emit-plan /tmp/paid-plan/manifest.json --slices 7 --autoplan-slice
+        run: EVALS_TIER=periodic bun --no-install run scripts/test-paid-shards.ts --tier periodic --emit-plan /tmp/paid-plan/manifest.json --slices 8 --autoplan-slice
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -115,8 +118,8 @@ jobs:
   eval-slices:
     runs-on: ubicloud-standard-8
     needs: [build-image, plan-slices]
-    # Seven slices retain every registered case and retry. The complete
-    # census needs at most 331m20 per slice, plus 20 minutes setup/upload.
+    # Eight slices retain every registered case and retry. The complete
+    # census needs at most 318m40 per slice, plus 20 minutes setup/upload.
     timeout-minutes: 355
     permissions:
       contents: read
@@ -130,7 +133,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slice: [1, 2, 3, 4, 5, 6, 7]
+        slice: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -168,7 +171,7 @@ jobs:
           name: paid-plan
           path: /tmp/paid-plan
 
-      - name: Run slice ${{ matrix.slice }}/7
+      - name: Run slice ${{ matrix.slice }}/8
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -209,8 +212,8 @@ jobs:
   gate-census:
     runs-on: ubicloud-standard-8
     needs: [build-image, plan-slices]
-    # Six slices need at most 313m20 each, plus 20 minutes setup/upload.
-    timeout-minutes: 335
+    # Six slices need at most 330m each, plus 20 minutes setup/upload.
+    timeout-minutes: 350
     permissions:
       contents: read
       packages: read

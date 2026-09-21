@@ -53,6 +53,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { normalizeRelativePath } from './test-free-shards';
 import {
   BunTestOutputClassifier,
@@ -68,12 +69,14 @@ import { AUTOPLAN_CHAIN_BUDGET, FILE_RETRY_BUDGETS, STRICT_RETRY_CASE_BUDGETS } 
 import { getProjectEvalDir, getClaudeCliVersion, isFinalizedEvalResultFile } from '../test/helpers/eval-store';
 import { preflightAnthropicApi } from '../test/helpers/anthropic-preflight';
 import { OVERLAY_MIN_FILE_WALL_MS } from '../test/helpers/overlay-case-policy';
+import { PR_PROFILE_CASE_IDS, PR_PROFILE_FILES, packageChangeOnlyVersion, selectPrProfile, type PrProfileSelection } from './test-pr-profile';
 import {
   detectBaseBranch,
   getChangedFiles,
   selectTests,
   E2E_TOUCHFILES,
   E2E_TIERS,
+  LLM_JUDGE_TOUCHFILES,
   GLOBAL_TOUCHFILES,
 } from '../test/helpers/touchfiles';
 
@@ -83,6 +86,12 @@ export { PERIODIC_CI_EXCLUDE };
 const ROOT = path.resolve(import.meta.dir, '..');
 
 export type PaidTier = 'gate' | 'periodic';
+export type PaidProfile = 'pr' | 'full';
+
+export interface PaidCaseSelection {
+  e2e: string[] | null;
+  judges: string[] | null;
+}
 
 export const DEFAULT_TIER: PaidTier = 'gate';
 export const DEFAULT_SHARD_TIMEOUT_MS = 30 * 60_000;
@@ -278,6 +287,84 @@ export function serializePaidDiffSelection(selection: PaidDiffSelection): string
     selected: selection.selectedNames === null ? null : [...selection.selectedNames].sort(),
     reason: selection.reason,
   });
+}
+
+/** Both selectors are computed once; execution consumes the exact persisted IDs. */
+export function computePaidCaseSelection(options: {
+  profile: PaidProfile;
+  env?: NodeJS.ProcessEnv;
+  rootDir?: string;
+  changedFiles?: string[];
+}): { selection: PaidCaseSelection; reason: string; coverage?: PrProfileSelection } {
+  const env = options.env ?? process.env;
+  const rootDir = options.rootDir ?? ROOT;
+  const baseRef = env.EVALS_BASE || detectBaseBranch(rootDir) || 'main';
+  const files = options.changedFiles ?? (env.EVALS_ALL ? [] : getChangedFiles(baseRef, rootDir));
+  const all = !!env.EVALS_ALL || files.length === 0;
+  const effectiveFiles = files.filter(file => options.profile !== 'pr' || file !== 'package.json' || !packageVersionOnlySinceBase(rootDir, baseRef));
+  const sourceAliases = options.profile === 'pr' ? existingPromptSourceAliases(effectiveFiles, rootDir) : {};
+  const selectionFiles = [...new Set([...effectiveFiles, ...Object.values(sourceAliases)])];
+  const select = (table: Record<string, string[]>) => all ? null
+    : selectTests(selectionFiles, table, GLOBAL_TOUCHFILES, { baseRef, cwd: rootDir }).selected;
+  const selection = { e2e: select(E2E_TOUCHFILES), judges: select(LLM_JUDGE_TOUCHFILES) };
+  if (options.profile === 'full') return { selection, reason: all ? 'run-all' : 'diff' };
+  const coverage = selectPrProfile({ selectedE2E: selection.e2e, selectedJudges: selection.judges, changedFiles: effectiveFiles, sourceAliases });
+  if (coverage.needsFullValidation) {
+    throw new Error(`PR profile requires full validation: ${coverage.missingCoverage.join(', ')}. Use --profile full and the relevant periodic cases.`);
+  }
+  return { selection: { e2e: coverage.e2e, judges: coverage.judges }, reason: coverage.reasons.join('; '), coverage };
+}
+
+export function existingPromptSourceAliases(files: readonly string[], rootDir = ROOT): Record<string, string> {
+  const aliases: Record<string, string> = {};
+  for (const file of files) {
+    if (!file.endsWith('.md')) continue;
+    const template = `${file}.tmpl`;
+    try { if (fs.statSync(path.join(rootDir, template)).isFile()) aliases[file] = template; }
+    catch { /* Unknown/generated-only content must keep its own dependency identity. */ }
+  }
+  return aliases;
+}
+
+function packageVersionOnlySinceBase(rootDir: string, baseRef: string): boolean {
+  try {
+    const options = { cwd: rootDir, encoding: 'utf8' as const, timeout: 10_000, maxBuffer: 1024 * 1024 };
+    const base = spawnSync('git', ['merge-base', baseRef, 'HEAD'], options);
+    const sha = base.stdout?.trim() ?? '';
+    if (base.status !== 0 || !/^[a-f0-9]{40,64}$/.test(sha)) return false;
+    const old = spawnSync('git', ['show', `${sha}:package.json`], options);
+    return old.status === 0 && packageChangeOnlyVersion(old.stdout, fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
+  } catch { return false; }
+}
+
+/** Only audited per-case files, plus the separately selected judge, enter the fast profile. */
+export function prProfileFileSelected(file: string, selection: PaidCaseSelection): boolean {
+  if (file === 'test/skill-llm-eval.test.ts') return selection.judges === null || selection.judges.length > 0;
+  const ids = PR_PROFILE_FILES[normalizeRelativePath(file)];
+  return !!ids && (selection.e2e === null || ids.some(id => selection.e2e!.includes(id)));
+}
+
+export function expectedPrCaseCount(file: string, selection: PaidCaseSelection): number {
+  if (file === 'test/skill-llm-eval.test.ts') return selection.judges?.length ?? Object.keys(LLM_JUDGE_TOUCHFILES).length;
+  return (PR_PROFILE_FILES[normalizeRelativePath(file)] ?? []).filter(id => selection.e2e === null || selection.e2e.includes(id)).length;
+}
+
+export function prProfileTestNamePattern(file: string, selection: PaidCaseSelection): string {
+  const labels: Record<string, string> = {
+    'plan-review-report': '/plan-eng-review writes GSTACK REVIEW REPORT to plan file',
+    'auq-format-gate': "/plan-ceo-review's first AskUserQuestion is a compliant decision brief (7/7 + substance)",
+  };
+  const ids = file === 'test/skill-llm-eval.test.ts'
+    ? selection.judges ?? Object.keys(LLM_JUDGE_TOUCHFILES)
+    : (PR_PROFILE_FILES[file] ?? []).filter(id => selection.e2e === null || selection.e2e.includes(id));
+  if (ids.length === 0) throw new Error(`No selected PR cases for ${file}`);
+  const escaped = ids.map(id => (labels[id] ?? id).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return `(?:^|\\s)(?:${escaped.join('|')})$`;
+}
+
+export function paidSelectionEnv(profile: PaidProfile, selection: PaidCaseSelection, reason: string): NodeJS.ProcessEnv {
+  const encode = (selected: string[] | null) => JSON.stringify({ version: 1, selected, reason });
+  return { EVALS_PROFILE: profile, EVALS_SELECTION_JSON: encode(selection.e2e), EVALS_JUDGE_SELECTION_JSON: encode(selection.judges) };
 }
 
 export interface ShardSkipDecision {
@@ -529,6 +616,9 @@ export interface RunShardsOptions {
   /** Override the spawned command. Tests inject fake slow/spinning commands. */
   commandFor?: (files: string[]) => ShardCommand;
   log?: (line: string) => void;
+  /** Fast-profile census: selected real cases per file, excluding Bun skips. */
+  expectedCases?: Record<string, number>;
+  casePatterns?: Record<string, string>;
 }
 
 let shardLogSequence = 0;
@@ -582,12 +672,12 @@ export async function runPaidShard(
     ? options.commandFor(files)
     : {
       command: process.execPath,
-      args: buildPaidShardArgs(
+      args: [...buildPaidShardArgs(
         exactTestFileSelectors(files, rootDir),
         timeoutMs,
         options.withinShardConcurrency ?? DEFAULT_WITHIN_SHARD_CONCURRENCY,
         retriesForFiles(files),
-      ),
+      ), ...(options.casePatterns ? ['--test-name-pattern', options.casePatterns[files[0]]] : [])],
     };
 
   const env = { ...(options.env ?? process.env) };
@@ -693,9 +783,17 @@ export async function runPaidShard(
   // commands must print a synthetic `Ran N tests across M files. [Xms]` line,
   // so tests can pin the summary-missing => failure backstop.
   const expectedFiles = files.length;
-  const status: ShardStatus = timedOut
+  let status: ShardStatus = timedOut
     ? 'timed-out'
     : strictTestExitCode(exitCode ?? 1, summary, expectedFiles) === 0 ? 'passed' : 'failed';
+  if (status === 'passed' && options.expectedCases) {
+    const expected = files.reduce((count, file) => count + (options.expectedCases![file] ?? 0), 0);
+    const actual = summary.terminalTestCounts.reduce((count, value) => count + value, 0) - summary.skippedTests;
+    if (expected < 1 || actual !== expected) {
+      status = 'failed';
+      log(`${label} expected ${expected} selected cases, executed ${actual}; refusing incomplete PR coverage`);
+    }
+  }
   const elapsedMs = Date.now() - startedAt;
 
   // Failure debuggability without the RAM cost: read back only the log's
@@ -752,10 +850,14 @@ export function summarize(outcomes: ShardOutcome[]): RunSummary {
  */
 export function applyHollowShardGuard(
   outcomes: ShardOutcome[],
-  opts: { evalsAll: boolean; warn?: (line: string) => void },
+  opts: { evalsAll: boolean; requireExecuted?: boolean; warn?: (line: string) => void },
 ): ShardOutcome[] {
   const warn = opts.warn ?? ((line: string) => console.error(line));
   return outcomes.map((outcome) => {
+    if (opts.requireExecuted && outcome.status === 'passed' &&
+        (outcome.executedTests === null || outcome.executedTests === 0 || isAllSkippedPass(outcome))) {
+      return { ...outcome, status: 'passed-empty' };
+    }
     if (outcome.status !== 'passed' || outcome.executedTests !== 0) return outcome;
     if (!opts.evalsAll) {
       warn(`[test:paid] WARNING: shard ${outcome.shard} passed with 0 executed tests (${outcome.files.join(' ')}) — legitimate under selection, hollow under EVALS_ALL`);
@@ -888,6 +990,10 @@ export interface PaidRunManifest {
   evalsAll: boolean;
   sliceCount: number;
   selectionReason: string;
+  /** Legacy v1 manifests omit these; new plans bind case-level execution. */
+  profile?: PaidProfile;
+  selection?: PaidCaseSelection;
+  prCoverage?: PrProfileSelection;
   /** Dedicated last slice; preceding slices retain ordinary round-robin work. */
   autoplanSlice?: number;
   entries: ManifestEntry[];
@@ -913,6 +1019,7 @@ export function retriesForFiles(files: string[]): number {
 /** Round-robin the RUNNABLE (sorted) shard plan across K slices — deterministic. */
 export function buildRunManifest(opts: {
   tier: PaidTier;
+  profile?: PaidProfile;
   sliceCount: number;
   evalsAll: boolean;
   dedicatedAutoplanSlice?: boolean;
@@ -920,6 +1027,7 @@ export function buildRunManifest(opts: {
   discovered?: string[];
   env?: NodeJS.ProcessEnv;
   rootDir?: string;
+  changedFiles?: string[];
 }): PaidRunManifest {
   if (!Number.isInteger(opts.sliceCount) || opts.sliceCount <= 0) {
     throw new Error(`--slices needs a positive integer. Received: ${opts.sliceCount}`);
@@ -928,11 +1036,20 @@ export function buildRunManifest(opts: {
     throw new Error('Dedicated Autoplan slice requires periodic tier and at least two total slices');
   }
   const rootDir = opts.rootDir ?? ROOT;
+  const env = opts.env ?? process.env;
+  const profile = opts.profile ?? validatedProfile(env.EVALS_PROFILE, 'EVALS_PROFILE');
+  if (profile === 'pr' && opts.tier !== 'gate') throw new Error('PR profile requires gate tier; use --profile full for periodic coverage');
   const discovered = opts.discovered ?? collectPaidTestFiles(rootDir);
-  const { selected, excluded } = selectPaidTestFiles(discovered, opts.tier, rootDir, opts.env ?? process.env);
+  const { selected, excluded } = selectPaidTestFiles(discovered, opts.tier, rootDir, env);
   const shards = planPaidShards(selected, { maxFilesPerShard: 1 });
-  const diffSelection = computePaidDiffSelection(opts.env ?? process.env);
-  const { runnable, skipped } = partitionShardsByDiffSelection(shards, diffSelection.selectedNames);
+  const cases = computePaidCaseSelection({ profile, env, rootDir, changedFiles: opts.changedFiles });
+  const fast = cases.coverage?.mode === 'pr';
+  const profileShards = fast ? shards.filter(files => prProfileFileSelected(files[0], cases.selection)) : shards;
+  const { runnable, skipped } = partitionShardsByDiffSelection(profileShards,
+    cases.selection.e2e === null ? null : new Set(cases.selection.e2e), { rootDir });
+  if (fast) for (const files of shards) {
+    if (!prProfileFileSelected(files[0], cases.selection)) skipped.push({ files, reason: 'Outside the fast PR profile; retained in broad gate/periodic coverage' });
+  }
 
   const entries: ManifestEntry[] = [];
   const overlaySlice = opts.sliceCount - (opts.dedicatedAutoplanSlice ? 1 : 0);
@@ -981,7 +1098,10 @@ export function buildRunManifest(opts: {
     tier: opts.tier,
     evalsAll: opts.evalsAll,
     sliceCount: opts.sliceCount,
-    selectionReason: diffSelection.reason,
+    selectionReason: cases.reason,
+    profile,
+    selection: cases.selection,
+    ...(cases.coverage ? { prCoverage: cases.coverage } : {}),
     ...(opts.dedicatedAutoplanSlice ? { autoplanSlice: opts.sliceCount } : {}),
     entries,
   };
@@ -992,6 +1112,35 @@ export function parseRunManifest(raw: string): PaidRunManifest {
   const parsed = JSON.parse(raw) as PaidRunManifest;
   if (parsed.version !== 1) throw new Error(`unsupported manifest version: ${(parsed as { version?: unknown }).version}`);
   if (parsed.tier !== 'gate' && parsed.tier !== 'periodic') throw new Error(`manifest tier invalid: ${parsed.tier}`);
+  if (parsed.profile !== undefined && parsed.profile !== 'pr' && parsed.profile !== 'full') throw new Error('manifest profile invalid');
+  if (parsed.selection !== undefined) {
+    for (const [key, inventory] of [['e2e', E2E_TOUCHFILES], ['judges', LLM_JUDGE_TOUCHFILES]] as const) {
+      const ids = parsed.selection?.[key];
+      if (ids !== null && (!Array.isArray(ids) || ids.some(id => typeof id !== 'string' || !Object.hasOwn(inventory, id)) || new Set(ids).size !== ids.length)) {
+        throw new Error(`manifest ${key} selection invalid`);
+      }
+    }
+  }
+  if (parsed.profile === 'pr') {
+    const coverage = parsed.prCoverage;
+    if (parsed.tier !== 'gate' || !parsed.selection || !coverage ||
+        !['pr', 'full-fallback'].includes(coverage.mode) || !Array.isArray(coverage.deferred) ||
+        !Array.isArray(coverage.unknownFiles) || !Array.isArray(coverage.missingCoverage) ||
+        !Array.isArray(coverage.deferredPromptFiles) || coverage.deferredPromptFiles.some(file => typeof file !== 'string') ||
+        !Array.isArray(coverage.e2e) || !Array.isArray(coverage.judges) ||
+        coverage.unknownFiles.some(file => typeof file !== 'string') ||
+        coverage.needsFullValidation !== false || coverage.missingCoverage.length !== 0 ||
+        JSON.stringify(parsed.selection.e2e) !== JSON.stringify(coverage.e2e) ||
+        JSON.stringify(parsed.selection.judges) !== JSON.stringify(coverage.judges)) {
+      throw new Error('manifest PR coverage/selection invalid or requires full validation');
+    }
+    if (coverage.mode === 'pr' && coverage.e2e.some(id => !(PR_PROFILE_CASE_IDS as readonly string[]).includes(id))) {
+      throw new Error('manifest PR selection contains a broad-only case');
+    }
+    if (coverage.deferred.some(item => !Object.hasOwn(E2E_TOUCHFILES, item.id) || E2E_TIERS[item.id] !== item.tier || typeof item.reason !== 'string')) {
+      throw new Error('manifest deferred case is outside the broad census');
+    }
+  }
   if (!Number.isInteger(parsed.sliceCount) || parsed.sliceCount <= 0) throw new Error('manifest sliceCount invalid');
   if (!Array.isArray(parsed.entries)) throw new Error('manifest entries missing');
   for (const entry of parsed.entries) {
@@ -999,6 +1148,18 @@ export function parseRunManifest(raw: string): PaidRunManifest {
     if (!['planned', 'skipped-by-diff', 'excluded'].includes(entry.status)) throw new Error(`manifest entry status invalid: ${entry.status}`);
     if (entry.status === 'planned' && (entry.slice < 1 || entry.slice > parsed.sliceCount)) {
       throw new Error(`planned entry ${entry.file} has out-of-range slice ${entry.slice}`);
+    }
+    if (entry.status === 'planned' && parsed.prCoverage?.mode === 'pr' && !prProfileFileSelected(entry.file, parsed.selection!)) {
+      throw new Error(`manifest file is outside its PR case selection: ${entry.file}`);
+    }
+  }
+  if (parsed.prCoverage?.mode === 'pr') {
+    const required = Object.entries(PR_PROFILE_FILES).filter(([, ids]) => ids.some(id => parsed.selection!.e2e!.includes(id))).map(([file]) => file);
+    if (parsed.selection!.judges!.length) required.push('test/skill-llm-eval.test.ts');
+    for (const file of required) {
+      if (parsed.entries.filter(entry => entry.file === file && entry.status === 'planned').length !== 1) {
+        throw new Error(`PR selected cases require exactly one planned owning file: ${file}`);
+      }
     }
   }
   const overlaySlice = parsed.sliceCount - (parsed.autoplanSlice !== undefined ? 1 : 0);
@@ -1042,6 +1203,8 @@ export function parseRunManifest(raw: string): PaidRunManifest {
 export interface SliceResult {
   version: 1;
   tier: PaidTier;
+  profile?: PaidProfile;
+  selection?: PaidCaseSelection;
   sliceIndex: number;
   sliceCount: number;
   timeoutOverrideMs?: number;
@@ -1066,6 +1229,9 @@ export function verifySliceResults(
   for (const result of results) {
     if (result.version !== 1) { problems.push(`slice result with unsupported version: ${String(result.version)}`); continue; }
     if (result.tier !== manifest.tier) problems.push(`slice ${result.sliceIndex} ran tier ${result.tier}, manifest says ${manifest.tier}`);
+    if (manifest.profile === 'pr' && (result.profile !== 'pr' || JSON.stringify(result.selection) !== JSON.stringify(manifest.selection))) {
+      problems.push(`slice ${result.sliceIndex} did not bind the manifest PR case selection`);
+    }
     if (byIndex.has(result.sliceIndex)) problems.push(`duplicate result for slice ${result.sliceIndex}`);
     byIndex.set(result.sliceIndex, result);
   }
@@ -1083,6 +1249,14 @@ export function verifySliceResults(
         problems.push('Registered result must report its own shard');
       }
       const file = normalizeRelativePath(outcome.files[0] ?? '');
+      if (manifest.prCoverage?.mode === 'pr') {
+        const expected = expectedPrCaseCount(file, manifest.selection!);
+        const executed = outcome.executedTests === null || outcome.skippedTests === null
+          ? -1 : outcome.executedTests - outcome.skippedTests;
+        if (outcome.exitCode !== 0 || expected < 1 || executed !== expected) {
+          problems.push(`PR profile expected ${expected} executed cases in ${file}, received ${executed}`);
+        }
+      }
       if (reported.has(file)) problems.push(`${file} reported by two slices`);
       reported.set(file, { slice: result.sliceIndex, status: outcome.status });
       const registered = FILE_RETRY_BUDGETS.find(budget => budget.file === file);
@@ -1130,8 +1304,38 @@ export function verifySliceResults(
   return { ok: problems.length === 0, problems };
 }
 
+export function formatProfileCoverage(manifest: PaidRunManifest): string[] {
+  const coverage = manifest.prCoverage;
+  return [
+    `[test:paid] coverage: profile=${manifest.profile ?? 'full'} mode=${coverage?.mode ?? 'full'}; selected E2E=${manifest.selection?.e2e?.length ?? 'all'}, judges=${manifest.selection?.judges?.length ?? 'all'}`,
+    ...(coverage ? [`[test:paid] deferred: ${coverage.deferred.length} broad behaviors, ${coverage.deferredPromptFiles.length} changed prompts without quick live coverage; these are not PR passes`] : []),
+  ];
+}
+
+/** Final outcomes use each case's last attempt; the attempt total stays visible. */
+export function collectorOutcomeCounts(results: Array<{ tests?: Array<{
+  name: string; suite?: string; passed: boolean; execution?: string;
+}> }>): { executed: number; reused: number; passed: number; failed: number; attempts: number } {
+  const counts = { executed: 0, reused: 0, passed: 0, failed: 0, attempts: 0 };
+  for (const result of results) {
+    const cases = new Map<string, NonNullable<typeof result.tests>[number]>();
+    for (const entry of result.tests ?? []) {
+      if (typeof entry.name !== 'string' || typeof entry.passed !== 'boolean') continue;
+      counts.attempts++;
+      cases.set(`${entry.suite ?? ''}\0${entry.name}`, entry);
+    }
+    for (const entry of cases.values()) {
+      counts[entry.execution === 'reused' ? 'reused' : 'executed']++;
+      counts[entry.passed ? 'passed' : 'failed']++;
+    }
+  }
+  return counts;
+}
+
 type CliOptions = {
   tier: PaidTier;
+  profile: PaidProfile;
+  profileExplicit: boolean;
   listOnly: boolean;
   timeoutMs: number;
   timeoutExplicit: boolean;
@@ -1169,9 +1373,17 @@ function validatedTier(value: string | undefined, source: string): PaidTier {
   return value;
 }
 
+function validatedProfile(value: string | undefined, source: string): PaidProfile {
+  if (value === undefined || value === '') return 'full';
+  if (value !== 'pr' && value !== 'full') throw new Error(`${source} must be pr or full. Received: ${value}`);
+  return value;
+}
+
 export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv = process.env): CliOptions {
   const options: CliOptions = {
     tier: validatedTier(env.EVALS_TIER, 'EVALS_TIER'),
+    profile: validatedProfile(env.EVALS_PROFILE, 'EVALS_PROFILE'),
+    profileExplicit: !!env.EVALS_PROFILE,
     listOnly: false,
     timeoutExplicit: !!env.EVALS_SHARD_TIMEOUT_MS,
     dedicatedAutoplanSlice: false,
@@ -1203,6 +1415,11 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv = process
       options.tier = value;
       continue;
     }
+    if (arg === '--profile') {
+      const value = argv[index += 1];
+      if (!value) throw new Error('--profile needs pr or full');
+      options.profile = validatedProfile(value, '--profile'); options.profileExplicit = true; continue;
+    }
     if (arg === '--timeout') { options.timeoutMs = parsePositiveInt(argv[index += 1], '--timeout') * 1000; options.timeoutExplicit = true; continue; }
     if (arg === '--autoplan-slice') { options.dedicatedAutoplanSlice = true; continue; }
     if (arg === '--jobs') { options.jobs = parsePositiveInt(argv[index += 1], '--jobs'); continue; }
@@ -1227,6 +1444,8 @@ export function parseCliOptions(argv: string[], env: NodeJS.ProcessEnv = process
     throw new Error(`Unknown argument: ${arg}`);
   }
   if (options.dedicatedAutoplanSlice && !options.emitPlanPath) throw new Error('--autoplan-slice requires --emit-plan');
+  if (options.profile === 'pr' && options.tier !== 'gate') throw new Error('PR profile requires gate tier');
+  if (options.profile === 'pr' && options.maxFilesPerShard !== 1) throw new Error('PR profile requires one file per shard to preserve case accounting');
   return options;
 }
 
@@ -1238,6 +1457,7 @@ async function main(): Promise<number> {
   if (options.emitPlanPath) {
     const manifest = buildRunManifest({
       tier: options.tier,
+      profile: options.profile,
       sliceCount: options.slices,
       dedicatedAutoplanSlice: options.dedicatedAutoplanSlice,
       timeoutMs: options.timeoutExplicit ? options.timeoutMs : undefined,
@@ -1249,7 +1469,7 @@ async function main(): Promise<number> {
     const skipped = manifest.entries.filter((e) => e.status === 'skipped-by-diff').length;
     const excludedCount = manifest.entries.filter((e) => e.status === 'excluded').length;
     console.log(
-      `[test:paid] plan: tier=${manifest.tier} evalsAll=${manifest.evalsAll} — `
+      `[test:paid] plan: tier=${manifest.tier} profile=${manifest.profile ?? 'full'} evalsAll=${manifest.evalsAll} — `
       + `${planned} planned across ${manifest.sliceCount} slice(s), ${skipped} skipped by diff, `
       + `${excludedCount} excluded (${manifest.selectionReason})`,
     );
@@ -1266,28 +1486,28 @@ async function main(): Promise<number> {
     const verdict = verifySliceResults(manifest, results);
     const planned = manifest.entries.filter((e) => e.status === 'planned').length;
     console.log(`[test:paid] report: ${results.length}/${manifest.sliceCount} slices, ${planned} planned shards, tier=${manifest.tier}`);
+    for (const line of formatProfileCoverage(manifest)) console.log(line);
     for (const result of results.sort((a, b) => a.sliceIndex - b.sliceIndex)) {
       for (const outcome of result.outcomes) {
         console.log(`  slice ${result.sliceIndex}  ${outcome.status.padEnd(15)} ${String(Math.round(outcome.elapsedMs / 1000)).padStart(5)}s  ${outcome.files.join(' ')}`);
       }
-    }
-    if (!verdict.ok) {
-      console.error(`[test:paid] report: ${verdict.problems.length} problem(s):`);
-      for (const problem of verdict.problems) console.error(`  ✗ ${problem}`);
-      return 1;
     }
     // Flake honesty (WS1): surface every test that needed a retry to pass.
     // WARNS, never fails — a flaky pass must not block merges; it must also
     // never be invisible (bun's own output hides retried passes entirely).
     // Source: the finalized eval-store JSONs inside the slice artifacts.
     const flaky: Array<{ name: string; attempts: number; file: string }> = [];
+    const collectors: Parameters<typeof collectorOutcomeCounts>[0] = [];
     for (const name of fs.readdirSync(options.reportDir, { recursive: true }) as string[]) {
       if (!isFinalizedEvalResultFile(name)) continue;
       try {
-        const parsed = JSON.parse(fs.readFileSync(path.join(options.reportDir, name), 'utf-8')) as { flaky_retries?: Array<{ name: string; attempts: number }> };
+        const parsed = JSON.parse(fs.readFileSync(path.join(options.reportDir, name), 'utf-8'));
+        if (Array.isArray(parsed.tests)) collectors.push(parsed);
         for (const f of parsed.flaky_retries ?? []) flaky.push({ ...f, file: name });
       } catch { /* non-eval JSON — not this report's business */ }
     }
+    const evidence = collectorOutcomeCounts(collectors);
+    console.log(`[test:paid] collector final outcomes: ${evidence.executed} executed, ${evidence.reused} reused; ${evidence.passed} passed, ${evidence.failed} failed (${evidence.attempts} attempt records from ${collectors.length} collectors)`);
     if (flaky.length > 0) {
       console.log(`[test:paid] report: ⚠ ${flaky.length} test(s) passed only on retry this run (recorded, not blocking):`);
       for (const f of flaky) console.log(`  ⚠ ${f.name} (x${f.attempts}) — ${f.file}`);
@@ -1305,6 +1525,11 @@ async function main(): Promise<number> {
         console.log(`  ⚠ ${outcome.files.join(' ')} (${outcome.executedTests} skipped — external service missing or tier mismatch)`);
       }
     }
+    if (!verdict.ok) {
+      console.error(`[test:paid] report: ${verdict.problems.length} problem(s):`);
+      for (const problem of verdict.problems) console.error(`  ✗ ${problem}`);
+      return 1;
+    }
     console.log('[test:paid] report: every planned shard accounted and passed');
     return 0;
   }
@@ -1321,6 +1546,8 @@ async function main(): Promise<number> {
     if (manifest.tier !== options.tier) {
       throw new Error(`manifest tier ${manifest.tier} != requested tier ${options.tier} — refusing a cross-tier run`);
     }
+    const profile = manifest.profile ?? 'full';
+    if (options.profileExplicit && options.profile !== profile) throw new Error(`manifest profile ${profile} != requested profile ${options.profile}`);
     if (options.sliceIndex > manifest.sliceCount) {
       throw new Error(`--slice ${options.sliceIndex} exceeds manifest sliceCount ${manifest.sliceCount}`);
     }
@@ -1341,6 +1568,10 @@ async function main(): Promise<number> {
         withinShardConcurrency: options.withinShardConcurrency,
         autoplanBudget: mine.find(entry => entry.file === AUTOPLAN_CHAIN_BUDGET.file)?.budget,
         registeredBudgets: Object.fromEntries(mine.filter(entry => entry.budget).map(entry => [normalizeRelativePath(entry.file), entry.budget!])),
+        ...(manifest.prCoverage?.mode === 'pr' ? {
+          expectedCases: Object.fromEntries(mine.map(entry => [entry.file, expectedPrCaseCount(entry.file, manifest.selection!)])),
+          casePatterns: Object.fromEntries(mine.map(entry => [entry.file, prProfileTestNamePattern(entry.file, manifest.selection!)])),
+        } : {}),
         env: {
           ...process.env,
           // Manifest filenames already encode carve selection. Ambient scope
@@ -1348,20 +1579,22 @@ async function main(): Promise<number> {
           GSTACK_CARVE_SKILL: '',
           EVALS: '1',
           EVALS_TIER: options.tier,
-          ...(manifest.evalsAll ? { EVALS_ALL: '1' } : {}),
+          EVALS_ALL: manifest.evalsAll ? '1' : '',
           EVALS_PREFLIGHT_OK: '1',
           // The manifest IS the selection: children must not re-derive a
           // possibly-different one from their own git view.
-          EVALS_SELECTION_JSON: JSON.stringify({ version: 1, selected: null, reason: `manifest slice ${options.sliceIndex}: ${manifest.selectionReason}` }),
+          ...paidSelectionEnv(profile, manifest.selection ?? { e2e: null, judges: null }, `manifest slice ${options.sliceIndex}: ${manifest.selectionReason}`),
         },
         evalDirBase,
       });
     }
-    const guarded = applyHollowShardGuard(summary.outcomes, { evalsAll: manifest.evalsAll });
+    const guarded = applyHollowShardGuard(summary.outcomes, { evalsAll: manifest.evalsAll, requireExecuted: manifest.prCoverage?.mode === 'pr' });
     summary = summarize(guarded);
     const sliceResult: SliceResult = {
       version: 1,
       tier: manifest.tier,
+      profile,
+      ...(manifest.selection ? { selection: manifest.selection } : {}),
       sliceIndex: options.sliceIndex,
       sliceCount: manifest.sliceCount,
       ...(options.timeoutExplicit ? { timeoutOverrideMs: options.timeoutMs } : {}),
@@ -1382,14 +1615,18 @@ async function main(): Promise<number> {
   // Parent-side diff selection (D9): skip whole shards whose mapped tests are
   // all unselected. Fail-open everywhere — the child's self-skip stays
   // authoritative for anything the mapper can't attribute.
-  const diffSelection = computePaidDiffSelection(process.env);
-  const { runnable, skipped } = partitionShardsByDiffSelection(shards, diffSelection.selectedNames);
-  const selectedCount = diffSelection.selectedNames
-    ? diffSelection.selectedNames.size
-    : diffSelection.totalTests;
+  const cases = computePaidCaseSelection({ profile: options.profile });
+  const fast = cases.coverage?.mode === 'pr';
+  const profileShards = fast ? shards.filter(files => files.some(file => prProfileFileSelected(file, cases.selection))) : shards;
+  const { runnable, skipped } = partitionShardsByDiffSelection(profileShards,
+    cases.selection.e2e === null ? null : new Set(cases.selection.e2e));
+  if (fast) for (const files of shards) {
+    if (!files.some(file => prProfileFileSelected(file, cases.selection))) skipped.push({ files, reason: 'Outside the fast PR profile; retained in broad coverage' });
+  }
+  const selectedCount = cases.selection.e2e?.length ?? Object.keys(E2E_TOUCHFILES).length;
   console.log(
-    `[test:paid] selection: selected ${selectedCount} of ${diffSelection.totalTests} tests -> `
-    + `running ${runnable.length} of ${shards.length} shards, reason: ${diffSelection.reason}`,
+    `[test:paid] selection: profile=${options.profile} selected ${selectedCount} of ${Object.keys(E2E_TOUCHFILES).length} tests -> `
+    + `running ${runnable.length} of ${shards.length} shards, reason: ${cases.reason}`,
   );
   console.log(
     `[test:paid] tier=${options.tier}: ${selected.length}/${discovered.length} files, `
@@ -1425,6 +1662,10 @@ async function main(): Promise<number> {
     timeoutMs: options.timeoutExplicit ? options.timeoutMs : undefined,
     jobs: options.jobs,
     withinShardConcurrency: options.withinShardConcurrency,
+    ...(fast ? {
+      expectedCases: Object.fromEntries(runnable.flat().map(file => [file, expectedPrCaseCount(file, cases.selection)])),
+      casePatterns: Object.fromEntries(runnable.flat().map(file => [file, prProfileTestNamePattern(file, cases.selection)])),
+    } : {}),
     env: {
       ...process.env,
       EVALS: '1',
@@ -1434,7 +1675,7 @@ async function main(): Promise<number> {
       // module load adopts it instead of re-deriving per shard (which spawned
       // a bun subprocess per child on the touchfiles-data map-diff path).
       // Children fall back to local derivation on any parse failure.
-      EVALS_SELECTION_JSON: serializePaidDiffSelection(diffSelection),
+      ...paidSelectionEnv(options.profile, cases.selection, cases.reason),
     },
     evalDirBase: process.env.GSTACK_EVAL_DIR || getProjectEvalDir(),
   });
@@ -1450,6 +1691,7 @@ async function main(): Promise<number> {
   }));
   const guardedOutcomes = applyHollowShardGuard(runSummary.outcomes, {
     evalsAll: process.env.EVALS_ALL === '1',
+    requireExecuted: fast,
   });
   const summary = summarize([...guardedOutcomes, ...skippedOutcomes]);
   for (const line of formatSummary(summary)) console.log(line);

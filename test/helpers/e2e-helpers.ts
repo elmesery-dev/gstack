@@ -94,15 +94,18 @@ export function resolveModuleSelection(
   compute: () => string[] | null,
   stderrWrite: (text: string) => void = (text) => process.stderr.write(text),
 ): string[] | null {
+  const strictProfile = process.env.EVALS_PROFILE === 'pr';
   if (raw) {
     try {
       const { selected, reason } = parseEvalsSelectionJson(raw);
       stderrWrite(`\nE2E selection (parent-propagated: ${reason}): ${selected === null ? 'all' : selected.length} tests\n`);
       return selected;
     } catch (err) {
+      if (strictProfile) throw new Error(`PR profile requires a valid persisted selection: ${err instanceof Error ? err.message : String(err)}`);
       stderrWrite(`WARNING: malformed EVALS_SELECTION_JSON (${err instanceof Error ? err.message : String(err)}) — falling back to local selection\n`);
     }
   }
+  if (strictProfile) throw new Error('PR profile requires persisted case selection from scripts/test-paid-shards.ts');
   return compute();
 }
 

@@ -1,12 +1,8 @@
 name: Free Tests
 
-# The free suite (~400 files: test/, browse/test/, make-pdf/test/, design/test/)
-# had ZERO Linux CI coverage before this lane — only a curated Windows subset
-# ran anywhere. This job runs the whole thing through the canonical runner
-# (scripts/test-free-shards.ts): N concurrent shard processes (serial within
-# each, plus a trailing serial tree-mutating shard) with strict-output
-# classification per shard, so a truncated or summary-less run can never
-# report green.
+# A single duration-balanced plan covers every free test exactly once. Each
+# shard runs serially on its own machine; the aggregate requires every receipt
+# and strict outcome. Tree-mutating files, when present, get a separate machine.
 #
 # Deliberately SECRETLESS: free tests make no API calls, so this lane gets no
 # provider keys at all — least privilege, and fork PRs get real test signal
@@ -17,9 +13,7 @@ name: Free Tests
 # red, fix or quarantine-with-issue — don't make it advisory; an advisory lane
 # is permanent false comfort.
 #
-# Sizing note (decision V3): single job first. If PR runs show it slower than
-# the eval matrix wall, switch to a matrix of `--shards N --shard i` jobs
-# (indices are stable, empty shards no-op).
+# Local `bun run test` still uses the existing bounded process pool.
 
 on:
   pull_request:
@@ -44,6 +38,29 @@ permissions:
   contents: read
 
 jobs:
+  free-plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - id: plan
+        name: Inventory and balance the complete free suite
+        run: |
+          matrix=$(bun run scripts/test-free-shards.ts --ci-plan "$RUNNER_TEMP/free-plan.json" --shards 20)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}/free-plan.json
+          if-no-files-found: error
+
   cso-macos-launcher:
     runs-on: macos-latest
     timeout-minutes: 15
@@ -110,8 +127,13 @@ jobs:
           DOCKER_HOST: unix:///var/run/docker.sock
 
   free-suite:
+    needs: free-plan
     runs-on: ubicloud-standard-8
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.free-plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -120,6 +142,11 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.0
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}
 
       - uses: actions/cache@v6
         with:
@@ -194,7 +221,7 @@ jobs:
       # if a future edit drops the gate build (or poppler), the lane FAILS
       # instead of the gates silently self-skipping back to false green.
       - name: Run free suite
-        run: xvfb-run -a bun run test:free
+        run: xvfb-run -a bun run test:free --ci-run "$RUNNER_TEMP/free-plan.json" --shard ${{ matrix.shard }} --result "$RUNNER_TEMP/free-results/shard-${{ matrix.shard }}.json"
         env:
           GSTACK_EXPECT_BINARIES: "1"
           # WS1 flake telemetry: a single timing flake must not red the only
@@ -208,13 +235,21 @@ jobs:
           GSTACK_FREE_RETRY_FLAKY: "1"
           GSTACK_FLAKE_LEDGER: ${{ runner.temp }}/flake-ledger.jsonl
 
+      - name: Upload strict shard result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: free-result-${{ matrix.shard }}
+          path: ${{ runner.temp }}/free-results/*.json
+          if-no-files-found: error
+
       # Uploaded unconditionally (not just on failure): a flaky-pass run is
       # GREEN — that's the point — so its evidence must survive green runs.
       - name: Upload flake ledger
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: flake-ledger
+          name: flake-ledger-${{ matrix.shard }}
           path: ${{ runner.temp }}/flake-ledger.jsonl
           if-no-files-found: ignore
           retention-days: 90
@@ -228,7 +263,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: free-test-shard-logs
+          name: free-test-shard-logs-${{ matrix.shard }}
           path: /tmp/gstack-free-test-*.log
           if-no-files-found: ignore
 
@@ -239,7 +274,7 @@ jobs:
     if: always()
     needs: [free-suite, cso-macos-launcher, cso-windows-launcher, cso-docker-integration]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
     steps:
       - name: Require the free suite and every CSO platform gate
         env:
@@ -253,3 +288,20 @@ jobs:
           test "$CSO_MACOS_RESULT" = success
           test "$CSO_WINDOWS_RESULT" = success
           test "$CSO_DOCKER_RESULT" = success
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: free-plan
+          path: ${{ runner.temp }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: free-result-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/free-results
+      - name: Require exact coverage and complete strict results
+        run: bun run scripts/test-free-shards.ts --ci-verify "$RUNNER_TEMP/free-plan.json" --results "$RUNNER_TEMP/free-results"

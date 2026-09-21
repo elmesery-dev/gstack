@@ -5,8 +5,8 @@
  * Four jobs:
  *   1. Enumeration. Walk `browse/test/`, `test/`, `make-pdf/test/` and return
  *      every `*.test.{ts,tsx,js,jsx,mjs,cjs}` that isn't a paid-eval test.
- *   2. Sharding. Stable-hash assign each test to one of N shards. Used by CI
- *      to parallelize the free suite when needed.
+ *   2. Sharding. Duration-pack local and isolated CI runs. Legacy --shard
+ *      selection retains stable hash assignment.
  *   3. Curation (Windows-safe filter). Scan each test's content for POSIX-only
  *      patterns (`/bin/bash`, `sh -c`, raw `/tmp/`, `chmod`, `xargs`). Files
  *      that match are excluded from the Windows-safe subset — they would fail
@@ -37,7 +37,7 @@
  *     a complete summary and exit 1. Strictly SAFER than the serial path and
  *     ~2x faster on a 6-file probe (0.22s -> 0.11s wall, 280% CPU); the win
  *     grows with suite size since the serial suite measured 454s.
- *   - CI-matrix runs (`--shards M --shard i`) keep the hash-partitioned
+ *   - Legacy runs (`--shards M --shard i`) keep the hash-partitioned
  *     one-child-per-shard path. Cross-runner partitioning must be
  *     deterministic and per-file stable, so bun's own `--shard=M/N`
  *     (round-robin over sorted paths — every assignment shifts when a file
@@ -72,6 +72,10 @@
  *   bun run scripts/test-free-shards.ts --shards 4 --shard 1       # one shard (CI matrix)
  *   bun run scripts/test-free-shards.ts --wall-timeout 600         # override the kill deadline
  *   bun run scripts/test-free-shards.ts --verbose                  # forward the full child stream
+ *   bun run scripts/test-free-shards.ts --quick                    # explicit fast subset, not acceptance
+ *   bun run scripts/test-free-shards.ts --ci-plan plan.json --shards 20
+ *   bun run scripts/test-free-shards.ts --ci-run plan.json --shard 1 --result result.json
+ *   bun run scripts/test-free-shards.ts --ci-verify plan.json --results results/
  */
 
 import * as fs from 'fs';
@@ -79,6 +83,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { createHash } from 'node:crypto';
 import { isPaidTestFile } from '../test/helpers/paid-test-set';
 import {
   BunTestOutputClassifier,
@@ -601,12 +606,12 @@ export function assignFilesToShards(files: string[], shardCount: number): string
   return shards.map(filesInShard => filesInShard.sort());
 }
 
-// ─── Duration-aware packing (full-suite path ONLY) ─────────────────────────
+// ─── Duration-aware packing (local full suite and explicit CI plans) ───────
 // Hash sharding balances file COUNTS (~1.15x spread) but not cost: the 15
 // Playwright-launching files land 4/3/4/1/2/1 across 6 shards, giving a
 // measured 28s–97s shard spread and ~40s of idle tail on every run. LPT
 // packing over recorded per-file durations reclaims most of it. The `--shard`
-// CI-matrix path is deliberately untouched — its contract is stable indices
+// legacy path is deliberately untouched — its contract is stable indices
 // via assignFilesToShards/stableHash (empty shards no-op; see above).
 //
 // One store, no overlay: durations come from the committed seed
@@ -616,9 +621,7 @@ export function assignFilesToShards(files: string[], shardCount: number): string
 // timestamp). GSTACK_FREE_TEST_DURATIONS overrides the path for experiments.
 // The seed is a HINT, not a contract: missing file → hash-shard fallback;
 // unknown file → 75th-percentile pessimism (placed early by LPT, bounding
-// tail risk). Successor note: bun ≥1.3.14 ships native --timings/--shard LPT
-// scheduling — when the repo unpins 1.3.13, this packer is the code to
-// replace (keep it swappable).
+// tail risk). CI shares one plan rather than independently recomputing it.
 
 export const FREE_TEST_DURATIONS_FILE = 'scripts/free-test-durations.json';
 
@@ -687,6 +690,104 @@ export function packShardsByDuration(
   return { shards: shards.map((s) => s.sort()), predictedMs: loads };
 }
 
+export interface FreeCiPlan {
+  version: 1;
+  revision: string;
+  id: string;
+  shards: Array<{ shard: number; files: string[]; predictedMs: number }>;
+}
+
+const planDigest = (plan: Omit<FreeCiPlan, 'id'>): string =>
+  createHash('sha256').update(JSON.stringify(plan)).digest('hex');
+
+/** One immutable plan is shared by isolated CI machines; never repack per job. */
+export function createFreeCiPlan(files: string[], count: number, durations: Record<string, number>, revision: string): FreeCiPlan {
+  const readers = files.filter(file => !(file in TREE_MUTATING));
+  const mutators = files.filter(file => file in TREE_MUTATING).sort();
+  const packed = packShardsByDuration(readers, count, durations);
+  const shards = packed.shards.map((files, index) => ({ shard: index + 1, files, predictedMs: packed.predictedMs[index] }));
+  if (mutators.length) shards.push({ shard: shards.length + 1, files: mutators, predictedMs: mutators.reduce((ms, file) => ms + (durations[file] ?? 0), 0) });
+  const body = { version: 1 as const, revision, shards };
+  return { ...body, id: planDigest(body) };
+}
+
+export function validateFreeCiPlan(plan: FreeCiPlan, files: string[], revision: string): void {
+  const { id, version, shards } = plan;
+  if (version !== 1 || plan.revision !== revision || !Array.isArray(shards) || !shards.length
+    || id !== planDigest({ version, revision: plan.revision, shards })) throw new Error('CI plan identity or revision mismatch');
+  if (shards.some((shard, index) => shard.shard !== index + 1 || !Array.isArray(shard.files)
+    || !Number.isFinite(shard.predictedMs) || shard.predictedMs < 0)) throw new Error('Invalid CI shard plan');
+  const planned = shards.flatMap(shard => shard.files).sort();
+  if (new Set(planned).size !== planned.length || JSON.stringify(planned) !== JSON.stringify([...files].sort())) throw new Error('CI plan must cover every free file exactly once');
+}
+
+export interface FreeCiResult {
+  planId: string;
+  revision: string;
+  outcome: FreeShardOutcome;
+  retry: FreeShardOutcome | null;
+}
+
+/** Preserve the full-suite retry cap across independently running CI jobs. */
+export function eligibleFreeRetryFiles(outcomes: FreeShardOutcome[]): string[] | null {
+  if (!outcomes.every(outcome => hasScopedFailureAttribution(outcome) && (outcome.status === 'passed'
+    || (outcome.status === 'failed' && outcome.failingFiles.length > 0 && outcome.unattributedFailures === 0)))) return null;
+  const files = [...new Set(outcomes.flatMap(outcome => outcome.failingFiles))];
+  return files.length > 0 && files.length <= 5 ? files : null;
+}
+
+function hasScopedFailureAttribution(outcome: FreeShardOutcome): boolean {
+  return new Set(outcome.failingFiles).size === outcome.failingFiles.length
+    && outcome.failingFiles.every(file => outcome.files.includes(file));
+}
+
+export function verifyFreeCiResults(plan: FreeCiPlan, results: FreeCiResult[]): void {
+  if (results.length !== plan.shards.length) throw new Error('Missing or duplicate CI shard results');
+  const seen = new Set<number>();
+  for (const result of results) {
+    const outcome = result.outcome;
+    const shard = plan.shards[outcome.shard - 1];
+    if (result.planId !== plan.id || result.revision !== plan.revision || !shard || seen.has(outcome.shard)
+      || JSON.stringify(outcome.files) !== JSON.stringify(shard.files)) throw new Error('CI result identity, shard or file coverage mismatch');
+    seen.add(outcome.shard);
+    if (!hasCompleteCiSummary(outcome)) throw new Error('Missing or incomplete CI execution summary');
+    if (outcome.status === 'passed') {
+      if (outcome.exitCode !== 0 || outcome.failingFiles.length || outcome.unattributedFailures || result.retry) throw new Error('Inconsistent passing CI result');
+    } else {
+      const retryFiles = eligibleFreeRetryFiles([outcome]);
+      const retry = result.retry;
+      if (!retryFiles || !retry || retry.status !== 'passed' || retry.exitCode !== 0
+        || retry.failingFiles.length || retry.unattributedFailures
+        || !hasCompleteCiSummary(retry)
+        || JSON.stringify([...retry.files].sort()) !== JSON.stringify(retryFiles.sort())) throw new Error('Failed or incomplete CI shard');
+    }
+  }
+  if (results.some(result => result.retry) && !eligibleFreeRetryFiles(results.map(result => result.outcome))) {
+    throw new Error('CI retries exceed the full-suite attribution or five-file limit');
+  }
+}
+
+function hasCompleteCiSummary(outcome: FreeShardOutcome): boolean {
+  const summary = outcome.summary;
+  if (!summary || !Number.isInteger(summary.testsRan) || summary.testsRan! < 0
+    || summary.filesRan !== outcome.files.length) return false;
+  // Empty assigned shards deliberately do not launch Bun or invent a summary.
+  return outcome.files.length === 0
+    ? summary.testsRan === 0 && summary.sawTerminalSummary === false
+    : summary.sawTerminalSummary === true;
+}
+
+export const QUICK_CORE = [
+  'test/strict-output.test.ts', 'test/gen-skill-docs.test.ts',
+  'test/skill-check-driver.test.ts', 'test/ceo-native-ledger-replay.test.ts',
+  'test/skill-ceo-section-ordering.test.ts',
+];
+
+export function selectQuickFreeFiles(files: string[], durations: Record<string, number>): string[] {
+  return files.filter(file => isFreeTestFile(file)
+    && (QUICK_CORE.includes(file) || (durations[file] !== undefined && durations[file] <= 2_000)));
+}
+
 export interface BuildShardArgsOptions {
   /**
    * Pass bun's --parallel (worker-per-file, implies --isolate). No production
@@ -720,6 +821,12 @@ type CliOptions = {
   wallTimeoutMs: number;
   /** True when --wall-timeout was passed explicitly; full-suite mode only auto-scales the default. */
   wallTimeoutExplicit: boolean;
+  quick: boolean;
+  ciPlan: string | null;
+  ciRun: string | null;
+  ciVerify: string | null;
+  result: string | null;
+  results: string | null;
 };
 
 function parseCliOptions(argv: string[]): CliOptions {
@@ -732,6 +839,10 @@ function parseCliOptions(argv: string[]): CliOptions {
   let shardIndex: number | null = null;
   let wallTimeoutMs = DEFAULT_WALL_TIMEOUT_MS;
   let wallTimeoutExplicit = false;
+  let quick = false;
+  const paths: Record<'ciPlan' | 'ciRun' | 'ciVerify' | 'result' | 'results', string | null> = {
+    ciPlan: null, ciRun: null, ciVerify: null, result: null, results: null,
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -740,6 +851,14 @@ function parseCliOptions(argv: string[]): CliOptions {
     if (arg === '--record-durations') { recordDurations = true; continue; }
     if (arg === '--windows-only') { windowsOnly = true; continue; }
     if (arg === '--verbose') { verbose = true; continue; }
+    if (arg === '--quick') { quick = true; continue; }
+    const pathKey = ({ '--ci-plan': 'ciPlan', '--ci-run': 'ciRun', '--ci-verify': 'ciVerify', '--result': 'result', '--results': 'results' } as const)[arg];
+    if (pathKey) {
+      const value = argv[++index];
+      if (!value || value.startsWith('--')) throw new Error(`Missing path for ${arg}`);
+      paths[pathKey] = value;
+      continue;
+    }
     if (arg === '--shards') {
       const value = argv[index + 1];
       if (!value) throw new Error('Missing value for --shards');
@@ -765,7 +884,12 @@ function parseCliOptions(argv: string[]): CliOptions {
     throw new Error(`Unknown argument: ${arg}`);
   }
 
-  return { dryRun, listOnly, recordDurations, windowsOnly, verbose, shardCount, shardIndex, wallTimeoutMs, wallTimeoutExplicit };
+  const ciModes = [paths.ciPlan, paths.ciRun, paths.ciVerify].filter(Boolean).length;
+  if (ciModes > 1 || (ciModes && (quick || listOnly || dryRun || recordDurations || windowsOnly))) throw new Error('CI modes cannot be combined with other selection modes');
+  if (paths.ciRun && (shardIndex === null || !paths.result)) throw new Error('--ci-run requires --shard and --result');
+  if (paths.ciVerify && !paths.results) throw new Error('--ci-verify requires --results');
+  if (quick && (recordDurations || windowsOnly || shardIndex !== null)) throw new Error('--quick cannot change recording, Windows or shard selection');
+  return { dryRun, listOnly, recordDurations, windowsOnly, verbose, shardCount, shardIndex, wallTimeoutMs, wallTimeoutExplicit, quick, ...paths };
 }
 
 function formatShardSummary(shards: string[][]): string[] {
@@ -1151,6 +1275,8 @@ export interface FreeShardOutcome {
   exitCode: number | null;
   elapsedMs: number;
   groupPid: number | null;
+  /** Required by CI receipts; optional for existing local caller fixtures. */
+  summary?: Pick<FreeRunReport, 'testsRan' | 'filesRan' | 'sawTerminalSummary'>;
   /**
    * Repo-relative files with attributed test failures or crashes, deduped.
    * Feeds the opt-in flaky retry pass (GSTACK_FREE_RETRY_FLAKY) — empty on
@@ -1246,6 +1372,7 @@ export async function runFreeShard(
   if (files.length === 0) {
     const outcome: FreeShardOutcome = {
       shard: shardNumber, files: [], status: 'passed', exitCode: 0, elapsedMs: 0, groupPid: null, failingFiles: [], unattributedFailures: 0,
+      summary: { testsRan: 0, filesRan: 0, sawTerminalSummary: false },
     };
     log(shardEpilogue(outcome, totalShards));
     return outcome;
@@ -1431,6 +1558,7 @@ export async function runFreeShard(
       + (report.sawTerminalSummary ? 0 : 1);
   const outcome: FreeShardOutcome = {
     shard: shardNumber, files, status, exitCode, elapsedMs: Date.now() - startedAt, groupPid, failingFiles, unattributedFailures,
+    summary: { testsRan: report.testsRan, filesRan: report.filesRan, sawTerminalSummary: report.sawTerminalSummary },
   };
   log(shardEpilogue(outcome, totalShards));
   for (const line of buildRunEpilogue(status, report, outcome.elapsedMs, logPath)) log(line);
@@ -1454,37 +1582,40 @@ function exitCodeFor(status: FreeShardStatus): number {
 /**
  * `--record-durations`: time every file in its own child (exact per-file wall,
  * immune to bun's stream buffering) and write the committed seed atomically.
- * Occasional + manual by design — CI never records (a hint refreshed by a
- * human beats per-run churn), and the runtime (~serial suite / jobs) is fine
- * for an operation run a few times a quarter.
+ * Uses the same isolated, strictly classified children as a normal run.
+ * Run against an immutable checkout; never time while editing its inputs.
  */
 async function recordFreeTestDurations(files: string[], jobs: number): Promise<number> {
   const durations: Record<string, number> = {};
   const failed: string[] = [];
+  const expectedCount = files.length;
   let cursor = 0;
   console.log(`[test:free] recording per-file durations: ${files.length} files across ${jobs} workers`);
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (isTerminationRequested()) return;
       const index = cursor;
       cursor += 1;
       if (index >= files.length) return;
       const file = files[index];
-      const started = Date.now();
-      const child = spawn('bun', ['test', file, `--timeout=${FREE_TEST_TIMEOUT_MS}`], {
-        cwd: ROOT,
-        stdio: ['ignore', 'ignore', 'ignore'],
-        env: { ...process.env, GSTACK_HEADLESS: '1' },
+      const outcome = await runFreeShard([file], index + 1, files.length, {
+        wallTimeoutMs: wallTimeoutForShard(1),
+        quiet: true,
       });
-      const code = await new Promise<number>((resolve) => {
-        const timer = setTimeout(() => { child.kill('SIGKILL'); }, wallTimeoutForShard(1));
-        child.on('close', (c) => { clearTimeout(timer); resolve(c ?? 1); });
-        child.on('error', () => { clearTimeout(timer); resolve(1); });
-      });
-      durations[normalizeRelativePath(file)] = Date.now() - started;
-      if (code !== 0) failed.push(file);
+      durations[normalizeRelativePath(file)] = outcome.elapsedMs;
+      if (outcome.status !== 'passed') failed.push(file);
     }
   };
+  // As in full-suite mode, finish readers before any checkout-mutating tests.
+  const mutators = files.filter(file => file in TREE_MUTATING);
+  files = files.filter(file => !(file in TREE_MUTATING));
   await Promise.all(Array.from({ length: Math.max(1, jobs) }, () => worker()));
+  files = mutators;
+  cursor = 0;
+  await worker();
+  if (Object.keys(durations).length !== expectedCount) {
+    throw new Error('Duration recording was interrupted; the seed was not replaced.');
+  }
 
   const target = process.env.GSTACK_FREE_TEST_DURATIONS ?? path.join(ROOT, FREE_TEST_DURATIONS_FILE);
   const payload = {
@@ -1508,6 +1639,78 @@ async function recordFreeTestDurations(files: string[], jobs: number): Promise<n
   return 0;
 }
 
+async function retryFailedFreeFiles(
+  outcomes: FreeShardOutcome[], totalShards: number,
+  options: Pick<CliOptions, 'wallTimeoutExplicit' | 'wallTimeoutMs' | 'verbose'>,
+): Promise<{ exitCode: number; retry: FreeShardOutcome | null }> {
+  let worst = Math.max(...outcomes.map(outcome => exitCodeFor(outcome.status)));
+  let retry: FreeShardOutcome | null = null;
+  const shardTimeout = (count: number) => options.wallTimeoutExplicit
+    ? options.wallTimeoutMs : wallTimeoutForShard(count, options.wallTimeoutMs);
+  // Opt-in flaky retry (GSTACK_FREE_RETRY_FLAKY=1): when every failure is an
+  // attributed test failure (no timeouts, no unattributed carnage), re-run
+  // just the failing files ONCE in a fresh serial shard. A clean retry
+  // downgrades the run to a loud flaky-pass; a repeat failure stays a
+  // failure. Default OFF: dev boxes should see flakes, not absorb them.
+  // Exists for syscall-supervised sandboxes (see fullSuiteJobs) where a run
+  // lands 0-1 spurious browser-timing failures under an otherwise-green
+  // suite. Capped so a genuinely broken tree never masquerades as flaky.
+  const RETRY_CAP = 5;
+  if (
+    worst !== 0
+    && process.env.GSTACK_FREE_RETRY_FLAKY === '1'
+    && !isTerminationRequested()
+    && outcomes.every((o) => o.status !== 'timed-out')
+  ) {
+    const flakyFiles = [...new Set(outcomes.flatMap((o) => o.failingFiles))]
+      .filter((f): f is string => typeof f === 'string' && f.length > 0);
+    // "Fully attributed" is per-failure, not per-shard: a shard with one
+    // attributed failure PLUS a headerless failure / unhandled error /
+    // truncated run must veto the retry — re-running only failingFiles would
+    // mask the unattributable evidence as a FLAKY-PASS.
+    const allAttributed = outcomes.every((o) => hasScopedFailureAttribution(o) && (o.status === 'passed'
+      || (o.failingFiles.length > 0 && o.unattributedFailures === 0)));
+    if (allAttributed && flakyFiles.length > 0 && flakyFiles.length <= RETRY_CAP) {
+      console.log(`[test:free] flaky-retry: re-running ${flakyFiles.length} failing file(s) once, serially: ${flakyFiles.join(', ')}`);
+      const retryOutcome = await runFreeShard(flakyFiles, totalShards + 1, totalShards + 1, {
+        wallTimeoutMs: shardTimeout(flakyFiles.length),
+        verbose: options.verbose,
+      });
+      retry = retryOutcome;
+      if (retryOutcome.status === 'passed') {
+        console.log(`[test:free] FLAKY-PASS — ${flakyFiles.length} file(s) failed once and passed on serial retry: ${flakyFiles.join(', ')}`);
+        console.log('[test:free] treat repeat offenders as real flakes worth fixing, not noise.');
+        // Durable record (WS1): console lines vanish with the scrollback; the
+        // ledger makes repeat offenders rankable across runs (eval:flake-rank).
+        const ts = new Date().toISOString();
+        // Two separate calls: `rev-parse --abbrev-ref HEAD HEAD` abbreviates
+        // BOTH revs, printing the branch twice — git_sha recorded the branch
+        // name (codex adversarial finding).
+        const ledgerBranch = (spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).stdout ?? '').trim();
+        const ledgerSha = (spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).stdout ?? '').trim();
+        appendFlakeLedger(
+          flakyFiles.map((file) => ({
+            ts,
+            runner: 'free' as const,
+            kind: 'flaky-pass' as const,
+            file,
+            shard: outcomes.find((o) => o.failingFiles.includes(file))?.shard,
+            ...(ledgerBranch ? { branch: ledgerBranch } : {}),
+            ...(ledgerSha ? { git_sha: ledgerSha.slice(0, 12) } : {}),
+          })),
+          flakeLedgerPath(),
+        );
+        worst = 0;
+      } else {
+        console.error('[test:free] flaky-retry FAILED — the failures reproduce serially; not flaky.');
+      }
+    } else {
+      console.log(`[test:free] flaky-retry skipped: ${allAttributed ? `${flakyFiles.length} failing file(s) exceeds cap ${RETRY_CAP}` : 'failures not fully attributed'}.`);
+    }
+  }
+  return { exitCode: worst, retry };
+}
+
 async function main(): Promise<number> {
   const options = parseCliOptions(process.argv.slice(2));
   const allFiles = collectFreeTestFiles();
@@ -1515,7 +1718,53 @@ async function main(): Promise<number> {
     throw new Error('No free test files were discovered.');
   }
 
+  if (options.ciPlan || options.ciRun || options.ciVerify) {
+    const git = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 5_000 });
+    if (git.status !== 0 || !git.stdout.trim()) throw new Error('Cannot bind CI plan to the checkout revision');
+    const revision = git.stdout.trim();
+    const writeJson = (file: string, value: unknown) => {
+      fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+      const temporary = `${file}.tmp-${process.pid}`;
+      fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n');
+      fs.renameSync(temporary, file);
+    };
+    if (options.ciPlan) {
+      const plan = createFreeCiPlan(allFiles, options.shardCount, loadFreeTestDurations() ?? {}, revision);
+      validateFreeCiPlan(plan, allFiles, revision);
+      writeJson(options.ciPlan, plan);
+      console.log(JSON.stringify({ shard: plan.shards.map(shard => shard.shard) }));
+      return 0;
+    }
+    const plan = JSON.parse(fs.readFileSync((options.ciRun ?? options.ciVerify)!, 'utf8')) as FreeCiPlan;
+    validateFreeCiPlan(plan, allFiles, revision);
+    if (options.ciVerify) {
+      const results = fs.readdirSync(options.results!).filter(file => file.endsWith('.json'))
+        .map(file => JSON.parse(fs.readFileSync(path.join(options.results!, file), 'utf8')) as FreeCiResult);
+      verifyFreeCiResults(plan, results);
+      console.log(`[test:free] CI PASS: ${allFiles.length} files across ${results.length} isolated shards; slowest ${Math.round(Math.max(...results.map(result => result.outcome.elapsedMs + (result.retry?.elapsedMs ?? 0))) / 1000)}s including retries`);
+      return 0;
+    }
+    const shard = plan.shards[options.shardIndex! - 1];
+    if (!shard || shard.shard !== options.shardIndex) throw new Error('CI shard index is outside the plan');
+    const outcome = await runFreeShard(shard.files, shard.shard, plan.shards.length, {
+      wallTimeoutMs: options.wallTimeoutExplicit ? options.wallTimeoutMs
+        : wallTimeoutForPackedShard(shard.predictedMs, options.wallTimeoutMs, shard.files.length),
+      verbose: options.verbose,
+    });
+    const retried = await retryFailedFreeFiles([outcome], plan.shards.length, options);
+    writeJson(options.result!, { planId: plan.id, revision, outcome, retry: retried.retry } satisfies FreeCiResult);
+    return retried.exitCode;
+  }
+
   let files = allFiles;
+  if (options.quick) {
+    const missing = QUICK_CORE.filter(file => !allFiles.includes(file));
+    if (missing.length) throw new Error(`Quick core files missing: ${missing.join(', ')}`);
+    const durations = loadFreeTestDurations() ?? {};
+    files = selectQuickFreeFiles(allFiles, durations);
+    const unknown = allFiles.filter(file => durations[file] === undefined && !QUICK_CORE.includes(file)).length;
+    console.log(`[test:free] QUICK SUBSET: ${files.length}/${allFiles.length} files; ${unknown} unclassified and ${allFiles.length - files.length - unknown} slow files excluded. Full CI remains required; this is not release acceptance.`);
+  }
   let curationReport: CurationResult | null = null;
   if (options.windowsOnly) {
     curationReport = curateWindowsSafe(allFiles);
@@ -1536,8 +1785,7 @@ async function main(): Promise<number> {
   }
 
   if (options.recordDurations) {
-    const jobs = Math.max(1, Math.min(MAX_FULL_SUITE_JOBS, os.cpus().length - RESERVED_CPUS));
-    return recordFreeTestDurations(files, jobs);
+    return recordFreeTestDurations(files, fullSuiteJobs());
   }
 
   if (options.dryRun) {
@@ -1633,67 +1881,7 @@ async function main(): Promise<number> {
     outcomes.push(mutatorOutcome);
   }
 
-  // Opt-in flaky retry (GSTACK_FREE_RETRY_FLAKY=1): when every failure is an
-  // attributed test failure (no timeouts, no unattributed carnage), re-run
-  // just the failing files ONCE in a fresh serial shard. A clean retry
-  // downgrades the run to a loud flaky-pass; a repeat failure stays a
-  // failure. Default OFF: dev boxes should see flakes, not absorb them.
-  // Exists for syscall-supervised sandboxes (see fullSuiteJobs) where a run
-  // lands 0-1 spurious browser-timing failures under an otherwise-green
-  // suite. Capped so a genuinely broken tree never masquerades as flaky.
-  const RETRY_CAP = 5;
-  if (
-    worst !== 0
-    && process.env.GSTACK_FREE_RETRY_FLAKY === '1'
-    && !isTerminationRequested()
-    && outcomes.every((o) => o.status !== 'timed-out')
-  ) {
-    const flakyFiles = [...new Set(outcomes.flatMap((o) => o.failingFiles))]
-      .filter((f): f is string => typeof f === 'string' && f.length > 0);
-    // "Fully attributed" is per-failure, not per-shard: a shard with one
-    // attributed failure PLUS a headerless failure / unhandled error /
-    // truncated run must veto the retry — re-running only failingFiles would
-    // mask the unattributable evidence as a FLAKY-PASS.
-    const allAttributed = outcomes.every((o) => o.status === 'passed'
-      || (o.failingFiles.length > 0 && o.unattributedFailures === 0));
-    if (allAttributed && flakyFiles.length > 0 && flakyFiles.length <= RETRY_CAP) {
-      console.log(`[test:free] flaky-retry: re-running ${flakyFiles.length} failing file(s) once, serially: ${flakyFiles.join(', ')}`);
-      const retryOutcome = await runFreeShard(flakyFiles, totalShards + 1, totalShards + 1, {
-        wallTimeoutMs: shardTimeout(flakyFiles.length),
-        verbose: options.verbose,
-      });
-      if (retryOutcome.status === 'passed') {
-        console.log(`[test:free] FLAKY-PASS — ${flakyFiles.length} file(s) failed once and passed on serial retry: ${flakyFiles.join(', ')}`);
-        console.log('[test:free] treat repeat offenders as real flakes worth fixing, not noise.');
-        // Durable record (WS1): console lines vanish with the scrollback; the
-        // ledger makes repeat offenders rankable across runs (eval:flake-rank).
-        const ts = new Date().toISOString();
-        // Two separate calls: `rev-parse --abbrev-ref HEAD HEAD` abbreviates
-        // BOTH revs, printing the branch twice — git_sha recorded the branch
-        // name (codex adversarial finding).
-        const ledgerBranch = (spawnSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).stdout ?? '').trim();
-        const ledgerSha = (spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 5000 }).stdout ?? '').trim();
-        appendFlakeLedger(
-          flakyFiles.map((file) => ({
-            ts,
-            runner: 'free' as const,
-            kind: 'flaky-pass' as const,
-            file,
-            shard: outcomes.find((o) => o.failingFiles.includes(file))?.shard,
-            ...(ledgerBranch ? { branch: ledgerBranch } : {}),
-            ...(ledgerSha ? { git_sha: ledgerSha.slice(0, 12) } : {}),
-          })),
-          flakeLedgerPath(),
-        );
-        worst = 0;
-      } else {
-        console.error('[test:free] flaky-retry FAILED — the failures reproduce serially; not flaky.');
-      }
-    } else {
-      console.log(`[test:free] flaky-retry skipped: ${allAttributed ? `${flakyFiles.length} failing file(s) exceeds cap ${RETRY_CAP}` : 'failures not fully attributed'}.`);
-    }
-  }
-  return worst;
+  return (await retryFailedFreeFiles(outcomes, totalShards, options)).exitCode;
 }
 
 /** Dirty generated artifacts (SKILL.md / host outputs) after a failed mutator shard. */

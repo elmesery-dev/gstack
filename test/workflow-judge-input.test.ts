@@ -3,11 +3,20 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { readWorkflowJudgeInput } from './helpers/workflow-judge-input';
+import { createHash } from 'node:crypto';
+import { readWorkflowJudgeInput, buildWorkflowJudgePrompt } from './helpers/workflow-judge-input';
 import { ENG_REVIEW_EXCERPT } from './helpers/workflow-excerpt';
 
 const ROOT = resolve(import.meta.dir, '..');
 const scratchRoots: string[] = [];
+
+test('cache extraction preserves every byte of the original workflow request and rubric', () => {
+  // Captured from runWorkflowJudge's pre-cache template literal, not from the
+  // new builder: moving request construction must not change the paid metric.
+  const prompt = buildWorkflowJudgePrompt({ judgeContext: 'test workflow', judgeGoal: 'test goal' },
+    { files: [], text: 'full prompt\nincluding lines' });
+  expect(createHash('sha256').update(prompt).digest('hex')).toBe('71cc9c777bf28ff0efd610259b411e3539852f83a0888fa0e92469331f8b9a43');
+});
 
 afterEach(() => {
   for (const root of scratchRoots.splice(0)) rmSync(root, { recursive: true, force: true });

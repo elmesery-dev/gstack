@@ -77,6 +77,24 @@ async function captureStderr(fn: () => Promise<void>): Promise<string> {
 // --- EvalCollector tests ---
 
 describe('EvalCollector', () => {
+  test('reused passing evidence preserves origin and remains separate from newly executed attempts', async () => {
+    const collector = new EvalCollector('llm-judge', tmpDir);
+    const reused_from = { input_key: 'a'.repeat(64), run_id: '1234/1', revision: 'b'.repeat(40),
+      completed_at: '2026-09-20T12:00:00.000Z' };
+    collector.addTest(makeEntry({ name: 'fresh', tier: 'llm-judge', execution: 'executed', cost_usd: 0.02 }));
+    collector.addTest(makeEntry({ name: 'reused', tier: 'llm-judge', execution: 'reused', cost_usd: 0,
+      duration_ms: 1, reused_from }));
+    const partial = JSON.parse(fs.readFileSync(path.join(tmpDir, '_partial-e2e.json'), 'utf8'));
+    expect(partial.executed_tests).toBe(1); expect(partial.reused_tests).toBe(1);
+    let filename = '';
+    const output = await captureStderr(async () => { filename = await collector.finalize(); });
+    const result: EvalResult = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    expect(result).toMatchObject({ passed: 2, failed: 0, executed_tests: 1, reused_tests: 1, total_cost_usd: 0.02 });
+    expect(result.tests[1]?.reused_from).toEqual(reused_from);
+    expect(result.tests[1]?.execution).toBe('reused');
+    expect(output).toContain('REUSE'); expect(output).toContain('Evidence: 1 executed, 1 reused');
+  });
+
   test('addTest accumulates entries', () => {
     const collector = new EvalCollector('e2e', tmpDir);
     collector.addTest(makeEntry({ name: 'a' }));

@@ -124,13 +124,13 @@ test('a real fake subprocess records the chosen wall and obeys an explicit short
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }, 10_000);
 
-// Wiring is execution policy: a planner-only seventh slice would silently leave
+// Wiring is execution policy: a planner-only final slice would silently leave
 // the long case unexecuted, or a smaller job cap would preempt both attempts.
-test('periodic CI allocates and executes the dedicated seventh slice inside its existing cap', () => {
+test('periodic CI allocates and executes the dedicated eighth slice inside its existing cap', () => {
   const yaml = fs.readFileSync(path.resolve(import.meta.dir, '../.github/workflows/evals-periodic.yml'), 'utf8');
-  expect(yaml).toMatch(/--emit-plan[^\n]+--slices 7 --autoplan-slice/);
+  expect(yaml).toMatch(/--emit-plan[^\n]+--slices 8 --autoplan-slice/);
   const slices = yaml.split('  eval-slices:')[1]!.split('\n  report:')[0]!;
-  expect(slices).toContain('slice: [1, 2, 3, 4, 5, 6, 7]');
+  expect(slices).toContain('slice: [1, 2, 3, 4, 5, 6, 7, 8]');
   const jobMinutes = Number(slices.match(/timeout-minutes:\s*(\d+)/)?.[1]);
   expect(Number.isFinite(jobMinutes)).toBe(true);
   expect(jobMinutes * 60_000).toBeGreaterThanOrEqual(budget.ciJobMs);

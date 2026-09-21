@@ -247,10 +247,10 @@ test('decision-log CLI and validator select the demonstrated DX consumer without
   expect(E2E_TIERS['plan-devex-finding-count']).toBe('periodic');
 });
 
-test('native fixture dependencies include the migrated auto-decision caller', () => {
+test('native fixture dependencies include the migrated auto-decision and seeded CEO smoke callers', () => {
   const expected = [
     'auto-decide-preserved', 'autoplan-chain-pty',
-    'plan-ceo-finding-count', 'plan-ceo-finding-floor', 'plan-ceo-mode-routing', 'plan-ceo-split-overflow',
+    'plan-ceo-finding-count', 'plan-ceo-finding-floor', 'plan-ceo-mode-routing', 'plan-ceo-review-plan-mode', 'plan-ceo-split-overflow',
     'plan-design-finding-count', 'plan-design-finding-floor', 'plan-design-with-ui-scope',
     'plan-devex-finding-count', 'plan-devex-finding-floor',
     'plan-eng-finding-count', 'plan-eng-finding-floor', 'plan-eng-multi-finding-batching',
@@ -262,6 +262,7 @@ test('native fixture dependencies include the migrated auto-decision caller', ()
     expect(selectTests([file], LLM_JUDGE_TOUCHFILES).selected).toEqual([]);
   }
   expect(E2E_TIERS['auto-decide-preserved']).toBe('periodic');
+  expect(E2E_TIERS['plan-ceo-review-plan-mode']).toBe('gate');
 });
 
 test('shared native input dependencies select every PTY consumer without changing tiers', () => {

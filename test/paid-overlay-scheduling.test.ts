@@ -167,7 +167,7 @@ describe('overlay manifest affinity and CI capacity', () => {
       const jobs = parseCliOptions([], step.env).jobs;
       expect(jobs).toBe(2);
       expect(parseCliOptions([], step.env).withinShardConcurrency).toBe(2);
-      expect(job.strategy.matrix.slice).toEqual([1, 2, 3, 4, 5, 6, 7]);
+      expect(job.strategy.matrix.slice).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
       const normalMinutes = Math.ceil(18 / jobs) * resolvePaidShardTimeoutMs([normalFiles[0]]) / 60_000;
       const overlayMinutes = Math.ceil(overlayFiles.length / OVERLAY_MAX_ACTIVE_SHARDS)
         * Math.max(...overlayFiles.map(file => resolvePaidShardTimeoutMs([file]))) / 60_000;

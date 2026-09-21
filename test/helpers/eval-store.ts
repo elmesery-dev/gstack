@@ -63,6 +63,9 @@ export interface EvalTestEntry {
   passed: boolean;
   duration_ms: number;
   cost_usd: number;
+  /** Absent in older records means executed; reuse is never a new model run. */
+  execution?: 'executed' | 'reused';
+  reused_from?: { input_key: string; run_id: string; revision: string; completed_at: string };
   /** 1-based record attempt for this name in this run. bun's --retry leaves
    *  retried passes INVISIBLE in its text output (a fail→pass prints no
    *  (fail) line and recaps as a clean pass — probed on 1.3.10), so the ONLY
@@ -130,6 +133,8 @@ export interface EvalResult {
   claude_cli_version?: string;
   tier: 'e2e' | 'llm-judge';
   total_tests: number;
+  executed_tests?: number;
+  reused_tests?: number;
   passed: number;
   failed: number;
   total_cost_usd: number;
@@ -900,6 +905,8 @@ export class EvalCollector {
         claude_cli_version: getClaudeCliVersion(),
         tier: this.tier,
         total_tests: this.tests.length,
+        executed_tests: this.tests.filter(t => t.execution !== 'reused').length,
+        reused_tests: this.tests.filter(t => t.execution === 'reused').length,
         passed,
         failed: this.tests.length - passed,
         total_cost_usd: Math.round(totalCost * 100) / 100,
@@ -939,6 +946,8 @@ export class EvalCollector {
       claude_cli_version: getClaudeCliVersion(),
       tier: this.tier,
       total_tests: this.tests.length,
+      executed_tests: this.tests.filter(t => t.execution !== 'reused').length,
+      reused_tests: this.tests.filter(t => t.execution === 'reused').length,
       passed,
       failed: this.tests.length - passed,
       total_cost_usd: Math.round(totalCost * 100) / 100,
@@ -990,7 +999,7 @@ export class EvalCollector {
     lines.push('═'.repeat(70));
 
     for (const t of this.tests) {
-      const status = t.passed ? ' PASS ' : ' FAIL ';
+      const status = !t.passed ? ' FAIL ' : t.execution === 'reused' ? ' REUSE' : ' PASS ';
       const cost = `$${t.cost_usd.toFixed(2)}`;
       const dur = t.duration_ms ? `${Math.round(t.duration_ms / 1000)}s` : '';
       const turns = t.turns_used !== undefined ? `${t.turns_used}t` : '';
@@ -1011,6 +1020,7 @@ export class EvalCollector {
     const totalCost = `$${result.total_cost_usd.toFixed(2)}`;
     const totalDur = `${Math.round(result.total_duration_ms / 1000)}s`;
     lines.push(`  Total: ${result.passed}/${result.total_tests} passed${' '.repeat(20)}${totalCost.padStart(6)}  ${totalDur}`);
+    lines.push(`  Evidence: ${result.executed_tests ?? result.total_tests} executed, ${result.reused_tests ?? 0} reused`);
     if (result.flaky_retries && result.flaky_retries.length > 0) {
       // Loud, never fatal: a flaky pass must not block anyone, but it must
       // never be silent either — that invisibility is how flakes calcified.

@@ -27,10 +27,145 @@ import {
   loadFreeTestDurations,
   packShardsByDuration,
   wallTimeoutForPackedShard,
+  createFreeCiPlan,
+  validateFreeCiPlan,
+  verifyFreeCiResults,
+  eligibleFreeRetryFiles,
+  selectQuickFreeFiles,
+  QUICK_CORE,
+  type FreeCiResult,
   DEFAULT_WALL_TIMEOUT_MS as WALL_BASE_MS,
 } from '../scripts/test-free-shards';
 
 const ROOT = path.resolve(import.meta.dir, '..');
+
+describe('test-free-shards: isolated CI and explicit quick feedback', () => {
+  const files = Array.from({ length: 8 }, (_, i) => `test/sample-${i}.test.ts`);
+  const durations = Object.fromEntries(files.map((file, i) => [file, (i + 1) * 1_000]));
+  const plan = createFreeCiPlan(files, 4, durations, 'revision-a');
+  const receipts = (): FreeCiResult[] => plan.shards.map(shard => ({
+    planId: plan.id, revision: plan.revision, retry: null,
+    outcome: { shard: shard.shard, files: shard.files, status: 'passed', exitCode: 0,
+      elapsedMs: 10, groupPid: null, failingFiles: [], unattributedFailures: 0,
+      summary: { testsRan: shard.files.length, filesRan: shard.files.length, sawTerminalSummary: true } },
+  }));
+
+  test('one deterministic duration plan covers the complete census exactly once', () => {
+    expect(createFreeCiPlan([...files].reverse(), 4, durations, 'revision-a')).toEqual(plan);
+    expect(plan.shards.flatMap(shard => shard.files).sort()).toEqual(files);
+    expect(Math.max(...plan.shards.map(shard => shard.predictedMs))).toBe(9_000);
+    expect(() => validateFreeCiPlan(plan, files, 'revision-a')).not.toThrow();
+    expect(() => validateFreeCiPlan(plan, files.slice(1), 'revision-a')).toThrow(/every free file/);
+    expect(() => validateFreeCiPlan(plan, files, 'other-revision')).toThrow(/identity or revision/);
+    expect(() => validateFreeCiPlan({ ...plan, id: 'stale' }, files, 'revision-a')).toThrow(/identity/);
+  });
+
+  test('missing, duplicate, stale and partial receipts cannot clear the aggregate', () => {
+    expect(() => verifyFreeCiResults(plan, receipts())).not.toThrow();
+    expect(() => verifyFreeCiResults(plan, receipts().slice(1))).toThrow(/Missing or duplicate/);
+    const duplicate = receipts(); duplicate[1] = duplicate[0];
+    expect(() => verifyFreeCiResults(plan, duplicate)).toThrow(/identity, shard or file/);
+    const stale = receipts(); stale[0].revision = 'old';
+    expect(() => verifyFreeCiResults(plan, stale)).toThrow(/identity, shard or file/);
+    const partial = receipts(); partial[0].outcome.files = [];
+    expect(() => verifyFreeCiResults(plan, partial)).toThrow(/file coverage/);
+  });
+
+  test('timeout, truncation and false exit-zero receipts remain failures', () => {
+    for (const status of ['timed-out', 'failed'] as const) {
+      const failed = receipts(); failed[0].outcome.status = status;
+      failed[0].outcome.unattributedFailures = 1;
+      expect(() => verifyFreeCiResults(plan, failed)).toThrow(/Failed or incomplete/);
+    }
+    const inconsistent = receipts(); inconsistent[0].outcome.exitCode = 1;
+    expect(() => verifyFreeCiResults(plan, inconsistent)).toThrow(/Inconsistent passing/);
+  });
+
+  test('claimed success requires terminal evidence that every planned file executed', () => {
+    const absent = receipts(); delete absent[0].outcome.summary;
+    expect(() => verifyFreeCiResults(plan, absent)).toThrow(/execution summary/);
+    const truncated = receipts(); truncated[0].outcome.summary!.sawTerminalSummary = false;
+    expect(() => verifyFreeCiResults(plan, truncated)).toThrow(/execution summary/);
+    const partial = receipts(); partial[0].outcome.summary!.filesRan = plan.shards[0].files.length - 1;
+    expect(() => verifyFreeCiResults(plan, partial)).toThrow(/execution summary/);
+    const missingCount = receipts(); missingCount[0].outcome.summary!.testsRan = null;
+    expect(() => verifyFreeCiResults(plan, missingCount)).toThrow(/execution summary/);
+  });
+
+  test('retains original failures and enforces the five-file retry cap across machines', () => {
+    const retried = receipts();
+    const markRetried = (index: number) => {
+      const result = retried[index];
+      result.retry = { ...result.outcome, files: [...result.outcome.files], shard: 5 };
+      result.outcome = { ...result.outcome, status: 'failed', exitCode: 1, failingFiles: [...result.outcome.files] };
+    };
+    markRetried(0);
+    expect(() => verifyFreeCiResults(plan, retried)).not.toThrow();
+    delete retried[0].retry!.summary;
+    expect(() => verifyFreeCiResults(plan, retried)).toThrow(/Failed or incomplete/);
+    retried[0].retry!.summary = { testsRan: 1, filesRan: 1, sawTerminalSummary: true };
+    expect(() => verifyFreeCiResults(plan, retried)).toThrow(/Failed or incomplete/);
+    retried[0].retry!.summary = { ...retried[0].outcome.summary! };
+    retried[0].retry!.files = [];
+    expect(() => verifyFreeCiResults(plan, retried)).toThrow(/Failed or incomplete/);
+    retried[0].retry!.files = [...retried[0].outcome.files];
+    markRetried(1); markRetried(2);
+    expect(() => verifyFreeCiResults(plan, retried)).toThrow(/five-file limit/);
+  });
+
+  test('a passing retry cannot replace foreign, sibling-shard or duplicate failure attribution', () => {
+    for (const failures of [['test/unplanned.test.ts'], [plan.shards[1].files[0]],
+      [plan.shards[0].files[0], plan.shards[0].files[0]]]) {
+      const results = receipts(), first = results[0];
+      first.outcome = { ...first.outcome, status: 'failed', exitCode: 1, failingFiles: failures };
+      first.retry = { ...receipts()[0].outcome, files: [...new Set(failures)],
+        summary: { testsRan: 1, filesRan: new Set(failures).size, sawTerminalSummary: true } };
+      expect(eligibleFreeRetryFiles([first.outcome])).toBeNull();
+      expect(() => verifyFreeCiResults(plan, results)).toThrow(/Failed or incomplete/);
+    }
+  });
+
+  test('quick feedback includes its deterministic core and known fast free files only', () => {
+    const candidates = [...QUICK_CORE, ...files, 'test/unknown.test.ts', 'test/codex-e2e.test.ts'];
+    const measured = { ...durations, [QUICK_CORE[0]]: 99_000, 'test/codex-e2e.test.ts': 1 };
+    expect(selectQuickFreeFiles(candidates, measured)).toEqual([...QUICK_CORE, ...files.slice(0, 2)]);
+    expect(QUICK_CORE.every(file => collectFreeTestFiles(ROOT).includes(file))).toBe(true);
+  });
+
+  test('CLI emits a shared plan, accounts for an empty shard, and rejects missing receipts', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'free-ci-contract-'));
+    const script = path.join(ROOT, 'scripts/test-free-shards.ts');
+    const planPath = path.join(dir, 'plan.json');
+    const resultDir = path.join(dir, 'results');
+    try {
+      const planned = Bun.spawnSync([process.execPath, script, '--ci-plan', planPath, '--shards', '2000'], { timeout: 10_000 });
+      expect(planned.exitCode, planned.stderr.toString()).toBe(0);
+      const emitted = JSON.parse(fs.readFileSync(planPath, 'utf8'));
+      expect(JSON.parse(planned.stdout.toString()).shard).toHaveLength(2000);
+      const empty = emitted.shards.find((shard: { files: string[] }) => shard.files.length === 0);
+      const ran = Bun.spawnSync([process.execPath, script, '--ci-run', planPath, '--shard', String(empty.shard),
+        '--result', path.join(resultDir, 'empty.json')], { timeout: 10_000 });
+      expect(ran.exitCode, ran.stderr.toString()).toBe(0);
+      const emptyOutcome = JSON.parse(fs.readFileSync(path.join(resultDir, 'empty.json'), 'utf8')).outcome;
+      expect(emptyOutcome.files).toEqual([]);
+      expect(emptyOutcome.summary).toEqual({ testsRan: 0, filesRan: 0, sawTerminalSummary: false });
+      const sample = emitted.shards.find((shard: { files: string[] }) => shard.files.includes('test/strict-output.test.ts'));
+      const nonempty = Bun.spawnSync([process.execPath, script, '--ci-run', planPath, '--shard', String(sample.shard),
+        '--result', path.join(resultDir, 'sample.json')], { timeout: 10_000 });
+      expect(nonempty.exitCode, nonempty.stderr.toString()).toBe(0);
+      const summary = JSON.parse(fs.readFileSync(path.join(resultDir, 'sample.json'), 'utf8')).outcome.summary;
+      expect(summary.sawTerminalSummary).toBe(true);
+      expect(summary.filesRan).toBe(sample.files.length);
+      expect(summary.testsRan).toBeGreaterThan(0);
+      const aggregate = Bun.spawnSync([process.execPath, script, '--ci-verify', planPath, '--results', resultDir], { timeout: 10_000 });
+      expect(aggregate.exitCode).toBe(1);
+      expect(aggregate.stderr.toString()).toContain('Missing or duplicate CI shard results');
+      const quick = Bun.spawnSync([process.execPath, script, '--quick', '--list'], { timeout: 10_000 });
+      expect(quick.exitCode, quick.stderr.toString()).toBe(0);
+      expect(quick.stdout.toString()).toContain('not release acceptance');
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});
 
 describe('test-free-shards: enumeration', () => {
   test('isFreeTestFile rejects non-test files', () => {

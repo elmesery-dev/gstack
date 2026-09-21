@@ -5,10 +5,27 @@ import {createPlanCountPermissionGuard,classifyPlanCountFrame} from './helpers/c
 import {E2E_TOUCHFILES,selectTests}from'./helpers/touchfiles';
 import captured from './fixtures/batching-permission-at.json';
 
+function renderPermissionScreen(expected: string): string {
+ // The capture is already laid out at the runner's 120 columns. Replacing its
+ // path must reflow that menu line, otherwise the PTY hard-wraps words in half.
+ return captured.screen.split('\n').map(original => {
+  const line = original.replaceAll(path.dirname(captured.expectedPath), path.dirname(expected))
+   .replaceAll(path.basename(captured.expectedPath), path.basename(expected));
+  if (line === original || line.length <= 120) return line;
+  const indent = /^ */.exec(line)![0], lines: string[] = []; let current = indent;
+  for (const word of line.trim().split(/\s+/)) {
+   if (indent.length + word.length > 120) throw Error('Fixture path exceeds the permission panel width');
+   if (current.length > indent.length && current.length + 1 + word.length > 120) { lines.push(current); current = indent; }
+   current += (current.length > indent.length ? ' ' : '') + word;
+  }
+  return [...lines, current].join('\n');
+ }).join('\n');
+}
+
 function fixture(){
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'batch-permission-')),cwd=path.join(dir,'cwd'),config=path.join(dir,'.claude'),expected=path.join(dir,'report.md');fs.mkdirSync(cwd);fs.writeFileSync(expected,'original');
  const recorder=createFilePermissionRecorder(cwd,config,expected)!;const startedAt=Date.now()-1000;
- const screen=captured.screen.replaceAll(path.dirname(captured.expectedPath),path.dirname(expected)).replaceAll(path.basename(captured.expectedPath),'report.md');
+ const screen=renderPermissionScreen(expected);
  const transcript:any={status:'ready',calls:[],assistantMessages:[{sessionId:'synthetic-epoch',text:'Reviewing',timestamp:new Date().toISOString()}]};
  const record=(name:string,id:string,extra={})=>recordFilePermission(JSON.stringify({hook_event_name:name,tool_name:'Edit',session_id:'synthetic-epoch',tool_use_id:id,cwd,transcript_path:path.join(config,'projects','owned','synthetic-epoch.jsonl'),tool_input:{file_path:expected},...extra}),recorder.file,cwd,config,expected);
  const read=()=>currentFilePermissionEpoch(recorder.file,expected,cwd,config,startedAt,transcript,screen);
@@ -19,6 +36,20 @@ test('retained retry has a valid permission panel and real previous completion w
  expect(classifyPlanCountFrame(captured.screen)).toBe('permission');expect(captured.priorCompletedEdit[0]!.name).toBe('Edit');expect(captured.priorCompletedEdit[1]!.isError).toBe(false);
  expect(captured.pendingEditId).toBeNull();expect(captured.provenance.originalOutcome).toBe('timeout');expect(captured.provenance.paidOutcomeReclassified).toBe(false);
  const guard=createPlanCountPermissionGuard();expect(guard(captured.screen,captured.lastMatchedDisplayCompletion)).toBe('grant');expect(guard(captured.screen,captured.lastMatchedDisplayCompletion)).toBe('handled');
+});
+
+test('a substituted long fixture path reflows the menu without splitting permission words', () => {
+ const prefix = '      always allow access to ', suffix = ' for this ';
+ const directory = '/' + 'x'.repeat(120 - prefix.length - suffix.length - 3 - 1);
+ const rawLine = `${prefix}${directory}${suffix}session`;
+ expect(`${rawLine.slice(0, 120)}\n${rawLine.slice(120)}`).toContain('ses\nsion');
+ const screen = renderPermissionScreen(path.join(directory, 'report.md'));
+ const menu = screen.slice(screen.indexOf(' Do you want to make this edit'));
+ expect(menu.split('\n').every(line => line.length <= 120)).toBe(true);
+ expect(menu).toContain(directory);
+ expect(menu).toContain('edit to report.md?');
+ expect(menu).toMatch(/1\. Yes[\s\S]+2\. Yes,[\s\S]+3\. No/);
+ expect(createPlanCountPermissionGuard()(screen, captured.lastMatchedDisplayCompletion)).toBe('grant');
 });
 
 test('synthetic hook epochs release only the later exact request after its predecessor succeeds',()=>{
@@ -42,7 +73,7 @@ test('batching supplies permission scope without adding a report completion cont
 
 test.skipIf(process.platform==='win32')('real fake CLI observes two file epochs without imposing terminal report validation',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'batch-permission-pty-')),fake=path.join(dir,'fake-claude'),worker=path.join(dir,'worker.ts'),events=path.join(dir,'events.jsonl'),output=path.join(dir,'output.json'),expected=path.join(dir,'report.md');fs.writeFileSync(expected,'original');
- const screen=captured.screen.replaceAll(path.dirname(captured.expectedPath),path.dirname(expected)).replaceAll(path.basename(captured.expectedPath),'report.md');
+ const screen=renderPermissionScreen(expected);
  fs.writeFileSync(fake,`#!${process.execPath}\n`+String.raw`
 import * as fs from 'node:fs';import * as path from 'node:path';
 const item=JSON.parse(process.env.FILE_EPOCH_CASE);const log=e=>fs.appendFileSync(item.events,JSON.stringify(e)+'\n');
@@ -71,9 +102,9 @@ process.stdin.setRawMode?.(true);process.stdin.on('data',async data=>{
  const q={header:'Finding',question:'Apply this repair?',options:[{label:'Fix'},{label:'Keep'}]};
  native('assistant',[{type:'tool_use',name:'AskUserQuestion',id:'finding',input:{questions:[q]}}]);native('user',[{type:'tool_result',tool_use_id:'finding',content:'Answered'}],{toolUseResult:{answers:{[q.question]:'Fix'}}});
  process.stdout.write('\x1b[2J\x1b[HCompletion summary\r\n');
-});process.on('SIGINT',()=>process.exit(0));process.stdin.resume();
+});process.on('SIGINT',()=>process.exit(0));process.stdin.resume();process.stdout.write('FILE_EPOCH_READY\r\n');
 `);fs.chmodSync(fake,0o755);
- fs.writeFileSync(worker,`import {runPlanSkillCounting} from ${JSON.stringify(pathToFileURL(path.join(import.meta.dir,'helpers/claude-pty-runner.ts')).href)};const o=await runPlanSkillCounting({skillName:'plan-eng-review',slashCommand:'/plan-eng-review',followUpPrompt:'Review this disposable batching fixture.',permissionPlanPath:${JSON.stringify(expected)},isLastStep0AUQ:()=>false,isReviewAUQ:()=>true,reviewCountCeiling:2,timeoutMs:28000,env:{FILE_EPOCH_CASE:${JSON.stringify(JSON.stringify({events,expected,screen}))}}});await Bun.write(${JSON.stringify(output)},JSON.stringify(o));`);
+ fs.writeFileSync(worker,`import {runPlanSkillCounting} from ${JSON.stringify(pathToFileURL(path.join(import.meta.dir,'helpers/claude-pty-runner.ts')).href)};const o=await runPlanSkillCounting({skillName:'plan-eng-review',slashCommand:'/plan-eng-review',followUpPrompt:'Review this disposable batching fixture.',permissionPlanPath:${JSON.stringify(expected)},startupReadyMarker:'FILE_EPOCH_READY',isLastStep0AUQ:()=>false,isReviewAUQ:()=>true,reviewCountCeiling:2,timeoutMs:28000,env:{FILE_EPOCH_CASE:${JSON.stringify(JSON.stringify({events,expected,screen}))}}});await Bun.write(${JSON.stringify(output)},JSON.stringify(o));`);
  const child=Bun.spawn([process.execPath,worker],{env:{...process.env,BROWSE_TERMINAL_BINARY:fake,EVALS_HERMETIC:'1'},stdout:'pipe',stderr:'pipe'});const killer=setTimeout(()=>child.kill('SIGKILL'),33000);
  try{const[code,out,err]=await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()]);expect(code,out+err).toBe(0);
   const o=JSON.parse(fs.readFileSync(output,'utf8'));expect(o.outcome,JSON.stringify(o)).toBe('completion_summary');expect(o.reviewCount).toBe(1);expect(fs.readFileSync(expected,'utf8')).toBe('original');

@@ -22,6 +22,17 @@ import { readWorkflowExcerpt } from './helpers/workflow-excerpt';
 
 const ROOT = path.resolve(import.meta.dir, '..');
 
+function registeredJudgeTestNames(source: string): string[] {
+  // Inspect registrations, not arbitrary `name` fields such as Error.name.
+  const registrations = [...source.matchAll(/^\s*testIfSelected\s*\(/gm)];
+  const names = [...source.matchAll(/^\s*testIfSelected\s*\(\s*(['"`])([^'"`\r\n]+)\1\s*,/gm)]
+    .map(match => match[2]);
+  if (names.length !== registrations.length) {
+    throw new Error('LLM-judge test registrations must use literal case names for the TOUCHFILES inventory');
+  }
+  return [...new Set(names)];
+}
+
 // --- matchGlob ---
 
 describe('matchGlob', () => {
@@ -523,17 +534,8 @@ describe('TOUCHFILES completeness', () => {
       'utf-8',
     );
 
-    // Extract test names from addTest({ name: '...' }) calls
-    const nameRegex = /name:\s*['"`]([^'"`]+)['"`]/g;
-    const testNames: string[] = [];
-    let match;
-    while ((match = nameRegex.exec(llmContent)) !== null) {
-      testNames.push(match[1]);
-    }
-
-    // Deduplicate (some tests call addTest with the same name)
-    const unique = [...new Set(testNames)];
-    expect(unique.length).toBeGreaterThan(0);
+    const unique = registeredJudgeTestNames(llmContent);
+    expect(unique).toHaveLength(25);
 
     const missing = unique.filter(name => !(name in LLM_JUDGE_TOUCHFILES));
     if (missing.length > 0) {
@@ -542,6 +544,23 @@ describe('TOUCHFILES completeness', () => {
         `Add these to LLM_JUDGE_TOUCHFILES in test/helpers/touchfiles.ts`,
       );
     }
+  });
+
+  test('judge inventory ignores error names and catches an unmapped registration', () => {
+    const source = fs.readFileSync(path.join(ROOT, 'test', 'skill-llm-eval.test.ts'), 'utf8');
+    const withUnmappedCase = `${source}\n
+      Object.assign(new Error('deadline'), { name: 'WorkflowJudgeDeadline' });
+      Object.assign(new Error('retry'), { name: 'WorkflowJudgeSuperseded' });
+      testIfSelected('unmapped judge case', async () => {}, 120_000);
+    `;
+    const names = registeredJudgeTestNames(withUnmappedCase);
+    expect(names).toHaveLength(26);
+    expect(names.filter(name => !(name in LLM_JUDGE_TOUCHFILES))).toEqual(['unmapped judge case']);
+  });
+
+  test('judge inventory rejects dynamic registrations it cannot account for', () => {
+    expect(() => registeredJudgeTestNames('testIfSelected(computedName, async () => {}, 120_000);'))
+      .toThrow('must use literal case names');
   });
 });
 

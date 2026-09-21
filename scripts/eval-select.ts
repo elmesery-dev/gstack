@@ -9,6 +9,7 @@
  */
 
 import * as path from 'path';
+import { computePaidCaseSelection } from './test-paid-shards';
 import {
   selectTests,
   detectBaseBranch,
@@ -23,10 +24,30 @@ const args = process.argv.slice(2);
 const jsonMode = args.includes('--json');
 const baseIdx = args.indexOf('--base');
 const baseOverride = baseIdx >= 0 ? args[baseIdx + 1] : undefined;
+const profileIdx = args.indexOf('--profile');
+const profile = profileIdx >= 0 ? args[profileIdx + 1] : process.env.EVALS_PROFILE ?? 'full';
+if (profile !== 'pr' && profile !== 'full') throw new Error('--profile must be pr or full');
 
 // Detect base branch
 const baseBranch = baseOverride || detectBaseBranch(ROOT) || 'main';
 const changedFiles = getChangedFiles(baseBranch, ROOT);
+
+if (profile === 'pr') {
+  const result = computePaidCaseSelection({ profile, rootDir: ROOT, changedFiles,
+    env: { ...process.env, EVALS_BASE: baseBranch } });
+  const output = { base: baseBranch, changed_files: changedFiles, profile,
+    e2e: { selected: result.selection.e2e }, llm_judge: { selected: result.selection.judges },
+    coverage: result.coverage, reason: result.reason };
+  if (jsonMode) console.log(JSON.stringify(output, null, 2));
+  else {
+    console.log(`Base: ${baseBranch}\nProfile: pr (${result.coverage?.mode})\nChanged files: ${changedFiles.length}`);
+    console.log(`Behavioral probes: ${result.selection.e2e?.join(', ') || 'none'}`);
+    console.log(`Quality judges: ${result.selection.judges?.join(', ') || 'none'}`);
+    console.log(`Deferred to broad coverage: ${result.coverage?.deferred.map(item => item.id).join(', ') || 'none'}`);
+    console.log(result.reason);
+  }
+  process.exit(0);
+}
 
 if (changedFiles.length === 0) {
   if (jsonMode) {

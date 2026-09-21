@@ -233,7 +233,10 @@ When fixing failures or preparing `/ship`, follow this order:
 
 ```bash
 bun install              # install dependencies
-bun run test             # run free tests via the strict shard runner (no API spend, ~90-100s)
+bun run test:quick       # fast measured free subset for edit feedback (not acceptance)
+bun run test             # complete free suite via the strict shard runner (no API spend)
+bun run eval:bg:pr       # changed fast live probes + selected judges, with explicit deferrals
+bun run eval:bg:release  # fresh complete gate + periodic live coverage
 bun run test:windows     # curated Windows-safe subset (runs on windows-latest)
 bun run build            # generate docs + compile binaries
 bun run gen:skill-docs   # regenerate SKILL.md files from templates

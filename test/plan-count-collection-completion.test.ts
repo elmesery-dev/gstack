@@ -70,6 +70,8 @@ process.stdin.on('data',async bytes=>{
   process.stdout.write('\x1b[2J\x1b[HOwned collection fixture is working.\r\n');
 });
 process.on('SIGINT',()=>{log('sigint');process.exit(0)});
+// The fake actor is ready now; do not pay the real CLI's eight-second boot grace.
+process.stdout.write('COLLECTION_FIXTURE_READY\r\n');
 `, { mode: 0o755 });
   fs.writeFileSync(worker, `import fs from 'node:fs';\nimport {runPlanSkillCounting,resolveClaudeBinary} from ${JSON.stringify(helper)};\n` + String.raw`
 const mode=process.env.COLLECTION_MODE,events=process.env.COLLECTION_EVENTS;
@@ -78,6 +80,7 @@ const log=(kind,extra={})=>fs.appendFileSync(events,JSON.stringify({kind,at:Date
 const start=Date.now();let callbacks=0;
 const options={skillName:'plan-ceo-review',slashCommand:'/plan-ceo-review',followUpPrompt:'Review only the seeded collection fixture.',
   isLastStep0AUQ:()=>false,isFirstReviewAUQ:()=>true,reviewCountCeiling:8,timeoutMs:22000,
+  startupReadyMarker:'COLLECTION_FIXTURE_READY',
   observeSetupQuestions:mode==='hook-pending',env:{COLLECTION_MODE:mode,COLLECTION_EVENTS:events},
   ...(mode==='default'?{}:{isCollectionComplete:(transcript,fingerprints)=>{
     callbacks++;log('callback',{ids:transcript.calls.map(call=>call.toolUseId)});

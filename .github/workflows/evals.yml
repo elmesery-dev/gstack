@@ -15,6 +15,9 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}/ci
+  # PRs run changed fast probes; manual runs retain the complete gate census.
+  EVALS_PROFILE: ${{ github.event_name == 'pull_request' && 'pr' || 'full' }}
+  EVALS_FRESH: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
 
 jobs:
   # Build Docker image with pre-baked toolchain (cached — only rebuilds on Dockerfile/lockfile change)
@@ -32,6 +35,7 @@ jobs:
       packages: write
     outputs:
       image-tag: ${{ steps.meta.outputs.tag }}
+      runtime-id: ${{ steps.runtime.outputs.id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -83,6 +87,15 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.tag }}
             ${{ env.IMAGE }}:latest
+
+      - name: Identify the installed eval runtime
+        id: runtime
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          EVAL_IMAGE: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker manifest inspect "$EVAL_IMAGE" > /tmp/eval-runtime-manifest.json
+          echo "id=$(sha256sum /tmp/eval-runtime-manifest.json | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
 
   # ── Sliced lane (the ONLY paid lane; legacy 17-row matrix deleted) ──────────
   # One PLANNER computes diff selection + the slice plan ONCE (killing
@@ -139,9 +152,9 @@ jobs:
     # 40-way per row queued claude session STARTUP behind 39 siblings and ate
     # per-test budgets — the documented timeout-flake family). Tune with
     # parity data before raising.
-    # The complete gate census needs at most 182 minutes per slice; keep
+    # The complete gate census needs at most 197 minutes per slice; keep
     # 20 minutes for setup/upload without preempting configured retries.
-    timeout-minutes: 205
+    timeout-minutes: 220
     permissions:
       contents: read
       packages: read
@@ -193,6 +206,16 @@ jobs:
           name: paid-plan
           path: /tmp/paid-plan
 
+      # Only this PR's receipts are eligible. No base-branch or cross-PR restore
+      # prefix; every receipt also verifies exact inputs and its original age.
+      - name: Restore this PR's verified judge results
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: /tmp/gstack-eval-input-cache
+          key: eval-input-v1-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slice }}
+          restore-keys: eval-input-v1-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-
+
       - name: Run slice ${{ matrix.slice }}/6
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -202,7 +225,34 @@ jobs:
           EVALS_JOBS: "2"
           EVALS_CONCURRENCY: "2"
           GSTACK_EVAL_DIR: /tmp/paid-slice-results
+          EVALS_CACHE_DIR: /tmp/gstack-eval-input-cache
+          EVALS_CACHE_REPOSITORY: ${{ github.repository }}
+          EVALS_CACHE_PR: ${{ github.event.pull_request.number }}
+          EVALS_CACHE_RUNTIME_ID: ${{ needs.build-image.outputs.runtime-id }}
         run: EVALS_TIER=gate bun run scripts/test-paid-shards.ts --tier gate --plan /tmp/paid-plan/manifest.json --slice ${{ matrix.slice }}
+
+      - name: Find finalized passing receipts
+        id: receipts
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        run: |
+          # Only a producer publishes. A later reuse-only slice must not become
+          # the newest prefix match and hide another slice's newly earned pass.
+          for receipt in /tmp/gstack-eval-input-cache/*.json; do
+            [ -f "$receipt" ] || continue
+            if jq -e --arg run "$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" '.proof.source.runId == $run' "$receipt" >/dev/null 2>&1; then
+              echo 'present=true' >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+
+      # An unrelated failing case does not discard already verified passes.
+      # Failed/retried/partial attempts never become receipts in the first place.
+      - name: Save verified judge results for this PR
+        if: ${{ !cancelled() && steps.receipts.outputs.present == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: /tmp/gstack-eval-input-cache
+          key: eval-input-v1-${{ github.repository_id }}-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.slice }}
 
       - name: Upload slice results
         if: always()
@@ -309,6 +359,11 @@ jobs:
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          name: paid-plan
+          path: /tmp/paid-report
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
           pattern: paid-slice-[0-9]*
           path: /tmp/paid-report
           merge-multiple: true
@@ -329,7 +384,7 @@ jobs:
         run: |
           # shellcheck disable=SC2086,SC2059
           RESULTS=$(find /tmp/paid-report -name '*.json' ! -name 'manifest.json' ! -name 'slice-*.json' ! -name '_partial*' 2>/dev/null | sort)
-          TOTAL=0; PASSED=0; FAILED=0; FLAKY=0; COST="0"
+          TOTAL=0; PASSED=0; FAILED=0; FLAKY=0; EXECUTED=0; REUSED=0; COST="0"
           SUITE_LINES=""
           for f in $RESULTS; do
             if ! jq -e '.total_tests' "$f" >/dev/null 2>&1; then
@@ -346,8 +401,8 @@ jobs:
             # would abort the whole step under bash -e ([ "" -eq 0 ] is an
             # error) — killing the comment on exactly the corrupted-artifact
             # runs where the red evidence matters (claude adversarial).
-            STATS=$(jq -r '[.tests | group_by(.name)[] | last] as $final | "\($final | length) \([$final[] | select(.passed)] | length) \([$final[] | select(.passed | not)] | length) \(.flaky_retries // [] | length)"' "$f" 2>/dev/null) || { echo "Skipping malformed tests[] in: $f"; continue; }
-            read -r T P F FL <<< "$STATS"
+            STATS=$(jq -r '[.tests | group_by(.name)[] | last] as $final | "\($final | length) \([$final[] | select(.passed)] | length) \([$final[] | select(.passed | not)] | length) \(.flaky_retries // [] | length) \([$final[] | select(.execution != "reused")] | length) \([$final[] | select(.execution == "reused")] | length)"' "$f" 2>/dev/null) || { echo "Skipping malformed tests[] in: $f"; continue; }
+            read -r T P F FL EX RE <<< "$STATS"
             [ -z "$T" ] && { echo "Skipping malformed tests[] in: $f"; continue; }
             C=$(jq -r '.total_cost_usd // 0' "$f")
             TIER=$(jq -r '.tier // "unknown"' "$f")
@@ -357,22 +412,28 @@ jobs:
             PASSED=$((PASSED + P))
             FAILED=$((FAILED + F))
             FLAKY=$((FLAKY + FL))
+            EXECUTED=$((EXECUTED + EX))
+            REUSED=$((REUSED + RE))
             COST=$(echo "$COST + $C" | bc)
             STATUS_ICON="✅"
             [ "$F" -gt 0 ] && STATUS_ICON="❌"
             [ "$F" -eq 0 ] && [ "$FL" -gt 0 ] && STATUS_ICON="✅⚠"
-            SUITE_LINES="${SUITE_LINES}| ${TIER}/${SHARD} | ${P}/${T} | ${STATUS_ICON} | \$${C} |\n"
+            SUITE_LINES="${SUITE_LINES}| ${TIER}/${SHARD} | ${P}/${T} | ${EX} | ${RE} | ${STATUS_ICON} | \$${C} |\n"
           done
+
+          COVERAGE=$(jq -r '"Profile: \(.profile // "full") / \(.prCoverage.mode // "broad"); selected behaviors: \(.selection.e2e | if . == null then "all" else length end), judges: \(.selection.judges | if . == null then "all" else length end). Deferred to scheduled/release coverage: \(.prCoverage.deferred // [] | length) behaviors and \(.prCoverage.deferredPromptFiles // [] | length) changed prompt files. Deferred checks did not run and receive no PR-pass credit."' /tmp/paid-report/manifest.json) || COVERAGE='Coverage manifest unavailable; no coverage claim.'
 
           STATUS="✅ PASS"
           if [ "${RECONCILE_EXIT:-1}" != "0" ] || [ "$FAILED" -gt 0 ]; then STATUS="❌ FAIL"; fi
 
           BODY="## E2E Evals: ${STATUS}
 
-          **${PASSED}/${TOTAL}** tests passed | **\$${COST}** total cost | reconcile exit: ${RECONCILE_EXIT:-missing}$([ "$FLAKY" -gt 0 ] && printf ' | ⚠ %s flaky pass(es) — recorded, not blocking' "$FLAKY")
+          **${PASSED}/${TOTAL}** recorded final results passed | **${EXECUTED} executed, ${REUSED} reused** | **\$${COST}** total cost | reconcile exit: ${RECONCILE_EXIT:-missing}$([ "$FLAKY" -gt 0 ] && printf ' | ⚠ %s flaky pass(es) — recorded, not blocking' "$FLAKY")
 
-          | Shard | Result | Status | Cost |
-          |-------|--------|--------|------|
+          ${COVERAGE}
+
+          | Shard | Result | Executed | Reused | Status | Cost |
+          |-------|--------|----------|--------|--------|------|
           $(echo -e "$SUITE_LINES")
 
           <details><summary>Fail-closed reconciliation</summary>
@@ -383,7 +444,7 @@ jobs:
           </details>
 
           ---
-          *Sliced lane: diff-selected gate census via scripts/test-paid-shards.ts (planner → 6 executors → fail-closed report)*"
+          *Sliced lane: declared PR profile or broad fallback via scripts/test-paid-shards.ts (planner → 6 executors → fail-closed report). Reused scores retain their original provenance and expiry.*"
 
           if [ "$FAILED" -gt 0 ]; then
             FAILURES=""

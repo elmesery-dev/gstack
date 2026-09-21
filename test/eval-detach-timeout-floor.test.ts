@@ -73,6 +73,22 @@ describe('eval:bg detach timeouts cover the sharded runner worst case', () => {
       }
     });
   }
+
+  test('eval:bg:pr covers a full gate fallback with its declared two-worker default', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+    const jobs = Number(pkg.scripts['test:pr'].match(/EVALS_JOBS=\$\{EVALS_JOBS:-(\d+)\}/)?.[1]);
+    expect(jobs).toBe(2);
+    const files = selectPaidTestFiles(collectPaidTestFiles(), 'gate').selected;
+    const floor = Math.ceil(worstCaseSeconds(files, jobs) * MARGIN);
+    expect(detachTimeoutSeconds('eval:bg:pr')).toBeGreaterThanOrEqual(floor);
+  });
+
+  test('eval:bg:release covers both complete tiers and their existing margins', () => {
+    const files = collectPaidTestFiles();
+    const floor = (['gate', 'periodic'] as const).reduce((sum, tier) =>
+      sum + Math.ceil(worstCaseSeconds(selectPaidTestFiles(files, tier).selected) * MARGIN), 0);
+    expect(detachTimeoutSeconds('eval:bg:release')).toBeGreaterThanOrEqual(floor);
+  });
 });
 
 // One long job and one ordinary job can run side by side; the long job still

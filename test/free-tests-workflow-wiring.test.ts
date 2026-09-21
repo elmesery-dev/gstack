@@ -39,19 +39,22 @@ describe('free-tests workflow wiring', () => {
     expect(source).not.toContain('pull_request_target');
   });
 
-  test('if sharded (matrix), the matrix count matches --shards N', () => {
-    // Single-job --parallel mode has no matrix — vacuously fine. If someone
-    // switches to the shard matrix (the V3 fallback), the two encodings of
-    // the shard count must agree or CI silently drops files.
-    const shardsFlag = source.match(/--shards\s+(\d+)/);
-    const matrix = source.match(/shard:\s*\[([^\]]+)\]/);
-    if (shardsFlag || matrix) {
-      expect(shardsFlag, 'matrix present but no --shards N flag').toBeTruthy();
-      expect(matrix, '--shards N present but no shard matrix').toBeTruthy();
-      const count = parseInt(shardsFlag![1], 10);
-      const entries = matrix![1].split(',').map(s => s.trim()).filter(Boolean);
-      expect(entries.length).toBe(count);
-    }
+  test('the isolated matrix consumes one plan and the required aggregate verifies all receipts', () => {
+    const workflow = Bun.YAML.parse(source) as any;
+    const planner = workflow.jobs['free-plan'];
+    const suite = workflow.jobs['free-suite'];
+    const aggregate = workflow.jobs['free-tests'];
+    expect(planner.steps.find((step: any) => step.id === 'plan').run).toContain('--ci-plan');
+    expect(suite.needs).toBe('free-plan');
+    expect(suite.strategy.matrix).toBe('${{ fromJSON(needs.free-plan.outputs.matrix) }}');
+    expect(suite.strategy['fail-fast']).toBe(false);
+    expect(suite.strategy['max-parallel']).toBe(20);
+    expect(suite.steps.find((step: any) => step.name === 'Run free suite').run).toContain('--ci-run');
+    expect(suite.steps.find((step: any) => step.name === 'Upload strict shard result').if).toBe('always()');
+    expect(aggregate.if).toBe('always()');
+    expect(aggregate.needs).toContain('free-suite');
+    expect(aggregate.steps.some((step: any) => step.run?.includes('--ci-verify'))).toBe(true);
+    expect(source).not.toContain('--quick');
   });
 
   test('flake telemetry stays wired: retry flag, single-writer ledger, unconditional artifact', () => {
