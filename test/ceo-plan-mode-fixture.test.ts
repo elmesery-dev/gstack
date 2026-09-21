@@ -36,7 +36,9 @@ mock.module(runner, () => ({
     expect(git(['ls-files']).trim().split('\\n')).toEqual(['CLAUDE.md', 'PLAN.md', 'README.md', 'src/tasks.ts']);
     const plan = fs.readFileSync(path.join(opts.cwd, 'PLAN.md'), 'utf8');
     expect(git(['show', 'HEAD:PLAN.md'])).toBe(plan);
-    expect(plan).toBe(opts.initialPlanContent);
+    // The initial project context owns the plan; this smoke starts with the
+    // bare slash command and must not add a separate paste/acknowledgment turn.
+    expect(opts).not.toHaveProperty('initialPlanContent');
     expect(plan).toContain('# Plan: Archive completed tasks');
     expect(plan).toContain('src/tasks.ts');
     expect(plan).toContain('loading existing saved tasks');
@@ -47,7 +49,7 @@ mock.module(runner, () => ({
     expect(git(['show', 'HEAD:CLAUDE.md'])).toContain('its source checkout is not the review target');
     expect(opts).toEqual({
       skillName: 'plan-ceo-review', inPlanMode: true, cwd: opts.cwd,
-      initialPlanContent: plan, timeoutMs: 420_000,
+      timeoutMs: 420_000,
       env: { QUESTION_TUNING: 'false', EXPLAIN_LEVEL: 'default' },
     });
     fact.checked = true;

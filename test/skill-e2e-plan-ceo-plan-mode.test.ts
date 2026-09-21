@@ -77,7 +77,6 @@ describeE2E('plan-ceo-review plan-mode smoke (gate)', () => {
         skillName: 'plan-ceo-review',
         inPlanMode: true,
         cwd: fixture.cwd,
-        initialPlanContent: fixture.seed,
         // 420s, not 300s: measured 2026-08-11, a clean isolated pass took
         // 295.7s (80s on a quiet main run) — 4s under the old budget — and the
         // same run timed out at ~308s three times under concurrent eval load.
