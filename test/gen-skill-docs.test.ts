@@ -1607,7 +1607,9 @@ describe('SPEC_REVIEW_LOOP resolver', () => {
     expect(report).toContain('Label earlier grades "prior review score"');
     expect(report).toContain('reviewer-confirmed fixes');
     expect(report).toContain('Use actual counts, never estimates');
-    expect(report).toContain('otherwise show these fields as not persisted');
+    expect(report.replace(/\s+/g, ' ')).toContain('When forbidden, show fields as not persisted and continue without writing');
+    expect(report).toContain('failed mkdir or append stops the review');
+    expect(report).toContain('These metrics are distinct from best-effort history');
     expect(report).toContain('mkdir -p ~/.gstack/analytics || exit 1');
     expect(report).toContain('>> ~/.gstack/analytics/spec-review.jsonl || exit 1');
     expect(report).not.toContain('Your doc survived');
@@ -2390,7 +2392,7 @@ describe('Design approval reconciliation', () => {
     expect(decisions).toMatch(/amend only (?:what it authorizes|authorized work)/);
     expect(decisions).toMatch(/Reuse exact approvals; reopen only for contradictions, changed assumptions or user instructions, not speculation or reviewer agreement/);
     expect(decisions).toMatch(/reopen only|requires reopening it/);
-    expect(decisions).toContain('When returning, carry both resolved findings and genuine no-issue outcomes');
+    expect(decisions).toContain('both resolved findings and genuine no-issue outcomes');
     expect(decisions).toContain('Say "No issues, moving on." only when there are none');
     const outside = extractMarkdownSection(section, '**Cross-model tension:**').replace(/\s+/g, ' ');
     expect(outside).toContain('compare reviews only if an external reviewer completed');
@@ -4450,10 +4452,12 @@ describe('plan-mode-info resolver (handshake-replacement)', () => {
     expect(content.indexOf(reopenRule!)).toBeGreaterThan(approachIdx);
     expect(content.indexOf(reopenRule!)).toBeLessThan(presentIdx);
     const gate = content.slice(stopIdx, modeIdx);
-    expect(approach).toContain('**Initial visit after 0C:** Identify unresolved approach choices');
-    expect(approach).toContain('Otherwise use steps 1–4 to compare A) the current/requested plan');
-    expect(gate).toContain('Initial approach choice: proceed to 0E once required choices are settled');
-    expect(gate).toContain('Reuse the recorded answer at that destination; do not ask again or restart mode selection');
+    const startup = content.slice(content.indexOf('### 0C.'), approachIdx);
+    expect(startup).toContain('Before 0E, call 0D for unresolved approaches');
+    expect(startup).toContain('A) current/requested plan, B) smallest scoped alternative');
+    expect(startup).toContain('With no required choice, or after those choices settle, go to 0E');
+    expect(approach).toContain('0D never restarts mode selection');
+    expect(gate).toContain('Return to the calling step with the saved answer; do not ask it again');
     expect(gate).not.toContain("When this step's required decisions are settled, go to 0E if you came from 0C");
     expect(gate).toContain('even for a lone option');
     expect(approach).toContain('Recommendations are not approval');
@@ -4594,7 +4598,7 @@ describe('EXIT PLAN MODE GATE placement', () => {
           expect(finalHandoff).toContain('Outside plan mode, finish the review in the current conversation; do not call ExitPlanMode');
         } else {
           expect(tail.replace(/\s+/g, ' ')).toContain('**Pass with log-only gaps:**');
-          expect(tail.replace(/\s+/g, ' ')).toContain('Label only unwritten artifacts **not persisted**; a verified report stays persisted if only its log is forbidden');
+          expect(tail.replace(/\s+/g, ' ')).toContain('Label only unwritten artifacts **not persisted**; missing logs do not unsave a verified report');
           expect(tail.replace(/\s+/g, ' ')).toContain('end without success telemetry, ExitPlanMode or the queued handoff');
         }
       } else {

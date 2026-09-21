@@ -323,8 +323,8 @@ Continue through the blocks below in file order:
 2. **Resolve remaining TODO choices:** use the selected mode's scope rules.
 3. **Approval readiness:** check the ledger and record PASS before writing outputs. Its complete checklist is immediately after the TODO choices; no report or log is needed yet.
 4. **Required Outputs:** follow the three stages below: prepare the plan body and summary, save and verify the terminal report, then publish the summary in chat.
-5. **Cleanup and history:** perform permitted cleanup, write Review Log and display the dashboard.
-6. **Navigation:** choose Next Steps and any docs/designs promotion; queue the next skill. A substantive answer returns to 0D → Approval readiness → affected outputs → report Read-back → log → dashboard. Navigation alone does not reopen decisions.
+5. **Cleanup and history:** perform permitted cleanup, attempt Review Log under the Artifact outcomes policy, then display the dashboard with the actual logging outcome.
+6. **Navigation:** choose Next Steps and any docs/designs promotion; queue the next skill. For a substantive answer, call 0D for only that change, repeat Approval readiness and Required Outputs, then repeat step 5. Resume navigation without asking settled choices again. Navigation alone does not reopen decisions.
 7. **Learnings:** finish learning and brain write-back. Return to this skill's main `SKILL.md`, at **Section self-check**. Its EXIT gate only verifies completed work and the saved readiness result; it does not ask again. A passing persisted review then runs telemetry, cache refresh and exit.
 
 ### Outside Voice Integration Rule
@@ -382,11 +382,25 @@ echo "CODEX_MODE: $_CODEX_MODE"
 Branch on the echoed `CODEX_MODE`:
 - **`disabled`** — the user turned Codex reviews off (`codex_reviews=disabled`). Skip the reviewer invocation; record disabled coverage as directed below; do NOT fall back to a Claude subagent — disabled means no extra review step. Print: "Codex review skipped (codex_reviews disabled). Re-enable: `gstack-config set codex_reviews enabled`."
 - **`not_installed`** — Codex CLI absent. Print: "Codex not installed — falling back to a Claude subagent (fresh context, but the same harness; model identity is unknown). Install Codex for an actual outside-model read: `npm install -g @openai/codex`." Fall back to the Claude subagent path.
-- **`under_codex`** — stale artifact selected its own harness. Print: "Codex outside review unavailable: harness mismatch; no outside process started. Missing coverage. Repair: setup --host codex." Skip the outside invocation and follow the workflow's native-review instructions below. Conflicting inherited harness markers are not grounds to guess another provider.
+- **`under_codex`** — stale artifact selected its own harness. Print: "Codex outside review unavailable: harness mismatch; no outside process started. Missing coverage. Repair: setup --host codex." Skip the outside invocation and construct the prompt below, then follow **Native fallback**. Conflicting inherited harness markers are not grounds to guess another provider.
 - **`not_authed`** — installed but no credentials. Print: "Codex installed but not authenticated — falling back to a Claude subagent (same harness; model identity is unknown). Run `codex login` or set `$CODEX_API_KEY`." Fall back to the Claude subagent path.
 - **`broken_install`** — the CLI is on PATH but cannot execute (spawn ENOENT, non-executable binary, missing vendor payload). Print: "Codex is installed but its binary cannot run — Codex passes skipped. Reinstall: `npm install -g @openai/codex`." Relay the probe's HINT lines and fall back to the Claude subagent path. This state exists because a missing binary used to land in the model probe's fail-open bucket and report `ready`, so every Codex pass was skipped silently (#2742).
 - **`model_unusable`** — authed but the account cannot use gstack's selected Codex model (#2477: HTTP 400 on every call). Relay the probe's HINT lines, tell the user the one-line fix (set `GSTACK_CODEX_MODEL=<supported-model>` or pass an explicit `-c model=...` override), and fall back to the Claude subagent path. The ~10s round trip is cached for 1h; timeouts fail open to `ready`.
 - **`ready`** — run the Codex pass below.
+
+**Outcome routing:** Follow the row for the current result. After an invocation, route its result
+again. Leave only after recording disabled/unavailable coverage, or after
+integrating completed findings, comparing eligible reviews and recording the result.
+Missing reviewer coverage is non-blocking; approvals and artifact rules still apply.
+
+| Outcome | Next step |
+|---|---|
+| Disabled | Record disabled coverage below, then continue to planning decisions. No prompt, outside process or native replacement. |
+| Ready | Construct the prompt and run the foreground outside invocation. |
+| Other preflight mode, including harness mismatch | Report the probe's diagnosis, construct the same prompt and use Native fallback. |
+| Outside execution or output validation fails | Retain its output and diagnosis, finish termination, then use Native fallback. Auth: name the login repair; timeout: report the five-minute limit; empty response: say no response. |
+| Reviewer completes | Present its full output and go to Integrate reviewer findings. |
+| Native fallback unavailable or fails | Record unavailable coverage and continue to planning decisions. No clean-review credit. |
 
 **Record the disabled outcome:** If preflight selected `disabled`, use the
 guarded record below, then continue to the remaining planning decisions and
@@ -512,16 +526,9 @@ timeout means the five-minute limit expired; empty output means no response.
 Other preflight failures retain their printed diagnosis, including harness mismatch.
 These failures do not block the review; they use the bounded fallback below.
 
-Use this exact route:
-- `CODEX_MODE: disabled` means intentional opt-out. Record disabled coverage and
-  do not run a replacement reviewer.
-- `CODEX_MODE: ready` means run the outside invocation above.
-- Any other preflight result, including `under_codex`,
-  missing CLI, auth/model failure, harness mismatch or failed
-  output validation, means report the diagnosis and run the native fallback
-  below. A native result never counts as outside coverage.
-
-Immediately before dispatch, recheck the preflight result. If it is
+Enter only when **Outcome routing** selects fallback; do not restart the outside
+invocation after its failure. A native result never counts as outside coverage.
+Immediately before dispatch, recheck whether reviews are enabled. If the mode is
 `CODEX_MODE: disabled`, return to **Record the disabled outcome** without
 dispatching. Otherwise continue with the same prepared prompt.
 
@@ -604,7 +611,7 @@ disabled, unavailable, timed-out, cancelled or raw/incomplete external result
 also supplies no cross-model agreement or clean-review credit.
 
 **Persist the result:**
-Only run this metadata write when permitted by the storage policy; otherwise report the actual result in chat as not persisted.
+This is best-effort review history under Step 0's Artifact outcomes table. Attempt it only when permitted. On failure, retain the error, show the actual fields as not persisted and continue; when forbidden, show those fields without attempting the write.
 ```bash
 ~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-plan-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","host":"claude","outside_provider":"codex","outside_status":"OUTSIDE_STATUS","phase":"plan-review","commit":"'"$(git rev-parse --short HEAD)"'"}'
 ```
@@ -809,11 +816,9 @@ after report verification; forbidden writes stay labeled not persisted.
 
 Use the full mode name from Step 0E; replace spaces with underscores only in the
 review log's `MODE` field. "System Audit" summarizes repository findings from
-Step 0 and the review sections. "Lake Score" measures only coverage tradeoffs:
-Y is the number of answered choices that offered a complete 10/10 option, and X
-is the number of those choices where the user selected that complete option.
-Exclude choices that differ in kind rather than coverage, and exclude unanswered
-questions; use `N/A` when Y is zero.
+Step 0 and the review sections. "Lake Score" is X/Y: among answered coverage
+choices offering a complete 10/10 option (Y), count those that chose it (X).
+Exclude kind-only and unanswered choices; use `N/A` when Y is zero.
 
 ```
   +====================================================================+
@@ -841,7 +846,7 @@ questions; use `N/A` when Y is zero.
   | Failure modes        | ___ total, ___ CRITICAL GAPS                |
   | TODOS.md updates     | ___ items proposed                          |
   | Scope proposals      | ___ proposed, ___ accepted (EXP + SEL)      |
-  | CEO plan             | written / skipped (HOLD/REDUCTION)           |
+  | CEO plan             | written / not persisted / skipped by mode  |
   | Outside voice        | provider + completed/unavailable/disabled/skipped |
   | Lake Score           | X/Y recommendations chose complete option   |
   | Diagrams produced    | ___ (list types)                            |
@@ -967,6 +972,7 @@ there — the user then sees a plan whose review report is not at the bottom and
 the prepared summary in chat with confirmed artifact outcomes. Do not append it
 after the report in the file. For chat-only output, show the complete plan, report
 and summary as not persisted; no file Read-back or saved completion is claimed.
+This publishes the review content; final completion still requires the later exit gate.
 
 ## Handoff Note Cleanup
 
@@ -981,11 +987,18 @@ rm -f ~/.gstack/projects/$SLUG/*-$BRANCH-ceo-handoff-*.md 2>/dev/null || true
 
 ## Review Log
 
-When a plan/report file is to be saved, log only after its successful write and Read-back
-above. On failure, report the error and stop; do not log completion or an accepted decision.
-Run the commands below only when the reviewed output is persisted and metadata writes
-are permitted. Otherwise show their actual fields in chat as not persisted. The dashboard
-contains saved history; it must not be presented as recording this unlogged run.
+Attempt these history writes only after the plan/report's successful write and
+Read-back. A failed plan/report save or verification stops before this block.
+If metadata writes are forbidden, skip these commands and show their actual
+fields in chat as **not persisted**.
+
+Both history commands below are best-effort under Step 0's **Artifact outcomes**
+policy. If one fails, retain its diagnostic, show its actual unsaved fields and
+continue; do not claim that entry was recorded. Display the dashboard from saved
+history, clearly identifying this run as unlogged when its review-log write failed
+or was forbidden. This differs from 0H's required spec-metrics write.
+This payload omits the dashboard's optional `plan_sha256`: use age for freshness
+without claiming a content match when no hash was recorded.
 
 Substitute these values from the Completion Summary before running the commands:
 - **TIMESTAMP**: current UTC ISO 8601 datetime (e.g., 2026-03-16T14:30:00Z)
@@ -998,11 +1011,13 @@ Substitute these values from the Completion Summary before running the commands:
 - **scope_deferred**: number of items deferred to TODOS.md from scope decisions (0 for HOLD/REDUCTION)
 - **COMMIT**: output of `git rev-parse --short HEAD`
 
-The second command records the accepted scope as a durable cross-session decision so the next session sees what was settled (and why) without re-litigating it. It writes to `~/.gstack/` (same pattern as review-log), is non-interactive, and is best-effort (`|| true` — never blocks the review). Substitute `SCOPE_SUMMARY` (e.g. "accepted 4 of 6 proposals" for expansion, or "held scope" / "cut 3 items" for HOLD/REDUCTION) and `VERDICT` (the one-line verdict from the summary).
+The second command records the accepted scope so later sessions can reuse it.
+Substitute `SCOPE_SUMMARY` (e.g. "accepted 4 of 6 proposals", "held scope" or
+"cut 3 items") and `VERDICT` (the summary's one-line verdict).
 
 ```bash
-~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"plan-ceo-review","timestamp":"TIMESTAMP","status":"STATUS","unresolved":N,"critical_gaps":N,"mode":"MODE","scope_proposed":N,"scope_accepted":N,"scope_deferred":N,"commit":"COMMIT"}'
-~/.claude/skills/gstack/bin/gstack-decision-log '{"decision":"CEO review (MODE): SCOPE_SUMMARY","rationale":"VERDICT","scope":"branch","source":"skill","confidence":8}' 2>/dev/null || true
+~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"plan-ceo-review","timestamp":"TIMESTAMP","status":"STATUS","unresolved":N,"critical_gaps":N,"mode":"MODE","scope_proposed":N,"scope_accepted":N,"scope_deferred":N,"commit":"COMMIT"}' || { _CEO_LOG_EXIT=$?; echo "Review history not persisted (exit $_CEO_LOG_EXIT)." >&2; }
+~/.claude/skills/gstack/bin/gstack-decision-log '{"decision":"CEO review (MODE): SCOPE_SUMMARY","rationale":"VERDICT","scope":"branch","source":"skill","confidence":8}' || { _CEO_DECISION_EXIT=$?; echo "Decision history not persisted (exit $_CEO_DECISION_EXIT)." >&2; }
 ```
 
 ## Review Readiness Dashboard

@@ -260,10 +260,9 @@ Required Outputs, preserving unresolved decisions in the report.`;
 export function generateExitPlanModeGate(ctx: TemplateContext): string {
   if (ctx.skillName === 'plan-ceo-review') return `## EXIT PLAN MODE GATE (BLOCKING)
 
-Read-only verification: if required plan/report persistence is forbidden or a
-required save failed, use **Gate outcome: Blocked**. If only completion-log or
-metadata writes are forbidden after the report is verified, skip those writes,
-label them not persisted and continue; they do not block the gate.
+Read-only verification: apply **Artifact outcomes**. Missing plan/report saves
+and failed permitted 0H metrics block completion. Best-effort history does not;
+show unsaved fields and errors.
 
 Verify \`Approval readiness: PASS\` against current row IDs and answer references.
 If stale because a choice changed, stop and return to 0D for that choice only;
@@ -278,9 +277,10 @@ Verify all five checks:
 4. Its final non-whitespace line is the exact unbolded \`NO UNRESOLVED DECISIONS\`,
    or the last bullet under \`**UNRESOLVED DECISIONS:**\`. A bolded sentinel,
    missing status or any trailing prose fails this check.
-5. If metadata writes were permitted, confirm \`gstack-review-log\` was called
-   and \`gstack-review-read\` ran at least once. If metadata writes were not
-   permitted, confirm the actual log fields were shown as not persisted.
+5. For permitted history, confirm \`gstack-review-log\` was attempted and
+   \`gstack-review-read\` ran. For forbidden history, confirm no write was attempted.
+   Show unsaved fields and any errors as not persisted. Never invent dashboard
+   results when its read fails.
 
 Failed checks use **Gate outcome: Blocked**. Chat or body prose cannot replace
 the verified terminal report. Do not call ExitPlanMode until all checks pass.`;
@@ -571,11 +571,10 @@ ${ceo ? `Report the outcome and fields below. Show full reviewer output on reque
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON \`null\` ("score unavailable"). Label earlier grades "prior review score".
 
-Concerns belong in the CEO summary under the storage policy. Metrics use the
-same write policy: append only when metadata writes are permitted; otherwise show these fields as not persisted.
-The metrics write is required when permitted, not best-effort: its failed mkdir
-or append stops the review as a save failure. Reviewer availability remains a
-quality bonus; it does not excuse a failed artifact write:` : `After the loop completes (PASS, max iterations, or convergence guard):
+Save concerns in the CEO summary. Apply Step 0's **0H spec-review metrics** row:
+when permitted, append below; failed mkdir or append stops the review, even if
+the reviewer was unavailable. When forbidden, show fields as not persisted and
+continue without writing. These metrics are distinct from best-effort history:` : `After the loop completes (PASS, max iterations, or convergence guard):
 
 1. Tell the user the result — summary by default:
    "Your doc survived N rounds of adversarial review. M issues caught and fixed.
@@ -956,9 +955,12 @@ review. The user turns this off only by asking explicitly
 
 ${outsideVoicePreflight(ctx, { disabledBehavior: 'skip-all' })}
 
-${ctx.skillName === 'plan-eng-review' ? `**Outcome routing:** Pick exactly one row from this table, finish that row's
+${needsApprovalReadiness ? `**Outcome routing:** ${ceo ? `Follow the row for the current result. After an invocation, route its result
+again. Leave only after recording disabled/unavailable coverage, or after
+integrating completed findings, comparing eligible reviews and recording the result.
+Missing reviewer coverage is non-blocking; approvals and artifact rules still apply.` : `Pick exactly one row from this table, finish that row's
 steps, then leave Outside Voice. Missing reviewer coverage is non-blocking;
-approval and artifact-write requirements still apply.
+approval and artifact-write requirements still apply.`}
 
 | Outcome | Next step |
 |---|---|
@@ -966,7 +968,7 @@ approval and artifact-write requirements still apply.
 | Ready | Construct the prompt and run the foreground outside invocation. |
 | Other preflight mode, including harness mismatch | Report the probe's diagnosis, construct the same prompt and use Native fallback. |
 | Outside execution or output validation fails | Retain its output and diagnosis, finish termination, then use Native fallback. Auth: name the login repair; timeout: report the five-minute limit; empty response: say no response. |
-| Reviewer completes | Present its full output and resolve findings through Decision procedure. |
+| Reviewer completes | Present its full output and ${ceo ? 'go to Integrate reviewer findings' : 'resolve findings through Decision procedure'}. |
 | Native fallback unavailable or fails | Record unavailable coverage and continue to planning decisions. No clean-review credit. |
 
 ` : ''}${ceo ? `**Record the disabled outcome:** If preflight selected \`disabled\`, use the
@@ -1058,16 +1060,9 @@ timeout means the five-minute limit expired; empty output means no response.
 Other preflight failures retain their printed diagnosis, including harness mismatch.
 These failures do not block the review; they use the bounded fallback below.
 
-Use this exact route:
-- \`CODEX_MODE: disabled\` means intentional opt-out. Record disabled coverage and
-  do not run a replacement reviewer.
-- \`CODEX_MODE: ready\` means run the outside invocation above.
-- Any other preflight result, including \`${outsideVoiceFor(ctx).id === 'codex' ? 'under_codex' : 'under_current_harness'}\`,
-  missing CLI, auth/model failure, harness mismatch or failed
-  output validation, means report the diagnosis and run the native fallback
-  below. A native result never counts as outside coverage.
-
-Immediately before dispatch, recheck the preflight result. If it is
+Enter only when **Outcome routing** selects fallback; do not restart the outside
+invocation after its failure. A native result never counts as outside coverage.
+Immediately before dispatch, recheck whether reviews are enabled. If the mode is
 \`CODEX_MODE: disabled\`, return to **Record the disabled outcome** without
 dispatching. Otherwise continue with the same prepared prompt.
 ` : ctx.skillName === 'plan-eng-review' ? `**Native fallback — provider unavailable or execution failed, with reviews enabled:**
@@ -1243,7 +1238,7 @@ Retain other rows and risks; one answer does not clear the finding's remaining c
 
 After processing the queue, report findings, dispositions and remaining disagreements.
 
-`}**Persist the result:**${ctx.skillName === 'plan-ceo-review' ? '\nOnly run this metadata write when permitted by the storage policy; otherwise report the actual result in chat as not persisted.' : ''}
+`}**Persist the result:**${ctx.skillName === 'plan-ceo-review' ? '\nThis is best-effort review history under Step 0\'s Artifact outcomes table. Attempt it only when permitted. On failure, retain the error, show the actual fields as not persisted and continue; when forbidden, show those fields without attempting the write.' : ''}
 \`\`\`bash
 ~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"codex-plan-review","timestamp":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","status":"STATUS","source":"SOURCE","host":"${ctx.host}","outside_provider":"${outsideVoiceFor(ctx).id}","outside_status":"OUTSIDE_STATUS","phase":"plan-review","commit":"'"$(git rev-parse --short HEAD)"'"}'
 \`\`\`

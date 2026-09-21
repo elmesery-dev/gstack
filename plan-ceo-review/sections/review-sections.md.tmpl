@@ -321,8 +321,8 @@ Continue through the blocks below in file order:
 2. **Resolve remaining TODO choices:** use the selected mode's scope rules.
 3. **Approval readiness:** check the ledger and record PASS before writing outputs. Its complete checklist is immediately after the TODO choices; no report or log is needed yet.
 4. **Required Outputs:** follow the three stages below: prepare the plan body and summary, save and verify the terminal report, then publish the summary in chat.
-5. **Cleanup and history:** perform permitted cleanup, write Review Log and display the dashboard.
-6. **Navigation:** choose Next Steps and any docs/designs promotion; queue the next skill. A substantive answer returns to 0D → Approval readiness → affected outputs → report Read-back → log → dashboard. Navigation alone does not reopen decisions.
+5. **Cleanup and history:** perform permitted cleanup, attempt Review Log under the Artifact outcomes policy, then display the dashboard with the actual logging outcome.
+6. **Navigation:** choose Next Steps and any docs/designs promotion; queue the next skill. For a substantive answer, call 0D for only that change, repeat Approval readiness and Required Outputs, then repeat step 5. Resume navigation without asking settled choices again. Navigation alone does not reopen decisions.
 7. **Learnings:** finish learning and brain write-back. Return to this skill's main `SKILL.md`, at **Section self-check**. Its EXIT gate only verifies completed work and the saved readiness result; it does not ask again. A passing persisted review then runs telemetry, cache refresh and exit.
 
 ### Outside Voice Integration Rule
@@ -442,11 +442,9 @@ after report verification; forbidden writes stay labeled not persisted.
 
 Use the full mode name from Step 0E; replace spaces with underscores only in the
 review log's `MODE` field. "System Audit" summarizes repository findings from
-Step 0 and the review sections. "Lake Score" measures only coverage tradeoffs:
-Y is the number of answered choices that offered a complete 10/10 option, and X
-is the number of those choices where the user selected that complete option.
-Exclude choices that differ in kind rather than coverage, and exclude unanswered
-questions; use `N/A` when Y is zero.
+Step 0 and the review sections. "Lake Score" is X/Y: among answered coverage
+choices offering a complete 10/10 option (Y), count those that chose it (X).
+Exclude kind-only and unanswered choices; use `N/A` when Y is zero.
 
 ```
   +====================================================================+
@@ -474,7 +472,7 @@ questions; use `N/A` when Y is zero.
   | Failure modes        | ___ total, ___ CRITICAL GAPS                |
   | TODOS.md updates     | ___ items proposed                          |
   | Scope proposals      | ___ proposed, ___ accepted (EXP + SEL)      |
-  | CEO plan             | written / skipped (HOLD/REDUCTION)           |
+  | CEO plan             | written / not persisted / skipped by mode  |
   | Outside voice        | provider + completed/unavailable/disabled/skipped |
   | Lake Score           | X/Y recommendations chose complete option   |
   | Diagrams produced    | ___ (list types)                            |
@@ -499,6 +497,7 @@ complete body and summary before the report; no new body section follows it.
 the prepared summary in chat with confirmed artifact outcomes. Do not append it
 after the report in the file. For chat-only output, show the complete plan, report
 and summary as not persisted; no file Read-back or saved completion is claimed.
+This publishes the review content; final completion still requires the later exit gate.
 
 ## Handoff Note Cleanup
 
@@ -513,11 +512,18 @@ rm -f ~/.gstack/projects/$SLUG/*-$BRANCH-ceo-handoff-*.md 2>/dev/null || true
 
 ## Review Log
 
-When a plan/report file is to be saved, log only after its successful write and Read-back
-above. On failure, report the error and stop; do not log completion or an accepted decision.
-Run the commands below only when the reviewed output is persisted and metadata writes
-are permitted. Otherwise show their actual fields in chat as not persisted. The dashboard
-contains saved history; it must not be presented as recording this unlogged run.
+Attempt these history writes only after the plan/report's successful write and
+Read-back. A failed plan/report save or verification stops before this block.
+If metadata writes are forbidden, skip these commands and show their actual
+fields in chat as **not persisted**.
+
+Both history commands below are best-effort under Step 0's **Artifact outcomes**
+policy. If one fails, retain its diagnostic, show its actual unsaved fields and
+continue; do not claim that entry was recorded. Display the dashboard from saved
+history, clearly identifying this run as unlogged when its review-log write failed
+or was forbidden. This differs from 0H's required spec-metrics write.
+This payload omits the dashboard's optional `plan_sha256`: use age for freshness
+without claiming a content match when no hash was recorded.
 
 Substitute these values from the Completion Summary before running the commands:
 - **TIMESTAMP**: current UTC ISO 8601 datetime (e.g., 2026-03-16T14:30:00Z)
@@ -530,11 +536,13 @@ Substitute these values from the Completion Summary before running the commands:
 - **scope_deferred**: number of items deferred to TODOS.md from scope decisions (0 for HOLD/REDUCTION)
 - **COMMIT**: output of `git rev-parse --short HEAD`
 
-The second command records the accepted scope as a durable cross-session decision so the next session sees what was settled (and why) without re-litigating it. It writes to `~/.gstack/` (same pattern as review-log), is non-interactive, and is best-effort (`|| true` — never blocks the review). Substitute `SCOPE_SUMMARY` (e.g. "accepted 4 of 6 proposals" for expansion, or "held scope" / "cut 3 items" for HOLD/REDUCTION) and `VERDICT` (the one-line verdict from the summary).
+The second command records the accepted scope so later sessions can reuse it.
+Substitute `SCOPE_SUMMARY` (e.g. "accepted 4 of 6 proposals", "held scope" or
+"cut 3 items") and `VERDICT` (the summary's one-line verdict).
 
 ```bash
-~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"plan-ceo-review","timestamp":"TIMESTAMP","status":"STATUS","unresolved":N,"critical_gaps":N,"mode":"MODE","scope_proposed":N,"scope_accepted":N,"scope_deferred":N,"commit":"COMMIT"}'
-~/.claude/skills/gstack/bin/gstack-decision-log '{"decision":"CEO review (MODE): SCOPE_SUMMARY","rationale":"VERDICT","scope":"branch","source":"skill","confidence":8}' 2>/dev/null || true
+~/.claude/skills/gstack/bin/gstack-review-log '{"skill":"plan-ceo-review","timestamp":"TIMESTAMP","status":"STATUS","unresolved":N,"critical_gaps":N,"mode":"MODE","scope_proposed":N,"scope_accepted":N,"scope_deferred":N,"commit":"COMMIT"}' || { _CEO_LOG_EXIT=$?; echo "Review history not persisted (exit $_CEO_LOG_EXIT)." >&2; }
+~/.claude/skills/gstack/bin/gstack-decision-log '{"decision":"CEO review (MODE): SCOPE_SUMMARY","rationale":"VERDICT","scope":"branch","source":"skill","confidence":8}' || { _CEO_DECISION_EXIT=$?; echo "Decision history not persisted (exit $_CEO_DECISION_EXIT)." >&2; }
 ```
 
 {{REVIEW_DASHBOARD}}

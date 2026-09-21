@@ -71,7 +71,7 @@ export function outsideVoicePreflight(ctx: TemplateContext, opts: { disabledBeha
   if (v.id === 'codex' && opts.disabledBehavior !== 'opt-in') {
     let preflight = outsideVoiceLabels(ctx, codexPreflight(opts))
       .replace('```bash\n', `\`\`\`bash\n${outsideVoiceRuntime(ctx)}\n`);
-    if (ctx.skillName === 'plan-eng-review') {
+    if (['plan-eng-review', 'plan-ceo-review'].includes(ctx.skillName)) {
       preflight = preflight.replace("follow the workflow's native-review instructions below",
         'construct the prompt below, then follow **Native fallback**');
     }

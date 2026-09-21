@@ -114,7 +114,7 @@ test('only an explicit user selection or enabled successful mode check bypasses 
   expect(q).toContain('Auto-decided [summary] → [option] (your preference). Change with /plan-tune.');
   expect(q).toContain('`ASK_NORMALLY` means ask.');
   expect(s).toContain('Selecting a mode does not approve changes');
-  expect(document).toContain('Initial approach choice: proceed to 0E once required choices are settled');
+  expect(document.replace(/\s+/g,' ')).toContain('With no required choice, or after those choices settle, go to 0E');
   expect(s.replace(/\s+/g,' ')).toContain('Preserve 0D approvals and ask about each proposed addition or cut');
   expect(s).toContain('offer all four modes in one AskUserQuestion');
   expect(s).toContain("using step 2's recommendation");

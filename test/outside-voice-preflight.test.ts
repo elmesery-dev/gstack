@@ -50,8 +50,8 @@ test('CEO and Eng describe the actual disabled route and completion validator', 
       } else {
         const prose = output.replace(/\s+/g, ' ');
         expect(prose).toContain('Other preflight failures retain their printed diagnosis, including harness mismatch');
-        const fallback = prose.slice(prose.indexOf('**Native fallback'), prose.indexOf('Dispatch via the Agent tool'));
-        expect(fallback).toContain('Immediately before dispatch, recheck the preflight result');
+        const fallback = prose.slice(prose.indexOf('**Native fallback —'), prose.indexOf('Dispatch via the Agent tool'));
+        expect(fallback).toContain('Immediately before dispatch, recheck whether reviews are enabled');
         expect(fallback).toContain('`CODEX_MODE: disabled`, return to **Record the disabled outcome** without dispatching');
         expect(prose).toContain('Its opening harness guard rechecks the fresh shell: exit 78 uses the same Native fallback below, never a replacement provider');
         expect(prose).toContain('A native result never supplies outside coverage.');

@@ -826,7 +826,13 @@ sections. Read a section in full before doing its step; do not work from memory.
 
 ## Step 0: Nuclear Scope Challenge + Mode Selection
 
-Complete 0A–0E in order; follow the selected route. Record 0A–0C evidence in the working plan; observations do not approve changes.
+Startup:
+1. Set depth, storage and ledger below.
+2. Record 0A–0C evidence; call 0D only for a required approach choice.
+3. Select the mode in 0E and follow its route table.
+4. Complete Review Sections and its closing sequence; return to Section self-check.
+
+0D is reusable, not an unconditional question. Observations do not approve changes.
 
 **Set review depth from the user's request.** Default to implementation-ready.
 Use strategy-only only when the user asks for strategy, scope, or prioritization
@@ -851,11 +857,23 @@ Detail implementation contracts only for blockers or implementation-ready depth.
 
 **Keep the stated limits.** Record each measure, value, unit and prerequisite. Count all deliverables, including reused code. Changing a limit needs evidence and user approval.
 
-**Storage policy: choose before writing.** Honor user/host artifact and cleanup limits. Working/active plan is one document: requested output, else reviewed plan, else host active plan.
-- For permitted plans, use native Write for a missing file and scoped Edit for existing checkpoints. Every save retains all current content, ledger rows and comparisons; preserve unchanged blocks. Other artifacts use their specified writers.
-- If no path is permitted, present the complete labeled text in chat as **not persisted** and continue without attempting a write.
-- If an attempted save fails, report it and stop; do not switch to chat. Explicitly best-effort logs may fail without stopping. Never claim an unconfirmed save, read-back or log.
-Chat fallback is for working text; final gate still requires saved plan/report unless only logs are blocked.
+**Storage policy: choose before writing.** Honor user/host artifact and cleanup
+limits. One working plan: requested output, else reviewed plan, else host active
+plan. Use native Write for a missing file and scoped Edit for checkpoints;
+retain all current content, ledger rows and comparisons.
+
+**Artifact outcomes:** Never claim an unconfirmed save, read-back or log.
+When forbidden, attempt no write; show complete output or actual log fields as
+**not persisted**. Continue analysis; an unsaved plan/report blocks completion.
+
+| Permitted write | On failure |
+|---|---|
+| Plan/report, CEO summary, approved TODOs and tasks | Report cause and stop; no chat bypass. The task writer's missing-jq exception still applies. |
+| 0H spec-review metrics | Report cause and stop, even if the reviewer was unavailable. |
+| Review, decision and question history logs | Best-effort: report cause and unsaved fields; continue. The plan's ledger remains required content. |
+
+Paths: CEO archive = `CEO_PLANS` (0H), tasks =
+`~/.gstack/projects/`, metrics = `~/.gstack/analytics/`; log helpers choose theirs.
 
 Keep one decision ledger through Step 0, Spec Review Loop and Outside Voice:
 
@@ -879,7 +897,14 @@ Describe the 12-month ideal and whether this plan moves toward it.
   [describe]          --->       [describe delta]    --->    [describe target]
 ```
 
-### 0D. Alternatives (MANDATORY)
+Before 0E, call 0D for unresolved approaches: A) current/requested plan,
+B) smallest scoped alternative, C) larger approach/rewrite only with evidence.
+With no required choice, or after those choices settle, go to 0E.
+
+### 0D. Alternatives (reusable decision procedure)
+
+Run steps 1–4 for unanswered rows only; step 1 reuses prior approvals, even for
+a lone option. Return to the calling step; 0D never restarts mode selection.
 
 - **Admin question:** mode selection, setup, navigation and document promotion.
   Ask that step's listed options with the preamble question tool. Log answer and
@@ -890,17 +915,11 @@ Describe the 12-month ideal and whether this plan moves toward it.
 Use each menu only for its step. If an admin answer also changes scope, approach,
 TODO or finding, handle it as a Plan decision.
 
-**Initial visit after 0C:** Identify unresolved approach choices. If none need an
-answer, proceed directly to 0E. Otherwise use steps 1–4 to compare A) the
-current/requested plan, B) the smallest scoped alternative, and C) a larger
-approach or rewrite only when evidence supports it. Explain a lone viable path;
-ask only if approval is missing.
-
 **1. Check sources and prior answers.**
 Compare input, source and actual answers. Correct facts, flag approval conflicts
 and preserve unknowns. Reuse exact approvals; reopen only for contradictions,
 changed assumptions or user instructions, not speculation or reviewer agreement.
-With no new answer needed, cite settled answers and **Continue after 0D**;
+With no new answer needed, cite settled answers and return to the calling step;
 invent no alternatives or approval.
 
 **2. Record the pending choice.**
@@ -956,7 +975,9 @@ edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
   Effort/risk must each be one listed value, never a range. Correct any missing,
   changed or invalid `currentDecision` field before saving.
 - **Save.** Under the storage policy, save/present the complete current plan,
-  pending rows and comparisons. Under its own heading, copy its grid and all exact fields in this layout as unfenced plain text:
+  pending rows and comparisons. Copy the grid and all exact fields below.
+  Omit these illustrative fence delimiters in the saved plan; preserve the
+  heading, grid and plain-text fields:
 
   ```text
   ## currentDecision (ROW-ID)
@@ -1001,23 +1022,15 @@ storage policy before taking another row.
 If all options are declined, continue only with a viable current approach retained
 by the answer; otherwise leave the row unresolved and stop for direction.
 
-**Continue after 0D:** Resume by decision type:
-- Initial approach choice: proceed to 0E once required choices are settled.
-- Scope, spec, feasibility or TODO choice: resume the calling step after its 0D instruction.
-- Review-section finding: continue to that section's **Apply** check.
-- Outside finding: process the next finding, then finish Outside Voice.
-- Late change during closing: repeat Approval readiness and refresh affected
-  outputs as directed in Closing sequence.
-Reuse the recorded answer at that destination; do not ask again or restart mode selection.
-
-When returning, carry both resolved findings and genuine no-issue outcomes. Say
+Return to the calling step with the saved answer; do not ask it again. Carry
+both resolved findings and genuine no-issue outcomes. Say
 "No issues, moving on." only when there are none.
 
 ### 0E. Mode Selection
 Follow the preamble's session rules; `CONDUCTOR_SESSION: true` changes transport only.
 
 1. An explicit choice skips steps 2–3. "Go big", "ambitious" or "cathedral" means SCOPE EXPANSION; "hold scope but tempt me", "show me options" or "cherry-pick" means SELECTIVE EXPANSION. Do not ask again.
-2. Recommend without selecting. Count distinct planned file additions, edits and deletions, labeling estimates. For >15 planned changed files, recommend SCOPE REDUCTION. Otherwise: a new product/system (greenfield) → SCOPE EXPANSION; added capability → SELECTIVE EXPANSION; fix/refactor → HOLD SCOPE.
+2. Recommend without selecting. Count distinct planned file additions, edits and deletions, labeling estimates. For >15 planned changed files, recommend SCOPE REDUCTION. Otherwise: a new product/system (greenfield) → SCOPE EXPANSION; added capability → SELECTIVE EXPANSION; fix/refactor → HOLD SCOPE. If categories overlap or are unclear, explain why and recommend HOLD SCOPE; step 3 still resolves the choice.
 3. Resolve that recommendation. When `QUESTION_TUNING: true`, first check
    `question_id=plan-ceo-review-mode` through the preamble. A check that exits 0
    with `AUTO_DECIDE` selects the recommendation; go to the automatic handoff in
@@ -1201,11 +1214,10 @@ Report the outcome and fields below. Show full reviewer output on request. List 
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON `null` ("score unavailable"). Label earlier grades "prior review score".
 
-Concerns belong in the CEO summary under the storage policy. Metrics use the
-same write policy: append only when metadata writes are permitted; otherwise show these fields as not persisted.
-The metrics write is required when permitted, not best-effort: its failed mkdir
-or append stops the review as a save failure. Reviewer availability remains a
-quality bonus; it does not excuse a failed artifact write:
+Save concerns in the CEO summary. Apply Step 0's **0H spec-review metrics** row:
+when permitted, append below; failed mkdir or append stops the review, even if
+the reviewer was unavailable. When forbidden, show fields as not persisted and
+continue without writing. These metrics are distinct from best-effort history:
 ```bash
 mkdir -p ~/.gstack/analytics || exit 1
 echo '{"skill":"plan-ceo-review","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","iterations":ITERATIONS,"issues_found":FOUND,"issues_fixed":FIXED,"remaining":REMAINING,"quality_score":SCORE}' >> ~/.gstack/analytics/spec-review.jsonl || exit 1
@@ -1243,10 +1255,9 @@ stop here, read the file and redo the review.
 
 ## EXIT PLAN MODE GATE (BLOCKING)
 
-Read-only verification: if required plan/report persistence is forbidden or a
-required save failed, use **Gate outcome: Blocked**. If only completion-log or
-metadata writes are forbidden after the report is verified, skip those writes,
-label them not persisted and continue; they do not block the gate.
+Read-only verification: apply **Artifact outcomes**. Missing plan/report saves
+and failed permitted 0H metrics block completion. Best-effort history does not;
+show unsaved fields and errors.
 
 Verify `Approval readiness: PASS` against current row IDs and answer references.
 If stale because a choice changed, stop and return to 0D for that choice only;
@@ -1261,23 +1272,23 @@ Verify all five checks:
 4. Its final non-whitespace line is the exact unbolded `NO UNRESOLVED DECISIONS`,
    or the last bullet under `**UNRESOLVED DECISIONS:**`. A bolded sentinel,
    missing status or any trailing prose fails this check.
-5. If metadata writes were permitted, confirm `gstack-review-log` was called
-   and `gstack-review-read` ran at least once. If metadata writes were not
-   permitted, confirm the actual log fields were shown as not persisted.
+5. For permitted history, confirm `gstack-review-log` was attempted and
+   `gstack-review-read` ran. For forbidden history, confirm no write was attempted.
+   Show unsaved fields and any errors as not persisted. Never invent dashboard
+   results when its read fails.
 
 Failed checks use **Gate outcome: Blocked**. Chat or body prose cannot replace
 the verified terminal report. Do not call ExitPlanMode until all checks pass.
 
 **Gate outcome:**
-- **Pass with log-only gaps:** If the report is verified and only metadata/log
-  writes are forbidden, continue with the pass branch. Report those missing
-  metadata/log artifacts as **not persisted**.
+- **Pass with log-only gaps:** Apply Artifact outcomes: verified report plus
+  forbidden metadata or failed best-effort history can pass. Label unsaved
+  fields **not persisted**. Failed required writes still block.
 - **Blocked:** For any failed required check or failed required plan/report save,
   return the failed check and complete plan, report and summary. Label only
-  unwritten artifacts **not persisted**; a verified report stays persisted if
-  only its log is forbidden. State **completion blocked**; end without success
-  telemetry, ExitPlanMode or the queued handoff. Resume after resolving the
-  blocker; no gate pass is claimed.
+  unwritten artifacts **not persisted**; missing logs do not unsave a verified
+  report. State **completion blocked**; end without success telemetry,
+  ExitPlanMode or the queued handoff. Resume after resolving the blocker.
 - **Passed with a verified persisted report:** run the preamble's **Telemetry (run last)** once, then the nonblocking cache refresh below.
 
 ## Brain Cache Background Refresh

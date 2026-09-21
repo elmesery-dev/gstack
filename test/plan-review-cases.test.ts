@@ -18,7 +18,7 @@ describe('CI workflow clarity regressions', () => {
     const source = compactProse(readFileSync('plan-ceo-review/SKILL.md.tmpl', 'utf8'));
     expect(source).toContain('For one narrow decision, apply every section to that choice and its dependencies');
     expect(source).toContain('Run steps 1–4 below, including their save checkpoints');
-    expect(source).toContain('If none need an answer, proceed directly to 0E');
+    expect(source).toContain('With no required choice, or after those choices settle, go to 0E');
     expect(source).not.toContain('skip the lookup and ask below');
   });
 
@@ -119,6 +119,13 @@ describe('plan report persistence precedes completion logging', () => {
         expect(compactProse(template)).toContain('If the required log is forbidden, show its fields as not persisted and take **Blocked outcome**');
         expect(compactProse(template)).toContain('Neither case supplies completion or saved-dashboard credit');
         expect(logPolicy).toContain('FULL_REVIEW for the Scope Challenge result "scope accepted as-is"; SCOPE_REDUCED for "scope reduced per recommendation"');
+      } else if (skill === 'plan-ceo-review') {
+        const policy = compactProse(logPolicy);
+        expect(policy).toContain('successful write and Read-back');
+        expect(policy).toContain('A failed plan/report save or verification stops before this block');
+        expect(policy).toContain('Both history commands below are best-effort');
+        expect(policy).toContain('retain its diagnostic, show its actual unsaved fields');
+        expect(policy).toContain('do not claim that entry was recorded');
       } else {
         expect(logPolicy).toContain('successful write and Read-back');
         expect(logPolicy).toContain('report the error and stop');
