@@ -103,25 +103,25 @@ describe('process liveness probe (Windows terminal-agent leak)', () => {
     expect(offenders).toEqual([]);
   });
 
-  test('5. spawnTerminalAgent passes windowsHide so no console is shown', () => {
+  test('5. spawnTerminalAgent passes windowsHide so no console is shown', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gstack-hide-'));
     const script = path.join(tmpDir, 'fake-agent.ts');
     fs.writeFileSync(script, '// no-op\n');
     const origSpawn = (Bun as any).spawn;
+    const exited = Promise.resolve(0);
     let captured: any = null;
     (Bun as any).spawn = (_cmd: any, opts: any) => {
       captured = opts;
-      return { pid: 4242, unref() {} };
+      return { pid: 2147483647, exited, kill() {}, unref() {} };
     };
     try {
-      const pid = spawnTerminalAgent({
+      expect(() => spawnTerminalAgent({
         stateFile: path.join(tmpDir, 'state.json'),
         serverPort: 12345,
         ownerPid: process.pid,
         cwd: tmpDir,
         scriptPath: script,
-      });
-      expect(pid).toBe(4242);
+      })).toThrow('terminal-agent process identity is unavailable');
       expect(captured).not.toBeNull();
       expect(captured.windowsHide).toBe(true);
       // Owner-PID lifetime tie (#2019): the agent polls this and exits when
@@ -129,6 +129,8 @@ describe('process liveness probe (Windows terminal-agent leak)', () => {
       expect(captured.env.BROWSE_OWNER_PID).toBe(String(process.pid));
       // Detached background daemon — must not inherit a terminal either.
       expect(captured.stdio).toEqual(['ignore', 'ignore', 'ignore']);
+      await exited;
+      expect(fs.existsSync(path.join(tmpDir, 'terminal-agent-pid'))).toBe(false);
     } finally {
       (Bun as any).spawn = origSpawn;
       fs.rmSync(tmpDir, { recursive: true, force: true });
