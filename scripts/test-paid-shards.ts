@@ -1492,9 +1492,9 @@ async function main(): Promise<number> {
         console.log(`  slice ${result.sliceIndex}  ${outcome.status.padEnd(15)} ${String(Math.round(outcome.elapsedMs / 1000)).padStart(5)}s  ${outcome.files.join(' ')}`);
       }
     }
-    // Flake honesty (WS1): surface every test that needed a retry to pass.
-    // WARNS, never fails — a flaky pass must not block merges; it must also
-    // never be invisible (bun's own output hides retried passes entirely).
+    // Historical flaky_retries includes every case with multiple attempts,
+    // whether its final result passed or failed. Report attempts separately
+    // from the shard verdict; reconciliation above still controls gating.
     // Source: the finalized eval-store JSONs inside the slice artifacts.
     const flaky: Array<{ name: string; attempts: number; file: string }> = [];
     const collectors: Parameters<typeof collectorOutcomeCounts>[0] = [];
@@ -1509,7 +1509,7 @@ async function main(): Promise<number> {
     const evidence = collectorOutcomeCounts(collectors);
     console.log(`[test:paid] collector final outcomes: ${evidence.executed} executed, ${evidence.reused} reused; ${evidence.passed} passed, ${evidence.failed} failed (${evidence.attempts} attempt records from ${collectors.length} collectors)`);
     if (flaky.length > 0) {
-      console.log(`[test:paid] report: ⚠ ${flaky.length} test(s) passed only on retry this run (recorded, not blocking):`);
+      console.log(`[test:paid] report: ⚠ ${flaky.length} cases with multiple attempts this run:`);
       for (const f of flaky) console.log(`  ⚠ ${f.name} (x${f.attempts}) — ${f.file}`);
     }
 

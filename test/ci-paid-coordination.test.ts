@@ -172,9 +172,20 @@ describe('dependency-free CI planner and report execution', () => {
       failed.outcomes[0].status = 'failed';
       failed.outcomes[0].exitCode = 1;
       fs.writeFileSync(lastSlice, JSON.stringify(failed));
+      fs.writeFileSync(path.join(reportDir, 'retry-results.json'), JSON.stringify({
+        tests: [
+          { name: 'recovered', passed: false }, { name: 'recovered', passed: true },
+          { name: 'exhausted', passed: false }, { name: 'exhausted', passed: false },
+          { name: 'regressed', passed: true }, { name: 'regressed', passed: false },
+        ],
+        flaky_retries: ['recovered', 'exhausted', 'regressed'].map(name => ({ name, attempts: 2 })),
+      }));
       const red = run(['--report', reportDir], tier);
       expect(red.status).toBe(1);
       expect(red.stderr).toContain(`${failed.outcomes[0].files[0]}: failed`);
+      expect(red.stdout).toContain('3 executed, 0 reused; 1 passed, 2 failed (6 attempt records from 1 collectors)');
+      expect(red.stdout).toContain('3 cases with multiple attempts this run:');
+      expect(red.stdout).not.toMatch(/passed only on retry|not blocking/);
 
       fs.writeFileSync(manifestPath, '{');
       const corrupt = run(['--report', reportDir], tier);

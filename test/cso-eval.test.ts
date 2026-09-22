@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
+import * as childProcess from 'node:child_process';
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -427,6 +428,33 @@ describe('CSO matched producer orchestration', () => {
       expect(validatePortableSkillPayload(input.skill, cell.version).files.map(file => file.path)).toEqual(['SKILL.md', 'sections/manifest.json', 'sections/audit-phases.md']);
     }
     expect(() => prepareEvalJobs(producerMatrix, { ...skills, v3: portableSkill('v3', 'CHANGED_V3_SECTION') }, join(root(), 'bad'), selected.map(cell => cell.id))).toThrow('EVAL_SKILL_HASH_MISMATCH');
+  });
+
+  test('prepared Git sources start no automatic maintenance before their immediate copy', () => {
+    const parent = root(), destination = join(parent, 'prepared'), trace = join(parent, 'git-trace.jsonl');
+    const actualExec = childProcess.execFileSync;
+    // Observe the real production commands without inheriting a process-wide
+    // Git trace setting that the initializer correctly excludes from its env.
+    const traced = spyOn(childProcess, 'execFileSync').mockImplementation((command, args, options: any) =>
+      actualExec(command, args as string[], { ...options, timeout: 5000, env: { ...options.env, GIT_TRACE2_EVENT: trace } }));
+    let git: string, env: NodeJS.ProcessEnv;
+    try {
+      prepareEvalJobs(producerMatrix, skills, destination, [selected[0].id]);
+      expect(traced).toHaveBeenCalledTimes(3);
+      git = traced.mock.calls[0]![0] as string;
+      env = (traced.mock.calls[0]![2] as childProcess.ExecFileSyncOptions).env!;
+    } finally { traced.mockRestore(); }
+    const events = readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const starts = events.filter(event => event.event === 'start');
+    for (const command of ['init', 'add', 'commit']) expect(starts.some(event => event.argv.includes(command))).toBe(true);
+    const maintenance = events.filter(event => event.event === 'child_start' &&
+      event.argv?.some((arg: string) => /^(?:maintenance|gc)$/.test(arg)));
+    expect(maintenance).toEqual([]);
+    const isolated = isolate(destination, selected[0]);
+    const options = { cwd: isolated.source, env, encoding: 'utf8' as const, timeout: 5000 };
+    expect(actualExec(git, ['log', '-1', '--format=%s'], options).trim()).toBe('immutable evaluation fixture');
+    expect(actualExec(git, ['status', '--porcelain'], options)).toBe('');
+    expect(existsSync(join(isolated.source, '.git', 'objects', 'maintenance.lock'))).toBe(false);
   });
 
   test('binds every generated section byte and rejects incomplete or cross-version payloads', () => {

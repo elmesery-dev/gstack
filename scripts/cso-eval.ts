@@ -271,8 +271,11 @@ function initializeFixtureRepository(path: string): void {
     GIT_COMMITTER_NAME: 'CSO Eval', GIT_COMMITTER_EMAIL: 'cso-eval@invalid',
   };
   const git = executable('git');
-  execFileSync(git, ['init', '--quiet', '--initial-branch=main'], { cwd: path, env, stdio: 'ignore' });
-  const safe = ['-c', `core.hooksPath=${nullPath}`, '-c', `core.attributesFile=${nullPath}`, '-c', `core.excludesFile=${nullPath}`];
+  // Prepared sources are copied immediately. A detached auto-maintenance child
+  // can remove .git/objects/maintenance.lock while that copy is in progress.
+  const safe = ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0',
+    '-c', `core.hooksPath=${nullPath}`, '-c', `core.attributesFile=${nullPath}`, '-c', `core.excludesFile=${nullPath}`];
+  execFileSync(git, [...safe, 'init', '--quiet', '--initial-branch=main'], { cwd: path, env, stdio: 'ignore' });
   execFileSync(git, [...safe, 'add', '--all'], { cwd: path, env, stdio: 'ignore' });
   execFileSync(git, [...safe, 'commit', '--quiet', '-m', 'immutable evaluation fixture'], { cwd: path, env, stdio: 'ignore' });
 }

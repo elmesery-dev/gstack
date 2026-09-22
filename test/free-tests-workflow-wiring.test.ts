@@ -17,6 +17,8 @@
 import { describe, test, expect } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { spawnSync } from 'node:child_process';
 
 const WORKFLOW = path.resolve(import.meta.dir, '..', '.github', 'workflows', 'free-tests.yml');
 
@@ -66,6 +68,31 @@ describe('free-tests workflow wiring', () => {
     expect(source).toMatch(/GSTACK_FLAKE_LEDGER:\s*\$\{\{ runner\.temp \}\}\/flake-ledger\.jsonl/);
     expect(source).toContain('name: flake-ledger');
     expect(source).toMatch(/name: Upload flake ledger\s*\n\s*if: always\(\)/);
+  });
+
+  test.skipIf(!Bun.which('bash'))('a recovered retry retains its original detailed spool', () => {
+    const steps = (Bun.YAML.parse(source) as any).jobs['free-suite'].steps;
+    const probe = steps.find((step: any) => step.id === 'flake_spool');
+    const upload = steps.find((step: any) => step.with?.name === 'free-test-shard-logs-${{ matrix.shard }}');
+    expect(probe.if).toBe('always()');
+    expect(upload.if).toBe("failure() || steps.flake_spool.outputs.present == 'true'");
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'free spool '));
+    const output = path.join(directory, 'step-output');
+    const ledger = path.join(directory, 'flake-ledger.jsonl');
+    try {
+      for (const contents of [null, '', '{"kind":"flaky-pass","file":"test/example.test.ts"}\n']) {
+        if (contents !== null) fs.writeFileSync(ledger, contents);
+        fs.writeFileSync(output, '');
+        const result = spawnSync('bash', ['-e', '-c', probe.run], {
+          // Git Bash accepts C:/... paths; native backslashes are not shell paths.
+          env: { ...process.env, RUNNER_TEMP: directory.split(path.sep).join('/'),
+            GITHUB_OUTPUT: output.split(path.sep).join('/') },
+          encoding: 'utf8', timeout: 5000,
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(fs.readFileSync(output, 'utf8')).toBe(contents ? 'present=true\n' : '');
+      }
+    } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
   test('least-privilege token: contents read-only, credentials not persisted', () => {

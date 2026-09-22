@@ -254,13 +254,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
-      # The runner streams the full child output to per-run logs under the OS
-      # tmpdir and prints only the quiet contract to the console. Without this
-      # upload, a red required check names WHICH test failed but the why
-      # (assertion detail, stack) dies with the runner — every diagnosis would
-      # need a local re-run, which fork contributors can't do on this image.
-      - name: Upload shard logs on failure
-        if: failure()
+      - name: Detect recovered failures for log retention
+        id: flake_spool
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/flake-ledger.jsonl" ]; then
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      # The quiet console omits assertion details. Preserve the original spool
+      # after a recovered retry too, so a green job retains its first failure.
+      - name: Upload shard logs on failure or recovered retry
+        if: failure() || steps.flake_spool.outputs.present == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: free-test-shard-logs-${{ matrix.shard }}

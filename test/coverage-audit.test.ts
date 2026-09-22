@@ -257,16 +257,18 @@ await import(path.join(root, 'test/skill-e2e-coverage-audit.test.ts'));
 await import(path.join(root, 'test/skill-e2e-workflow.test.ts'));
 test('canonical collectors and original case registrations', () => {
   expect(collectorTiers).toEqual(['e2e', 'e2e']);
+  expect([...bodies.keys()]).toEqual(['review-coverage-audit','plan-eng-coverage-audit','ship-coverage-audit']);
   expect(registrations).toEqual([
     { id: 'review-coverage-audit', cap: 300000, concurrent: false },
     { id: 'plan-eng-coverage-audit', cap: 300000, concurrent: false },
     { id: 'ship-coverage-audit', cap: 300000, concurrent: true },
   ]);
 });
-test('actual caller boundaries', async () => {
-  expect([...bodies.keys()]).toEqual(['review-coverage-audit','plan-eng-coverage-audit','ship-coverage-audit']);
-  const nonces = new Set();
-  for (const [id, body] of bodies) for (const kind of ['pass','diagram','missing','exit','runner','setup','deadline']) {
+const nonces = new Set();
+// Each real fixture gets its own unchanged default test deadline. Combining all
+// 21 scenarios makes their bounded Git processes share a single 5s Windows cap.
+for (const [id, body] of bodies) for (const kind of ['pass','diagram','missing','exit','runner','setup','deadline']) {
+  test('actual caller boundaries: ' + id + ' / ' + kind, async () => {
     mode = kind; calls = 0; records.length = 0; latest = undefined; latestCwd = undefined;
     if (kind === 'deadline') {
       virtual = clock(); Date.now = () => virtual;
@@ -292,7 +294,10 @@ test('actual caller boundaries', async () => {
     if (latestCwd) expect(fs.existsSync(latestCwd)).toBe(false);
     if (kind === 'deadline') { const saved = JSON.stringify(records); lateResolve(latest); await new Promise(resolve => timeout(resolve, 5)); expect(JSON.stringify(records)).toBe(saved); }
     observations.push({ id, kind, passed: records[0].passed, calls, records: records.length });
-  }
+  });
+}
+test('all caller scenarios completed', () => {
+  expect(observations).toHaveLength(21);
   fs.writeFileSync(${JSON.stringify(facts)}, JSON.stringify(observations));
 });
 `);

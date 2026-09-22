@@ -88,8 +88,12 @@ test.skipIf(!Bun.which('jq'))('the actual comment separates reused evidence, ret
   const stats = comment.match(/STATS=\$\(jq -r '([^']+)'/)![1]!;
   expect(evaluate(stats, { tests: [
     { name: 'retry', passed: false }, { name: 'retry', passed: true },
+    { name: 'exhausted', passed: false }, { name: 'exhausted', passed: false },
+    { name: 'regressed', passed: true }, { name: 'regressed', passed: false },
     { name: 'reused', passed: true, execution: 'reused' },
-  ], flaky_retries: [{ name: 'retry', attempts: 2 }] })).toBe('2 2 0 1 1 1');
+  ], flaky_retries: ['retry', 'exhausted', 'regressed'].map(name => ({ name, attempts: 2 })) })).toBe('4 2 2 3 3 1');
+  expect(comment).toContain("printf ' | ⚠ %s cases with multiple attempts'");
+  expect(comment).not.toMatch(/flaky pass\(es\)|passed only on retry|not blocking/);
   const coverage = comment.match(/COVERAGE=\$\(jq -r '([^']+)'/)![1]!;
   const text = evaluate(coverage, { profile: 'pr', selection: { e2e: ['probe'], judges: ['judge'] },
     prCoverage: { mode: 'pr', deferred: [{ id: 'broad' }], deferredPromptFiles: ['health/SKILL.md'] } });

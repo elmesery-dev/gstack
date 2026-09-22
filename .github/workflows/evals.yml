@@ -394,8 +394,8 @@ jobs:
             # FINAL-attempt accounting: eval-store keeps EVERY retry attempt
             # as its own record (that's the flake telemetry), so counting raw
             # records marks a pass-on-retry as a failure and inflates totals.
-            # Group by test name, judge the LAST record — flaky passes render
-            # as the ⚠ line, never as ❌ (WS1 policy: recorded, not blocking).
+            # Group by test name and judge the LAST record. Retry metadata
+            # includes both passing and failing final outcomes; show it separately.
             # Guarded: a file with total_tests but a null/non-array `tests`
             # passes the -e probe, the group_by then fails, and an empty $T
             # would abort the whole step under bash -e ([ "" -eq 0 ] is an
@@ -428,7 +428,7 @@ jobs:
 
           BODY="## E2E Evals: ${STATUS}
 
-          **${PASSED}/${TOTAL}** recorded final results passed | **${EXECUTED} executed, ${REUSED} reused** | **\$${COST}** total cost | reconcile exit: ${RECONCILE_EXIT:-missing}$([ "$FLAKY" -gt 0 ] && printf ' | ⚠ %s flaky pass(es) — recorded, not blocking' "$FLAKY")
+          **${PASSED}/${TOTAL}** recorded final results passed | **${EXECUTED} executed, ${REUSED} reused** | **\$${COST}** total cost | reconcile exit: ${RECONCILE_EXIT:-missing}$([ "$FLAKY" -gt 0 ] && printf ' | ⚠ %s cases with multiple attempts' "$FLAKY")
 
           ${COVERAGE}
 

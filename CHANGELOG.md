@@ -11,7 +11,7 @@ Generation now validates every host and expected artifact, and Codex evaluation 
 
 ### Fixed
 - PR evaluation plans keep a small changed-behavior profile and selected quality judges, while weekly and manual runs retain fresh broad coverage. Deferred checks remain visible. Verified workflow-judge passes can be reused within the same PR for 24 hours only when their complete inputs and runtime match.
-- Free tests use a refreshed timing inventory and balanced isolated CI runners. `test:quick` provides an explicit partial feedback run; the complete suite remains required. Collection fixtures wait for actual readiness instead of repeating fixed startup delays.
+- Free tests use a refreshed timing inventory and balanced isolated CI runners. `test:quick` provides an explicit partial feedback run; the complete suite remains required. Collection fixtures wait for actual readiness instead of repeating fixed startup delays. Recovered retries retain their original failure logs. Windows fixtures handle native paths and give independent scenarios separate deadlines; prepared Git fixtures disable background maintenance before copying.
 - `/plan-ceo-review` and `/plan-eng-review` preserve scoped decisions, required save/read-back checks, and report publication before declaring completion or advancing to the next section.
 - Coverage audits read source and test files in a dedicated step before mapping `[OK]` and `[GAP]` rows, while keeping framework and config context separate.
 - `/plan-eng-review` clarifies setup gates, targeted audit timing, report ordering, and Outside Voice output surfaces without losing saved-question verification.

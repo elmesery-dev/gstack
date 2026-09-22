@@ -5,12 +5,12 @@ import {createPlanCountPermissionGuard,classifyPlanCountFrame} from './helpers/c
 import {E2E_TOUCHFILES,selectTests}from'./helpers/touchfiles';
 import captured from './fixtures/batching-permission-at.json';
 
-function renderPermissionScreen(expected: string): string {
+function renderPermissionScreen(expected: string, paths: Pick<typeof path, 'dirname' | 'basename'> = path): string {
  // The capture is already laid out at the runner's 120 columns. Replacing its
  // path must reflow that menu line, otherwise the PTY hard-wraps words in half.
  return captured.screen.split('\n').map(original => {
-  const line = original.replaceAll(path.dirname(captured.expectedPath), path.dirname(expected))
-   .replaceAll(path.basename(captured.expectedPath), path.basename(expected));
+  const line = original.replaceAll(path.posix.dirname(captured.expectedPath), paths.dirname(expected))
+   .replaceAll(path.posix.basename(captured.expectedPath), paths.basename(expected));
   if (line === original || line.length <= 120) return line;
   const indent = /^ */.exec(line)![0], lines: string[] = []; let current = indent;
   for (const word of line.trim().split(/\s+/)) {
@@ -43,13 +43,16 @@ test('a substituted long fixture path reflows the menu without splitting permiss
  const directory = '/' + 'x'.repeat(120 - prefix.length - suffix.length - 3 - 1);
  const rawLine = `${prefix}${directory}${suffix}session`;
  expect(`${rawLine.slice(0, 120)}\n${rawLine.slice(120)}`).toContain('ses\nsion');
- const screen = renderPermissionScreen(path.join(directory, 'report.md'));
- const menu = screen.slice(screen.indexOf(' Do you want to make this edit'));
- expect(menu.split('\n').every(line => line.length <= 120)).toBe(true);
- expect(menu).toContain(directory);
- expect(menu).toContain('edit to report.md?');
- expect(menu).toMatch(/1\. Yes[\s\S]+2\. Yes,[\s\S]+3\. No/);
- expect(createPlanCountPermissionGuard()(screen, captured.lastMatchedDisplayCompletion)).toBe('grant');
+ for (const paths of [path.posix, path.win32]) {
+  const expected = paths.join(directory, 'report.md');
+  const screen = renderPermissionScreen(expected, paths);
+  const menu = screen.slice(screen.indexOf(' Do you want to make this edit'));
+  expect(menu.split('\n').every(line => line.length <= 120)).toBe(true);
+  expect(menu).toContain(paths.dirname(expected));
+  expect(menu).toContain('edit to report.md?');
+  expect(menu).toMatch(/1\. Yes[\s\S]+2\. Yes,[\s\S]+3\. No/);
+  expect(createPlanCountPermissionGuard()(screen, captured.lastMatchedDisplayCompletion)).toBe('grant');
+ }
 });
 
 test('synthetic hook epochs release only the later exact request after its predecessor succeeds',()=>{

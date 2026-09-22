@@ -215,6 +215,19 @@ the required free CI lane packs the complete inventory across isolated runners,
 then checks every shard's receipt before reporting success. Local worker counts
 remain bounded to avoid browser/process contention.
 
+Measurements from this PR on 2026-09-21:
+
+| Run | Coverage | Elapsed |
+|---|---|---|
+| Local edit feedback | 861 of 993 free test files | 38 seconds |
+| Local complete free suite | All 993 files, six workers | 4m 35s |
+| Complete Linux CI | All 993 files, 20 isolated runners | 1m 40s across test steps; 3m 7s including setup and aggregation |
+
+The [Linux CI run](https://github.com/garrytan/gstack/actions/runs/35642667809)
+on `25030d68` included one recorded successful retry. Its slowest test step was 77 seconds;
+staggered starts made the complete test span longer. Typical PR paid-gate timing
+still needs measurement on a small change; test-runner changes use the full fallback.
+
 Follow [Validation discipline in AGENTS.md](AGENTS.md#validation-discipline):
 reproduce known failures with focused checks, verify adjacent source and
 generation contracts, then run the affected and remaining required selected
