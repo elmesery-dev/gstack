@@ -286,8 +286,13 @@ runner, the Agent SDK runner, plus the codex and gemini runners) spawns its chil
 through `test/helpers/hermetic-env.ts`: an allowlist-scrubbed environment, a fresh
 seeded `CLAUDE_CONFIG_DIR`, a temp `GSTACK_HOME`, and `--strict-mcp-config`. Your
 operator `~/.claude` config, MCP servers (gbrain, Conductor), skills, `~/.gstack`
-decision logs, and `CONDUCTOR_*` env never leak into the child, so local eval
-signal matches CI instead of disagreeing for reasons unrelated to the code under
+decision logs, and `CONDUCTOR_*` env never leak into the child. The `GITHUB_`
+and `EVALS_` prefix rules preserve CI metadata but reject credential-shaped
+names such as `GITHUB_TOKEN`, `GITHUB_PERSONAL_ACCESS_TOKEN`, and
+`GITHUB_APP_PRIVATE_KEY`. Named provider auth, runner `extraAllow` entries, and
+per-test overrides are deliberate exceptions; a name-based rule cannot identify
+a secret assigned to an arbitrary metadata name. This keeps local eval signal
+aligned with CI instead of disagreeing for reasons unrelated to the code under
 test. The hermetic `CLAUDE_CONFIG_DIR` seeds no skills by default; a PTY test
 that types a `/skill` slash command passes `seedSkills: true` to the PTY runner,
 which swaps in `hermeticSkillsConfigDir()` — a seeded skill registry that
