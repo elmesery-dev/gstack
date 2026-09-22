@@ -77,6 +77,43 @@ describe("installed pre-push guard uses the actual destination", () => {
     expect(git(publish, "for-each-ref", "--format=%(refname)")).toBe("");
   });
 
+  for (const [name, symbolicHead] of [
+    ["a local branch cannot shadow the target's qualified remote-tracking base", true],
+    ["the main fallback cannot resolve to a colliding local branch", false],
+  ] as const) {
+    test(name, () => {
+      const { repo, publish, head: base } = fixture(false);
+      fs.writeFileSync(path.join(repo, "leak.txt"), `key ${key}\n`);
+      git(repo, "add", "leak.txt");
+      git(repo, "commit", "-qm", "secret after target base");
+      const tip = git(repo, "rev-parse", "HEAD");
+      git(repo, "update-ref", "refs/remotes/publish/main", base);
+      if (symbolicHead) git(repo, "symbolic-ref", "refs/remotes/publish/HEAD", "refs/remotes/publish/main");
+      git(repo, "update-ref", "refs/heads/publish/main", tip);
+      expect(git(repo, "rev-parse", "publish/main")).toBe(tip);
+      expect(git(repo, "rev-parse", "refs/remotes/publish/main")).toBe(base);
+      const push = spawnSync("git", ["push", "publish", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+      expect(push.status).toBe(1);
+      expect(push.stderr).toContain("aws.access_key");
+      expect(git(publish, "for-each-ref", "--format=%(refname)")).toBe("");
+    });
+  }
+
+  test("the second fetch URL is not represented by the first URL's tracking ref", () => {
+    const { repo, origin, publish } = fixture();
+    const second = path.join(path.dirname(repo), "second.git");
+    git(path.dirname(repo), "init", "--bare", "-q", "-b", "main", second);
+    git(publish, "fetch", "-q", origin, "main:refs/heads/main");
+    git(repo, "fetch", "-q", "publish");
+    expect(git(repo, "rev-parse", "refs/remotes/publish/main")).toBe(git(repo, "rev-parse", "HEAD"));
+    git(repo, "remote", "set-url", "--add", "publish", second);
+    expect(git(repo, "remote", "get-url", "publish")).toBe(publish);
+    const push = spawnSync("git", ["push", "publish", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(1);
+    expect(push.stderr).toContain("aws.access_key");
+    expect(git(second, "for-each-ref", "--format=%(refname)")).toBe("");
+  });
+
   test("direct URL push cannot borrow origin's tracking history", () => {
     const { repo, publish } = fixture();
     const push = spawnSync("git", ["push", publish, "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
@@ -216,6 +253,37 @@ describe("installed pre-push guard uses the actual destination", () => {
     expect(push.stderr).not.toContain("MEDIUM finding");
   });
 
+  test("mid-line carry cannot create a HIGH word boundary around an embedded key", () => {
+    const { repo, origin, head } = fixture(false);
+    const first = "x".repeat(768 * 1024 - 1 - 16_384) + key + " ".repeat(16_384 - key.length);
+    const payload = `${first}\nordinary\n`;
+    expect(scan(payload).findings.map((finding) => finding.id)).not.toContain("aws.access_key");
+    fs.writeFileSync(path.join(repo, "payload.txt"), payload);
+    git(repo, "add", "payload.txt");
+    git(repo, "commit", "-qm", "embedded key control");
+    const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(0);
+    expect(push.stderr).not.toContain("aws.access_key");
+    expect(git(origin, "rev-parse", "refs/heads/main")).not.toBe(head);
+  });
+
+  test("a long Bearer span retains its later Authorization context across the seam", () => {
+    const { repo, origin } = fixture(false);
+    const alphabet = "7pFb4ZaCuG8wDsVk2EnHy6Qt9Jr5Lx0M";
+    const token = Array.from({ length: 20_480 }, (_, i) => alphabet[(i * 7 + Math.floor(i / 31)) % 32]).join("");
+    const bearerLine = `Bearer ${token}`;
+    const payload = `${"x".repeat(768 * 1024 - bearerLine.length - 2)}\n${bearerLine}\nAuthorization\n`;
+    expect(scan(payload).findings.map((finding) => finding.id)).toContain("auth.bearer");
+    fs.writeFileSync(path.join(repo, "payload.txt"), payload);
+    git(repo, "add", "payload.txt");
+    git(repo, "commit", "-qm", "long bearer advisory");
+    const tip = git(repo, "rev-parse", "HEAD");
+    const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(0);
+    expect(push.stderr).toContain("MEDIUM finding");
+    expect(git(origin, "rev-parse", "refs/heads/main")).toBe(tip);
+  });
+
   test("zero-width padding cannot move normalized proximity context out of the overlap", () => {
     const { repo } = fixture(false);
     const value = ["AbCdEfGhIjKlMnOpQrStU", "vWxYz0123456789AbCd"].join("");
@@ -227,6 +295,19 @@ describe("installed pre-push guard uses the actual destination", () => {
     const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
     expect(push.status).toBe(1);
     expect(push.stderr).toContain("aws.secret_key");
+  });
+
+  test("context needing more than the engine byte cap blocks instead of scanning a truncated window", () => {
+    const { repo, origin, head } = fixture(false);
+    const value = ["AbCdEfGhIjKlMnOpQrStU", "vWxYz0123456789AbCd"].join("");
+    const payload = `${"x".repeat(768 * 1024 - 43)}\naws_secret_access_key=\n${"\u200b".repeat(450_000)}\n${value}\n`;
+    fs.writeFileSync(path.join(repo, "payload.txt"), payload);
+    git(repo, "add", "payload.txt");
+    git(repo, "commit", "-qm", "unscannable context");
+    const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(1);
+    expect(push.stderr).toContain("engine.input_too_large");
+    expect(git(origin, "rev-parse", "refs/heads/main")).toBe(head);
   });
 
   for (const [name, label, expected] of [
@@ -280,5 +361,17 @@ describe("installed pre-push guard uses the actual destination", () => {
     expect(push.status).toBe(1);
     expect(push.stderr).toContain("aws.access_key");
     expect(git(origin, "rev-parse", "refs/heads/main")).toBe(head);
+  });
+
+  test("neighboring individually scannable long clean lines do not force an oversize failure", () => {
+    const { repo, origin } = fixture(false);
+    fs.writeFileSync(path.join(repo, "long.txt"), `${"x".repeat(900_000)}\n${"y".repeat(900_000)}\n`);
+    git(repo, "add", "long.txt");
+    git(repo, "commit", "-qm", "neighboring long lines");
+    const tip = git(repo, "rev-parse", "HEAD");
+    const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(0);
+    expect(push.stderr).not.toContain("engine.input_too_large");
+    expect(git(origin, "rev-parse", "refs/heads/main")).toBe(tip);
   });
 });
