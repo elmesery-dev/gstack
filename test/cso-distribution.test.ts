@@ -347,6 +347,8 @@ describe('CSO runtime staging gates', () => {
     for (const file of [
       'browse/test/terminal-agent-lifecycle.test.ts',
       'browse/test/terminal-agent-watchdog.test.ts',
+      'browse/test/server-embedder-terminal-port.test.ts',
+      'browse/test/server-factory.test.ts',
       'test/gstack-settings-hook-symlink.test.ts',
       'test/gstack-settings-hook-schema-aware.test.ts',
     ]) expect(gate.run).toContain(file);
