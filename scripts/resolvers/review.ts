@@ -122,7 +122,15 @@ Each skill logs different fields:
 - **codex-review**: \\\`status\\\`, \\\`gate\\\`, \\\`findings\\\`, \\\`findings_fixed\\\`
   → Findings: "{findings} findings, {findings_fixed}/{findings} fixed"
 
-${beforeLog ? (conditionalWrites ? 'The current row describes this actual review. Mark an unlogged current run as not persisted; do not present it as a saved dashboard entry.' : 'The current row and its later log must describe the same saved review.') : `All fields needed for the Findings column are now present in the JSONL entries.
+${ceo ? `For **Outside Review**, use this run's completed reviewer output and finding
+dispositions: "N findings; R resolved; U unresolved". With no findings, write
+"0 findings — completed review". Label native fallback findings as native and
+keep external coverage unavailable. For disabled or unavailable attempts, write
+the actual reason and "no completed external review"; never imply zero findings.
+If prior history lacks counts, say "finding count not recorded". Preserve each
+attempt's provider and outcome in OUTSIDE COVERAGE.
+
+` : ''}${beforeLog ? (conditionalWrites ? 'The current row describes this actual review. Mark an unlogged current run as not persisted; do not present it as a saved dashboard entry.' : 'The current row and its later log must describe the same saved review.') : `All fields needed for the Findings column are now present in the JSONL entries.
 For the review you just completed, you may use richer details from your own Completion
 Summary. For prior reviews, use the JSONL fields directly — they contain all required data.`}
 
@@ -172,7 +180,7 @@ DROP the current skill's row; emit the sentinel only when both are zero.`}
 
 ### Write to the ${reviewFile}
 
-${beforeLog ? (conditionalWrites ? `If the ${ctx.skillName === 'plan-eng-review' ? 'report destination' : 'target'} is absent or writing is forbidden, assemble the same complete ${eng ? 'working plan' : 'plan'}, review output and terminal report in chat, labeled not persisted. Do not run the file-writing steps below or claim their Read-back gate passed.${ctx.skillName === 'plan-eng-review' ? ' Then follow **Blocked outcome** in the entrypoint.' : ''} Otherwise save only accepted changes, keeping unresolved choices pending:` : '**PLAN MODE EXCEPTION — ALWAYS RUN:** Save the complete reviewed plan/report with only accepted changes applied; keep unresolved choices pending.') : `**PLAN MODE EXCEPTION — ALWAYS RUN:** This writes to the plan file, which is the one
+${beforeLog ? (conditionalWrites ? `${ceo ? 'If no destination is selected' : 'If the report destination is absent'} or writing is forbidden, assemble the same complete ${eng ? 'working plan' : 'plan'}, review output and terminal report in chat, labeled not persisted. Do not run the file-writing steps below or claim their Read-back gate passed.${ctx.skillName === 'plan-eng-review' ? ' Then follow **Blocked outcome** in the entrypoint.' : " Follow Stage 3's blocked chat return; no completed-review log or handoff."} Otherwise save only accepted changes, keeping unresolved choices pending:` : '**PLAN MODE EXCEPTION — ALWAYS RUN:** Save the complete reviewed plan/report with only accepted changes applied; keep unresolved choices pending.') : `**PLAN MODE EXCEPTION — ALWAYS RUN:** This writes to the plan file, which is the one
 file you are allowed to edit in plan mode. The plan file review report is part of the
 plan's living status.`}
 
@@ -188,10 +196,15 @@ ${beforeLog ? `1. Read the existing ${eng ? 'report file' : 'plan/report'}, if p
    file, whichever comes first. Replace with the empty string. This applies
    regardless of where the section currently lives — mid-file deletion is
    intentional, not a special case. ${ceo ? 'If the Edit fails, report the error and stop before Review Log or decision logging.' : `If the Edit fails (e.g., concurrent edit\n   changed the content), re-read the ${reviewFile} and retry once.`}
-3. If a report was deleted, Read the updated file. Append the new
+${ceo ? `3. Save the complete updated plan and review body with the new
+   \`## GSTACK REVIEW REPORT\` at EOF:
+   - If the destination file exists, Read it now, whether or not step 2 deleted
+     a report. Use Edit with the suffix from this Read, or Write the complete file.
+   - If the destination file does not exist, use Write to create the complete file.
+   In both cases, keep the report last and continue to the Read-back gate.` : `3. If a report was deleted, Read the updated file. Append the new
    \\\`## GSTACK REVIEW REPORT\\\` at EOF. Use Edit to match the suffix
    confirmed by the latest Read, or Write the full file with the report last.${beforeLog ? ' Append whether or not a prior report existed.' : ''}
-   "Unresolved Decisions" is not an EOF anchor when other sections follow it.
+   "Unresolved Decisions" is not an EOF anchor when other sections follow it.`}
 ${beforeLog ? `4. **Read-back gate:** Read the saved file. Verify the accepted changes, full review
    output, current review row, verdict and final unresolved-decisions status, with
    \`## GSTACK REVIEW REPORT\` as the last section. If writing or verification fails,
@@ -199,7 +212,7 @@ ${beforeLog ? `4. **Read-back gate:** Read the saved file. Verify the accepted c
    \\\`## \\\` heading in the file before continuing. If it isn't, repeat steps
    2-3 once.`}
 
-${ctx.skillName === 'plan-eng-review' ? 'Do NOT replace the section in place; delete it and append the new report at EOF.' : `Do NOT replace the section in place. The "replace mid-file" path is what allowed
+${ceo || ctx.skillName === 'plan-eng-review' ? 'Do NOT replace the section in place; delete it and append the new report at EOF.' : `Do NOT replace the section in place. The "replace mid-file" path is what allowed
 prior versions to leave the report mid-file when an older report already lived
 there — the user then sees a plan whose review report is not at the bottom and
 (correctly) rejects it.`}`;
@@ -230,8 +243,9 @@ Check the decision ledger before Required Outputs. For each approved remedy:
    approves only its explicit commitments and their directly required tests.
 2. Confirm that the plan applies only that answer's scope. Independent remedies
    and additional verification choices need their own rows and answers.
-3. Keep declined, deferred and unanswered changes out of accepted work. Deferrals
-   remain unresolved; keep every unresolved choice visible in the final report.
+3. Keep declined, deferred and unanswered changes out of accepted work. An approved
+   delivery-scope deferral is settled. Deferring a needed policy or remedy decision
+   leaves that choice unresolved; show it in the final report.
 
 If a draft lacks approval, mark it pending and use 0D; repeat this check after
 its answer. No report or completion log is needed to run this check.
@@ -545,7 +559,7 @@ ${ceo ? '- For each dimension, PASS or numbered issues with suggested fixes. Ove
 
 ${ceo ? `**Step 2: Process the result**
 
-- **Unavailable:** If launch or review fails, times out, or cannot review both complete inputs, stop the loop. Say "Spec review unavailable — presenting unreviewed doc." Preserve the failure and all prior findings. Continue to Step 3; quality bonus, not a gate.
+- **Unavailable:** If launch or review fails, times out, or cannot review both complete inputs, stop the loop. Say "Spec review unavailable — presenting unreviewed doc." Preserve the failure and all prior findings. Continue to Step 3 to record the unavailable outcome; a successful reviewer result is not required.
 - **PASS:** Stop the loop.
 - **Issues:** Stop after the third review, or when consecutive reviews repeat the same unresolved issues (the same requirements and problems). Otherwise use 0D for new or reopened choices, amend the working plan and CEO summary under the storage policy, Keep both consistent, and re-dispatch with both updated inputs and the same instructions.
 
@@ -571,10 +585,11 @@ ${ceo ? `Report the outcome and fields below. Show full reviewer output on reque
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON \`null\` ("score unavailable"). Label earlier grades "prior review score".
 
-Save concerns in the CEO summary. Apply Step 0's **0H spec-review metrics** row:
-when permitted, append below; failed mkdir or append stops the review, even if
-the reviewer was unavailable. When forbidden, show fields as not persisted and
-continue without writing. These metrics are distinct from best-effort history:` : `After the loop completes (PASS, max iterations, or convergence guard):
+Recording the **0H spec-review metrics** is
+required when writing is permitted, even if the reviewer failed. Append the
+actual outcome below; failed mkdir or append stops the review. When writing is
+forbidden, show the actual fields as not persisted and continue without writing.
+Reviewer failure therefore continues here; required storage failure stops here.` : `After the loop completes (PASS, max iterations, or convergence guard):
 
 1. Tell the user the result — summary by default:
    "Your doc survived N rounds of adversarial review. M issues caught and fixed.

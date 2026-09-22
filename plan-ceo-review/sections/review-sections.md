@@ -13,8 +13,8 @@ section to decide inclusion and feasibility under accepted constraints. Diagrams
 and maps must show candidate boundaries, failure mechanisms, feasibility conditions
 and unresolved risks. Resolve material blockers now; revisit priorities when new
 evidence changes them. Leave non-blocking implementation choices pending with an
-owner and required verification. Ask before designing endpoint, method or
-state-machine contracts beyond the requested depth. In strategy-only depth, use
+owner and required verification. Use Step 0's depth-expansion decision before
+designing endpoint, method or state-machine contracts beyond that depth. In strategy-only depth, use
 capability-level rows and "implementation owner must prove ___" notes instead
 of method-level registries. In implementation-ready depth, require the concrete
 method/codepath, contract, rescue and test rows. Report what is approved, what
@@ -66,9 +66,9 @@ Apply the review and outputs to the accepted work in every mode.
 | Future direction (Section 10) | Review accepted trajectory | Review accepted cherry-picks | Maintainability; no expansions | Maintainability of remaining scope |
 | Design (Section 11) | Review if UI scope | Review if UI scope | Review if UI scope | Review if UI scope |
 
-All modes produce approved findings and required outputs under Step 0's storage
-policy: save to the permitted active plan, or present in chat as not persisted.
-The CEO archive adds persistence for expansion modes.
+All modes produce the review content. Save it to the permitted working plan;
+when no plan/report write is permitted, present it in chat as not persisted and
+end with completion blocked. The CEO archive is additional expansion-mode output.
 
 ### Working review decisions
 
@@ -325,7 +325,7 @@ Continue through the blocks below in file order:
 4. **Required Outputs:** follow the three stages below: prepare the plan body and summary, save and verify the terminal report, then publish the summary in chat.
 5. **Cleanup and history:** perform permitted cleanup, attempt Review Log under the Artifact outcomes policy, then display the dashboard with the actual logging outcome.
 6. **Navigation:** choose Next Steps and any docs/designs promotion; queue the next skill. For a substantive answer, call 0D for only that change, repeat Approval readiness and Required Outputs, then repeat step 5. Resume navigation without asking settled choices again. Navigation alone does not reopen decisions.
-7. **Learnings:** finish learning and brain write-back. Return to this skill's main `SKILL.md`, at **Section self-check**. Its EXIT gate only verifies completed work and the saved readiness result; it does not ask again. A passing persisted review then runs telemetry, cache refresh and exit.
+7. **Learnings:** finish learning and brain write-back. Return to this skill's main `SKILL.md`, at **Section self-check**. Its EXIT gate verifies completed work and saved readiness without asking again. After a passing gate, refresh the cache, run telemetry last, then exit or return to the caller.
 
 ### Outside Voice Integration Rule
 
@@ -665,8 +665,9 @@ Check the decision ledger before Required Outputs. For each approved remedy:
    approves only its explicit commitments and their directly required tests.
 2. Confirm that the plan applies only that answer's scope. Independent remedies
    and additional verification choices need their own rows and answers.
-3. Keep declined, deferred and unanswered changes out of accepted work. Deferrals
-   remain unresolved; keep every unresolved choice visible in the final report.
+3. Keep declined, deferred and unanswered changes out of accepted work. An approved
+   delivery-scope deferral is settled. Deferring a needed policy or remedy decision
+   leaves that choice unresolved; show it in the final report.
 
 If a draft lacks approval, mark it pending and use 0D; repeat this check after
 its answer. No report or completion log is needed to run this check.
@@ -711,7 +712,11 @@ List existing code/flows that partially solve sub-problems and whether the plan 
 Where this plan leaves us relative to the 12-month ideal.
 
 ### Error & Rescue Registry (from Section 2)
-Complete table of every method that can fail, every exception class, rescued status, rescue action, user impact.
+Match the approved review depth. For implementation-ready work, list every method
+that can fail, its exception classes, rescue status/action and user impact.
+For strategy-only work, use capability rows with failure mechanisms, user impact,
+known safeguards, and an owner who must verify each unknown before implementation.
+Do not invent method contracts. For one narrow decision, include only its dependencies.
 
 ### Failure Modes Registry
 ```
@@ -719,6 +724,9 @@ Complete table of every method that can fail, every exception class, rescued sta
   ---------|----------------|----------|-------|----------------|--------
 ```
 Any row with RESCUED=N, TEST=N, USER SEES=Silent → **CRITICAL GAP**.
+For strategy-only rows, CODEPATH names the capability; mark unknown rescue/test
+coverage as unknown and name the verification owner. Count capability rows in the
+Completion Summary; implementation-ready reviews count method/codepath rows.
 
 ### Scope Expansion Decisions (EXPANSION and SELECTIVE EXPANSION only)
 For EXPANSION and SELECTIVE EXPANSION, reference the CEO plan's full 0G scope record
@@ -740,8 +748,11 @@ List every ASCII diagram in files this plan touches. Still accurate?
 
 ## Implementation Tasks
 
-Before closing this review, synthesize the findings above into a flat list of
-build-actionable tasks. Each task derives from a specific finding — no padding.
+Turn findings into tasks within the approved review depth. Implementation-ready
+tasks describe the build. Strategy-only tasks name the next research, design or
+verification action and its owner; they do not choose implementation contracts.
+List known files only. For unknown files, write "to be determined" and use an
+empty JSONL files array. Each task needs a concrete verification step.
 Always emit the markdown section. Write its JSONL artifact for `/autoplan` only when the Step 0 storage policy permits it; otherwise label the complete task output not persisted and do not claim an aggregation artifact exists.
 
 ### Markdown section (always emit)
@@ -816,9 +827,10 @@ after report verification; forbidden writes stay labeled not persisted.
 
 Use the full mode name from Step 0E; replace spaces with underscores only in the
 review log's `MODE` field. "System Audit" summarizes repository findings from
-Step 0 and the review sections. "Lake Score" is X/Y: among answered coverage
-choices offering a complete 10/10 option (Y), count those that chose it (X).
-Exclude kind-only and unanswered choices; use `N/A` when Y is zero.
+Step 0 and the review sections. "Lake Score" counts complete options selected:
+Y is the number of answered coverage questions offering a 10/10 option; X is
+how many selected that option. Report X/Y, excluding kind-only and unanswered
+questions; use `N/A` when Y is zero.
 
 ```
   +====================================================================+
@@ -842,7 +854,7 @@ Exclude kind-only and unanswered choices; use `N/A` when Y is zero.
   | NOT in scope         | written (___ items)                          |
   | What already exists  | written                                     |
   | Dream state delta    | written                                     |
-  | Error/rescue registry| ___ methods, ___ CRITICAL GAPS              |
+  | Error/rescue registry| ___ rows, ___ CRITICAL GAPS                 |
   | Failure modes        | ___ total, ___ CRITICAL GAPS                |
   | TODOS.md updates     | ___ items proposed                          |
   | Scope proposals      | ___ proposed, ___ accepted (EXP + SEL)      |
@@ -897,6 +909,14 @@ Each skill logs different fields:
 - **codex-review**: `status`, `gate`, `findings`, `findings_fixed`
   → Findings: "{findings} findings, {findings_fixed}/{findings} fixed"
 
+For **Outside Review**, use this run's completed reviewer output and finding
+dispositions: "N findings; R resolved; U unresolved". With no findings, write
+"0 findings — completed review". Label native fallback findings as native and
+keep external coverage unavailable. For disabled or unavailable attempts, write
+the actual reason and "no completed external review"; never imply zero findings.
+If prior history lacks counts, say "finding count not recorded". Preserve each
+attempt's provider and outcome in OUTSIDE COVERAGE.
+
 The current row describes this actual review. Mark an unlogged current run as not persisted; do not present it as a saved dashboard entry.
 
 Display `clean` as CLEAR and `issues_open` as ISSUES OPEN, retaining freshness and not-persisted labels. Other statuses keep their recorded meaning.
@@ -939,7 +959,7 @@ window), excluding the current skill so it is not counted twice.
 
 ### Write to the plan file
 
-If the target is absent or writing is forbidden, assemble the same complete plan, review output and terminal report in chat, labeled not persisted. Do not run the file-writing steps below or claim their Read-back gate passed. Otherwise save only accepted changes, keeping unresolved choices pending:
+If no destination is selected or writing is forbidden, assemble the same complete plan, review output and terminal report in chat, labeled not persisted. Do not run the file-writing steps below or claim their Read-back gate passed. Follow Stage 3's blocked chat return; no completed-review log or handoff. Otherwise save only accepted changes, keeping unresolved choices pending:
 
 The report must always be the LAST section of the plan file — never mid-file.
 Use a single delete-then-append flow:
@@ -952,27 +972,27 @@ Use a single delete-then-append flow:
    file, whichever comes first. Replace with the empty string. This applies
    regardless of where the section currently lives — mid-file deletion is
    intentional, not a special case. If the Edit fails, report the error and stop before Review Log or decision logging.
-3. If a report was deleted, Read the updated file. Append the new
-   `## GSTACK REVIEW REPORT` at EOF. Use Edit to match the suffix
-   confirmed by the latest Read, or Write the full file with the report last. Append whether or not a prior report existed.
-   "Unresolved Decisions" is not an EOF anchor when other sections follow it.
+3. Save the complete updated plan and review body with the new
+   `## GSTACK REVIEW REPORT` at EOF:
+   - If the destination file exists, Read it now, whether or not step 2 deleted
+     a report. Use Edit with the suffix from this Read, or Write the complete file.
+   - If the destination file does not exist, use Write to create the complete file.
+   In both cases, keep the report last and continue to the Read-back gate.
 4. **Read-back gate:** Read the saved file. Verify the accepted changes, full review
    output, current review row, verdict and final unresolved-decisions status, with
    `## GSTACK REVIEW REPORT` as the last section. If writing or verification fails,
    report the error and stop before Review Log or decision logging.
 
-Do NOT replace the section in place. The "replace mid-file" path is what allowed
-prior versions to leave the report mid-file when an older report already lived
-there — the user then sees a plan whose review report is not at the bottom and
-(correctly) rejects it.
+Do NOT replace the section in place; delete it and append the new report at EOF.
 
 ### Stage 3 — Publish the Completion Summary
 
 **Publish the Completion Summary:** After the report Read-back gate passes, show
 the prepared summary in chat with confirmed artifact outcomes. Do not append it
-after the report in the file. For chat-only output, show the complete plan, report
-and summary as not persisted; no file Read-back or saved completion is claimed.
-This publishes the review content; final completion still requires the later exit gate.
+after the report in the file. If no plan/report write is permitted, show the
+complete plan, report and summary as not persisted, then use **Gate outcome:
+Blocked**. This delivers the review content without claiming saved completion;
+skip Review Log, success telemetry and the next-skill handoff.
 
 ## Handoff Note Cleanup
 

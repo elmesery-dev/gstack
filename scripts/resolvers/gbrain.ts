@@ -209,10 +209,12 @@ export function generateBrainCacheRefresh(ctx: TemplateContext): string {
   const binDir = ctx.paths.binDir;
   return `## Brain Cache Background Refresh
 
-After the skill's work completes (and telemetry has logged), kick a
+${ctx.skillName === 'plan-ceo-review' ? `After the exit gate passes, start this nonblocking refresh before telemetry.
+Then return to the finalization instructions below; the user need not wait for
+the refresh process.` : `After the skill's work completes (and telemetry has logged), kick a
 background refresh of any cache digest that's getting close to its TTL.
 This is non-blocking — the user doesn't wait. Next invocation benefits
-from the warm cache.
+from the warm cache.`}
 
 \`\`\`bash
 eval "$(${binDir}/gstack-slug 2>/dev/null)" 2>/dev/null || true

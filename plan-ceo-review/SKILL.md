@@ -827,7 +827,7 @@ sections. Read a section in full before doing its step; do not work from memory.
 ## Step 0: Nuclear Scope Challenge + Mode Selection
 
 Startup:
-1. Set depth, storage and ledger below.
+1. Choose the review depth and artifact destinations, then open the ledger below.
 2. Record 0A–0C evidence; call 0D only for a required approach choice.
 3. Select the mode in 0E and follow its route table.
 4. Complete Review Sections and its closing sequence; return to Section self-check.
@@ -837,7 +837,10 @@ Startup:
 **Set review depth from the user's request.** Default to implementation-ready.
 Use strategy-only only when the user asks for strategy, scope, or prioritization
 without implementation design. Use one narrow decision only when the user names a
-single choice. Ask before expanding strategy-only into implementation design.
+single choice. To expand strategy-only into implementation design, use 0D with
+**A)** Keep this review strategy-only **B)** Add implementation design for the
+named capability. Recommend A unless a concrete blocker requires B; wait for the
+answer. B permits design detail for that capability only.
 Resolve a choice only when output would be wrong without it, a blocker would be
 hidden, or scope would change. Reuse prior answers only for the same scope.
 
@@ -848,12 +851,11 @@ Plain terms:
 - **Settled:** answered by the user, directly instructed, or auto-authorized by
   the preamble.
 
-Depth sets detail, not section coverage: review Sections 1–10 in every depth;
+Review depth controls the detail within each section. Review Sections 1–10 in every depth;
 run Section 11 only for UI. Strategy-only uses capability-level rows and
 "implementation owner must prove ___" notes, including the Error & Rescue map.
 Implementation-ready names interfaces, codepaths, rescue behavior and tests.
 For one narrow decision, apply every section to that choice and its dependencies.
-Detail implementation contracts only for blockers or implementation-ready depth.
 
 **Keep the stated limits.** Record each measure, value, unit and prerequisite. Count all deliverables, including reused code. Changing a limit needs evidence and user approval.
 
@@ -863,14 +865,16 @@ plan. Use native Write for a missing file and scoped Edit for checkpoints;
 retain all current content, ledger rows and comparisons.
 
 **Artifact outcomes:** Never claim an unconfirmed save, read-back or log.
-When forbidden, attempt no write; show complete output or actual log fields as
-**not persisted**. Continue analysis; an unsaved plan/report blocks completion.
+When writing is forbidden, continue analysis and decisions without writing.
+Present complete artifacts as **not persisted**. At finalization, an unsaved
+plan/report means **completion blocked**: no completion log, success telemetry,
+ExitPlanMode or next-skill handoff.
 
 | Permitted write | On failure |
 |---|---|
-| Plan/report, CEO summary, approved TODOs and tasks | Report cause and stop; no chat bypass. The task writer's missing-jq exception still applies. |
-| 0H spec-review metrics | Report cause and stop, even if the reviewer was unavailable. |
-| Review, decision and question history logs | Best-effort: report cause and unsaved fields; continue. The plan's ledger remains required content. |
+| Plan/report, CEO summary, approved TODOs and tasks | Stop with the cause; chat cannot replace a failed save. Missing jq may omit only task JSONL, as the task instructions explain. |
+| 0H spec-review metrics | Stop with the cause; reviewer availability does not waive this write. |
+| Review, decision and question history logs | Report cause and unsaved fields; continue. The plan's ledger is still required. |
 
 Paths: CEO archive = `CEO_PLANS` (0H), tasks =
 `~/.gstack/projects/`, metrics = `~/.gstack/analytics/`; log helpers choose theirs.
@@ -903,24 +907,22 @@ With no required choice, or after those choices settle, go to 0E.
 
 ### 0D. Alternatives (reusable decision procedure)
 
-Run steps 1–4 for unanswered rows only; step 1 reuses prior approvals, even for
-a lone option. Return to the calling step; 0D never restarts mode selection.
+**Choose the question's route first:**
+- **Admin question:** mode, setup, navigation, document approval or promotion.
+  Use its listed menu and the preamble question transport, then wait and record
+  the answer. Skip steps 1–4; this approves no plan changes.
+- **Plan decision:** review-depth expansion, scope additions/cuts, approach
+  choices, TODOs, specs and review/outside findings. Start at step 1. Reuse exact
+  prior approvals; run steps 2–4 only when a new answer is needed, even for one option.
 
-- **Admin question:** mode selection, setup, navigation and document promotion.
-  Ask that step's listed options with the preamble question tool. Log answer and
-  provenance. This does not approve implementation, scope, TODO remedies or outside-review findings.
-- **Plan decision:** scope additions/cuts, approach choices, TODOs, specs and
-  review/outside findings. Run steps 1–4 below, including their save checkpoints.
-
-Use each menu only for its step. If an admin answer also changes scope, approach,
-TODO or finding, handle it as a Plan decision.
+If an admin answer requests a plan change, use the Plan decision route for that
+change. 0D never restarts mode selection.
 
 **1. Check sources and prior answers.**
-Compare input, source and actual answers. Correct facts, flag approval conflicts
-and preserve unknowns. Reuse exact approvals; reopen only for contradictions,
-changed assumptions or user instructions, not speculation or reviewer agreement.
-With no new answer needed, cite settled answers and return to the calling step;
-invent no alternatives or approval.
+Compare input, source and answers; correct facts, flag conflicts and preserve unknowns.
+Reuse exact approvals. Reopen only for contradictions, changed assumptions or
+user instructions, never speculation or reviewer agreement. With no new answer
+needed, cite settled answers and return; invent no alternatives or approval.
 
 **2. Record the pending choice.**
 Give independent changes separate ledger rows; explain necessary coupling. Record
@@ -936,21 +938,17 @@ source filename/message and section/lines when available.
 Record pending rows before comparisons; never prewrite approval or tasks.
 
 **3. Compare and save that row's options.**
-Build one `currentDecision` to save and send, using the preamble:
-- **Question:** `question` holds the full brief: `D<N> — <ROW-ID>: <one-line question>`,
-  Project, ELI10, Stakes, Recommendation and applicable completeness/net text.
-  D counts questions; ROW-ID names the pending choice.
-- **Header/labels:** use final native `header` and labels within host limits;
-  put `(recommended)` on exactly one label.
-- **Descriptions:** each full native `description` contains a 1–2 sentence summary,
-  S/M/L/XL effort, low/medium/high risk, reuse, verification coverage, at least
-  2 ✅ pros and 1 ❌ con. Follow the Preamble self-check for minimum pros/cons;
-  destructive one-way choices use its hard-stop exception.
+Build one `currentDecision` using these fields and the preamble format:
 
-Without a prescribed menu, offer 2–3 options; prefer 3 for non-trivial plans.
+| Field | Required content |
+|---|---|
+| `question` | Full brief: `D<N> — <ROW-ID>: <one-line question>`, Project, ELI10, Stakes, Recommendation and applicable completeness/net text. D counts questions; ROW-ID identifies the pending choice. |
+| `header` and option labels | Final native text within host limits; exactly one label includes `(recommended)`. |
+| Each option's `description` | A 1–2 sentence summary; S/M/L/XL effort, low/medium/high risk, reuse, verification coverage, at least 2 ✅ pros and 1 ❌ con. Apply the preamble's minimum lengths and destructive-choice exception. |
+
+Without a prescribed menu, offer 2–3 options (prefer 3 for non-trivial plans).
 For an option with no implementation, use effort S and state zero implementation
-work, never effort 0.
-Weigh diff size and long-term architecture equally, including rewrites.
+work, never effort 0. Weigh diff size and long-term architecture equally, including rewrites.
 
 In Proposed, compare every commitment in the labels, descriptions and pros/cons:
 
@@ -958,26 +956,23 @@ In Proposed, compare every commitment in the labels, descriptions and pros/cons:
 Commitment | Source/approval or pending | Current | A | B | C
 ```
 
-Include one column per offered option; add D when the prescribed menu has four
-options. Show unchanged, shared and pending values;
-shared frameworks do not merge independent choices. Keep other rows fixed or
-pending; preserve requirements, tests and fixes. Offer no unrelated work.
+Include one column per option (add D for a four-option menu). Show unchanged,
+shared and pending values. Changes remain separate decisions even if they use the same framework.
+Keep other rows fixed or pending; preserve requirements, tests and fixes.
 
-Score this row's coverage differences in the Commitment comparison: 10 = all
-edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
+Score this row's coverage differences: 10 = all edge cases, 7 = happy path,
+3 = shortcut. For different kinds of work, write:
 "Note: options differ in kind, not coverage — no completeness score."
 
-**Pre-question checkpoint:**
+**Pre-question checkpoint:** Validate every field above before saving.
+Find exactly one row by its assigned ID; verify owner, Current/Proposed, Status
+and Exact approval and scope. Repair missing/duplicate rows in step 2.
+Effort/risk must each be one listed value, never a range. Correct missing or
+invalid fields and host-limit violations before saving.
 
-- **Row.** Find exactly one row by its assigned ID. Check owner, Current/Proposed,
-  Status and Exact approval and scope. Repair missing/duplicate rows in step 2.
-- **Fields.** Validate every field above, including title row ID and host limits.
-  Effort/risk must each be one listed value, never a range. Correct any missing,
-  changed or invalid `currentDecision` field before saving.
 - **Save.** Under the storage policy, save/present the complete current plan,
-  pending rows and comparisons. Copy the grid and all exact fields below.
-  Omit these illustrative fence delimiters in the saved plan; preserve the
-  heading, grid and plain-text fields:
+  pending rows and comparisons. Copy the grid and all exact fields below,
+  without the illustrative fence delimiters:
 
   ```text
   ## currentDecision (ROW-ID)
@@ -991,10 +986,10 @@ edge cases, 7 = happy path, 3 = shortcut. For different kinds of work, write:
   <full second option description; repeat for all offered options>
   ```
 
-  Replace the whole payload on revision; leave no old fields in this record.
+  Replace the whole payload on revision.
   Keep answered decisions and their answers under separate headings.
 - **Read-back.** After the latest successful Write/Edit, Read the ledger row and
-  full payload through the last option's full description; fetch continuations.
+  full payload through the last option's description; fetch continuations.
   Verify IDs and fields against `currentDecision`, citations against source.
   Read despite Edit's current-in-context hint. For chat, verify the complete text
   labeled **not persisted**. A grid, summary or pointer is insufficient.
@@ -1004,17 +999,16 @@ A failed save stops the review. Correct mismatches, save and Read again before d
 **4. Ask, record the answer, and amend.**
 Copy the verified Read or chat text into one native arguments object:
 `{questions: [{question, header, options: [{label, description}, ...]}]}`.
-Before dispatch, compare its actual question, header, labels and full descriptions
-literally with the saved fields. Ignore only selector text such as `A)` or `B)`
-that was added while saving the record. Compare
-strings, not format/scores. Changes repeat step 3's save and Read-back. Ask one
-row per call with that object unchanged, without recomposing.
-Use prose/auto-decision transport only when the preamble authorizes it. Recommendations are not approval.
+Compare its question, header, labels and full descriptions literally with the
+verified fields, ignoring only saved selector prefixes such as `A)` or `B)`.
+Compare strings, not format/scores. Changes repeat step 3's save and Read-back.
+Ask one row per call with that object unchanged, without recomposing.
+Only the preamble can authorize prose or auto-decision transport.
 
 **STOP for the actual answer, even for a lone option.** Only a preamble-authorized
 auto-decision resolves this wait; record its authority. Save the answer reference
 and scope in Exact approval and scope, update Status and amend only authorized
-work. Do not edit code.
+work. A recommendation is not approval; do not edit code.
 
 **Post-answer checkpoint:** Save or present the complete amended plan under the
 storage policy before taking another row.
@@ -1022,9 +1016,8 @@ storage policy before taking another row.
 If all options are declined, continue only with a viable current approach retained
 by the answer; otherwise leave the row unresolved and stop for direction.
 
-Return to the calling step with the saved answer; do not ask it again. Carry
-both resolved findings and genuine no-issue outcomes. Say
-"No issues, moving on." only when there are none.
+Return to the calling step with the saved answer; do not ask it again.
+Record findings even after resolution; say "No issues, moving on." only with none.
 
 ### 0E. Mode Selection
 Follow the preamble's session rules; `CONDUCTOR_SESSION: true` changes transport only.
@@ -1117,11 +1110,10 @@ does not settle pending implementation choices; keep those rows visible.
 
 ### 0H. Persist CEO Plan (EXPANSION and SELECTIVE EXPANSION only)
 
-Prepare the complete amended working plan and separate CEO scope summary with
-consistent behavior, requirements and scope. The summary cannot replace or
-reference itself as the plan.
+Prepare the full amended working plan and a separate CEO scope summary. Keep
+behavior, requirements and scope consistent; the summary cannot serve as the plan.
 
-**Save or present both inputs under the storage policy.** For a permitted CEO summary directory, prepare:
+**Save or present both inputs under the storage policy.** For permitted storage:
 
 ```bash
 eval "$(~/.claude/skills/gstack/bin/gstack-slug 2>/dev/null)"
@@ -1131,9 +1123,9 @@ mkdir -p "$CEO_PLANS"
 echo "CEO_PLANS=$CEO_PLANS"
 ```
 
-Use `{printed CEO_PLANS}/{YYYY-MM-DD}-{feature-slug}.md`. Archive plans >30 days old or from merged/deleted branches only with approval.
+Use `{printed CEO_PLANS}/{YYYY-MM-DD}-{feature-slug}.md`. Archiving old (>30 days) or merged/deleted-branch plans requires approval.
 
-**Otherwise:** Present unsaved inputs in full under the storage policy.
+**Otherwise:** Present both inputs in full as not persisted.
 
 **CEO summary format — use for both saved and chat output:**
 
@@ -1202,7 +1194,7 @@ The subagent should return:
 
 **Step 2: Process the result**
 
-- **Unavailable:** If launch or review fails, times out, or cannot review both complete inputs, stop the loop. Say "Spec review unavailable — presenting unreviewed doc." Preserve the failure and all prior findings. Continue to Step 3; quality bonus, not a gate.
+- **Unavailable:** If launch or review fails, times out, or cannot review both complete inputs, stop the loop. Say "Spec review unavailable — presenting unreviewed doc." Preserve the failure and all prior findings. Continue to Step 3 to record the unavailable outcome; a successful reviewer result is not required.
 - **PASS:** Stop the loop.
 - **Issues:** Stop after the third review, or when consecutive reviews repeat the same unresolved issues (the same requirements and problems). Otherwise use 0D for new or reopened choices, amend the working plan and CEO summary under the storage policy, Keep both consistent, and re-dispatch with both updated inputs and the same instructions.
 
@@ -1214,19 +1206,25 @@ Report the outcome and fields below. Show full reviewer output on request. List 
 
 SCORE is the latest attempt's reported 1–10 grade after reviewing both full inputs. For an unavailable review or missing/invalid grade, use JSON `null` ("score unavailable"). Label earlier grades "prior review score".
 
-Save concerns in the CEO summary. Apply Step 0's **0H spec-review metrics** row:
-when permitted, append below; failed mkdir or append stops the review, even if
-the reviewer was unavailable. When forbidden, show fields as not persisted and
-continue without writing. These metrics are distinct from best-effort history:
+Recording the **0H spec-review metrics** is
+required when writing is permitted, even if the reviewer failed. Append the
+actual outcome below; failed mkdir or append stops the review. When writing is
+forbidden, show the actual fields as not persisted and continue without writing.
+Reviewer failure therefore continues here; required storage failure stops here.
 ```bash
 mkdir -p ~/.gstack/analytics || exit 1
 echo '{"skill":"plan-ceo-review","ts":"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'","iterations":ITERATIONS,"issues_found":FOUND,"issues_fixed":FIXED,"remaining":REMAINING,"quality_score":SCORE}' >> ~/.gstack/analytics/spec-review.jsonl || exit 1
 ```
 ITERATIONS counts actual reviewer launches. FOUND, FIXED and REMAINING count reported issues, reviewer-confirmed fixes and reported unresolved issues. Use actual counts, never estimates.
 
-After the loop completes or reports unavailable, present both inputs for final scope-document approval under the storage and session rules. This approval is
-for the two documents only. Resolve document-change requests via 0D, then go to
-0I for the required feasibility interrogation before Review Sections.
+After the loop completes or reports unavailable, present both inputs for final
+scope-document approval. Ask with the preamble question transport:
+**A)** Approve these documents and continue to 0I **B)** Revise these documents
+**C)** Pause this review. Recommend A only if both reflect the exact decisions.
+Wait and record the answer. A accepts these document versions only; unresolved
+amendments and implementation remain unapproved. For B, resolve the requested
+changes through 0D, update both inputs and repeat document approval. C stops.
+After A, run 0I before Review Sections.
 
 ### 0I. Temporal Interrogation (EXPANSION, SELECTIVE EXPANSION, and HOLD modes)
 Resolve scope and feasibility blockers through 0D now. Keep other design choices
@@ -1248,10 +1246,9 @@ Carry the ledger and each answer's exact scope into the review sections.
 
 ## Section self-check (before you finish)
 
-Confirm you Read `sections/review-sections.md` and executed its review, required
-outputs and report from the file, not memory: Sections 1–10 and Section 11's
-findings or no-UI skip. If the Completion Summary or report preceded that Read,
-stop here, read the file and redo the review.
+Confirm you Read `sections/review-sections.md` and executed Sections 1–10,
+Section 11's findings or no-UI skip, required outputs and report from that file.
+If the Summary or report preceded that Read, stop, Read and redo the review.
 
 ## EXIT PLAN MODE GATE (BLOCKING)
 
@@ -1281,22 +1278,21 @@ Failed checks use **Gate outcome: Blocked**. Chat or body prose cannot replace
 the verified terminal report. Do not call ExitPlanMode until all checks pass.
 
 **Gate outcome:**
-- **Pass with log-only gaps:** Apply Artifact outcomes: verified report plus
-  forbidden metadata or failed best-effort history can pass. Label unsaved
-  fields **not persisted**. Failed required writes still block.
-- **Blocked:** For any failed required check or failed required plan/report save,
-  return the failed check and complete plan, report and summary. Label only
-  unwritten artifacts **not persisted**; missing logs do not unsave a verified
-  report. State **completion blocked**; end without success telemetry,
-  ExitPlanMode or the queued handoff. Resume after resolving the blocker.
-- **Passed with a verified persisted report:** run the preamble's **Telemetry (run last)** once, then the nonblocking cache refresh below.
+- **Pass with log-only gaps:** A verified report plus forbidden metadata or
+  failed best-effort history can pass. Mark unsaved fields **not persisted**.
+  Failed required writes still block.
+- **Blocked:** Return the failed check and complete plan, report and summary.
+  Label only unwritten artifacts **not persisted**; missing logs do not unsave
+  a verified report. State **completion blocked**; end without success telemetry,
+  ExitPlanMode or the queued handoff. Resume when the blocker is resolved.
+- **Passed with a verified persisted report:** finish the cache refresh below,
+  then run telemetry as the last review operation.
 
 ## Brain Cache Background Refresh
 
-After the skill's work completes (and telemetry has logged), kick a
-background refresh of any cache digest that's getting close to its TTL.
-This is non-blocking — the user doesn't wait. Next invocation benefits
-from the warm cache.
+After the exit gate passes, start this nonblocking refresh before telemetry.
+Then return to the finalization instructions below; the user need not wait for
+the refresh process.
 
 ```bash
 eval "$(~/.claude/skills/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || true
@@ -1304,4 +1300,6 @@ eval "$(~/.claude/skills/gstack/bin/gstack-slug 2>/dev/null)" 2>/dev/null || tru
 ```
 
 
-Only after a passing gate: call ExitPlanMode where required or return to the caller, then perform the chosen next-skill handoff without changing this review.
+After the refresh, run the preamble's **Telemetry (run last)** once. The review
+is now finished. Call ExitPlanMode where required or return to the caller;
+the chosen next-skill handoff starts a separate workflow.

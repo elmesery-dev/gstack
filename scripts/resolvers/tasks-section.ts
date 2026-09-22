@@ -24,8 +24,12 @@ export const generateTasksSectionEmit: ResolverFn = (_ctx: TemplateContext, args
 
   return `## Implementation Tasks
 
-Before closing this review, synthesize the findings above into a flat list of
-build-actionable tasks. Each task derives from a specific finding — no padding.
+${ceo ? `Turn findings into tasks within the approved review depth. Implementation-ready
+tasks describe the build. Strategy-only tasks name the next research, design or
+verification action and its owner; they do not choose implementation contracts.
+List known files only. For unknown files, write "to be determined" and use an
+empty JSONL files array. Each task needs a concrete verification step.` : `Before closing this review, synthesize the findings above into a flat list of
+build-actionable tasks. Each task derives from a specific finding — no padding.`}
 ${conditionalWrites ? `Always emit the markdown section. Write its JSONL artifact for \`/autoplan\` only when the ${storagePolicy} permits it; otherwise label the complete task output not persisted and do not claim an aggregation artifact exists.` : 'Emit the markdown section AND write a JSONL artifact that `/autoplan` can\naggregate across phases.'}
 
 ### Markdown section (always emit)

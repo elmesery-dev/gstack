@@ -17,7 +17,13 @@ describe('CI workflow clarity regressions', () => {
   test('CEO defines narrow depth and sends settled initial choices directly to mode selection', () => {
     const source = compactProse(readFileSync('plan-ceo-review/SKILL.md.tmpl', 'utf8'));
     expect(source).toContain('For one narrow decision, apply every section to that choice and its dependencies');
-    expect(source).toContain('Run steps 1–4 below, including their save checkpoints');
+    const route = source.split("**Choose the question's route first:**")[1]!.split('**1. Check sources')[0]!;
+    expect(route).toContain('Use its listed menu and the preamble question transport, then wait and record the answer');
+    expect(route).toContain('Skip steps 1–4; this approves no plan changes');
+    expect(route).toContain('Start at step 1. Reuse exact prior approvals; run steps 2–4 only when a new answer is needed, even for one option');
+    expect(route).toContain('If an admin answer requests a plan change, use the Plan decision route for that change');
+    expect(source).toContain('**Pre-question checkpoint:**');
+    expect(source).toContain('**Post-answer checkpoint:**');
     expect(source).toContain('With no required choice, or after those choices settle, go to 0E');
     expect(source).not.toContain('skip the lookup and ask below');
   });
@@ -174,7 +180,17 @@ describe('plan report persistence precedes completion logging', () => {
         expect(report).toContain('add exactly one to its prior run count');
         expect(report).toContain('Do not pre-log this run');
         expect(report).toContain('full review output');
-        expect(report).toContain('whether or not a prior report existed');
+        if (skillName === 'plan-ceo-review') {
+          const writer = compactProse(report.slice(report.indexOf('### Write to the plan file')));
+          expect(writer).toContain('If no destination is selected or writing is forbidden');
+          expect(writer).toContain("Follow Stage 3's blocked chat return; no completed-review log or handoff");
+          expect(writer).toContain('If the destination file exists, Read it now, whether or not step 2 deleted a report');
+          expect(writer).toContain('Use Edit with the suffix from this Read, or Write the complete file');
+          expect(writer).toContain('If the destination file does not exist, use Write to create the complete file');
+          expect(writer).toContain('Save the complete updated plan and review body with the new `## GSTACK REVIEW REPORT` at EOF');
+          expect(writer).toContain('In both cases, keep the report last and continue to the Read-back gate');
+          expect(writer.indexOf('4. **Read-back gate:**')).toBeGreaterThan(writer.indexOf('In both cases, keep the report last'));
+        } else expect(report).toContain('whether or not a prior report existed');
         expect(report).toContain(skillName === 'plan-eng-review'
           ? 'report the error and follow **Blocked outcome** before Review Log or decision logging'
           : 'stop before Review Log or decision logging');
@@ -897,8 +913,8 @@ describe('outside-voice commitment queue', () => {
           expect(stages).toEqual([...stages].sort((a, b) => a - b));
           expect(skeleton).toContain("`D<N> — <ROW-ID>: <one-line question>`");
           expect(skeleton).toContain("Ask one row per call with that object unchanged, without recomposing");
-          expect(skeleton).toContain('compare its actual question, header, labels and full descriptions literally with the saved fields');
-          expect(skeleton).toContain('ROW-ID names the pending choice');
+          expect(skeleton).toContain('Compare its question, header, labels and full descriptions literally with the verified fields');
+          expect(skeleton).toContain('ROW-ID identifies the pending choice');
           expect(skeleton).toContain("Save the answer reference and scope");
           expect(skeleton).toContain("amend only authorized work");
           expect(queue).toContain('Keep preserves the current disposition; investigation and deferral do not authorize implementation');
