@@ -113,6 +113,87 @@ export function assertDiaSocketPath(sourceProfile: string): void {
   if (Buffer.byteLength(path.join(sourceProfile, 'SingletonSocket')) >= 100) throw new Error('fixture_socket_path_too_long');
 }
 
+export function inspectMachOArchitectures(file: string, milliseconds = 10_000) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 1) throw new Error('macho_read_budget_exhausted');
+  const deadline = performance.now() + milliseconds;
+  if (realpathSync(file) !== file) throw new Error('unsafe_macho_file');
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let bytesRead = 0;
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.size < 8n || before.size > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('unsafe_macho_file');
+    const size = Number(before.size);
+    const read = (offset: number, length: number) => {
+      if (performance.now() >= deadline || bytesRead + length > 4096) throw new Error('macho_read_budget_exhausted');
+      if (!Number.isSafeInteger(offset) || offset < 0 || offset > size - length) throw new Error('invalid_macho_header');
+      const buffer = Buffer.alloc(length);
+      if (readSync(fd, buffer, 0, length, offset) !== length) throw new Error('invalid_macho_header');
+      bytesRead += length;
+      return buffer;
+    };
+    const thin = (offset: number, sliceSize: number, expectedCpu?: number, expectedSubtype?: number) => {
+      const magic = read(offset, 4).readUInt32BE(0);
+      const little = magic === 0xcefaedfe || magic === 0xcffaedfe;
+      const wide = magic === 0xfeedfacf || magic === 0xcffaedfe;
+      if (![0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe].includes(magic)) throw new Error('invalid_macho_header');
+      const headerSize = wide ? 32 : 28;
+      if (sliceSize < headerSize) throw new Error('invalid_macho_header');
+      const header = read(offset, headerSize);
+      const word = (at: number) => little ? header.readUInt32LE(at) : header.readUInt32BE(at);
+      const cpu = word(4);
+      const subtype = word(8);
+      if ((expectedCpu !== undefined && cpu !== expectedCpu) || (expectedSubtype !== undefined && subtype !== expectedSubtype)
+        || Boolean(cpu & 0x01000000) !== wide || word(12) !== 2 || word(20) > sliceSize - headerSize
+        || word(16) * 8 > word(20) || word(20) % (wide ? 8 : 4) !== 0) throw new Error('invalid_macho_header');
+      const names: Record<string, string> = { '7:3': 'i386', '16777223:3': 'x86_64', '16777223:8': 'x86_64h',
+        '16777228:0': 'arm64', '16777228:1': 'arm64v8', '16777228:2': 'arm64e' };
+      const architecture = names[cpu + ':' + (subtype & 0x00ffffff)];
+      if (!architecture) throw new Error('unsupported_macho_architecture');
+      return architecture;
+    };
+    const header = read(0, 8);
+    const magic = header.readUInt32BE(0);
+    const fat = [0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca].includes(magic);
+    const architectures: string[] = [];
+    let format = 'thin';
+    if (!fat) architectures.push(thin(0, size));
+    else {
+      const little = magic === 0xbebafeca || magic === 0xbfbafeca;
+      const wide = magic === 0xcafebabf || magic === 0xbfbafeca;
+      format = wide ? 'fat64' : 'fat32';
+      const count = little ? header.readUInt32LE(4) : header.readUInt32BE(4);
+      if (count < 1 || count > 32) throw new Error('invalid_macho_header');
+      const entrySize = wide ? 32 : 20;
+      const tableEnd = 8 + count * entrySize;
+      const table = read(8, count * entrySize);
+      const word = (at: number) => little ? table.readUInt32LE(at) : table.readUInt32BE(at);
+      const wideWord = (at: number) => little ? table.readBigUInt64LE(at) : table.readBigUInt64BE(at);
+      const ranges: Array<{ offset: bigint; end: bigint }> = [];
+      for (let index = 0; index < count; index++) {
+        const at = index * entrySize;
+        const offset = wide ? wideWord(at + 8) : BigInt(word(at + 8));
+        const sliceSize = wide ? wideWord(at + 16) : BigInt(word(at + 12));
+        const align = word(at + (wide ? 24 : 16));
+        const end = offset + sliceSize;
+        if (offset < BigInt(tableEnd) || sliceSize < 28n || end > before.size || align > 63
+          || offset % (1n << BigInt(align)) !== 0n || (wide && word(at + 28) !== 0)
+          || ranges.some(range => offset < range.end && end > range.offset)) throw new Error('invalid_macho_header');
+        ranges.push({ offset, end });
+        const architecture = thin(Number(offset), Number(sliceSize), word(at), word(at + 4));
+        if (architectures.includes(architecture)) throw new Error('invalid_macho_header');
+        architectures.push(architecture);
+      }
+    }
+    const after = fstatSync(fd, { bigint: true });
+    const current = lstatSync(file, { bigint: true });
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+      || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs || current.dev !== before.dev || current.ino !== before.ino
+      || !current.isFile() || realpathSync(file) !== file) throw new Error('macho_changed_during_inspection');
+    if (performance.now() >= deadline) throw new Error('macho_read_budget_exhausted');
+    return { method: 'bounded_macho_headers', format, architectures, slices: architectures.length, bytesRead };
+  } finally { closeSync(fd); }
+}
+
 export function writePrivateReceipt(file: string, value: unknown, replace = false): void {
   const directory = path.dirname(file);
   const owner = process.getuid?.();
@@ -781,10 +862,13 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     const executable = realpathSync(path.join(app, 'Contents/MacOS', executableName));
     if (!executable.startsWith(realpathSync(app) + path.sep)) throw new Error('bundle_executable_escape');
     sourceExecutable = executable;
-    const architectures = run('/usr/bin/lipo', ['-archs', executable]).stdout.split(/\s+/);
-    if (!architectures.includes('arm64')) throw new Error('dia_arm64_binary_required');
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
-      architectures, executableSha256: await within(() => sha256(executable), 10_000), signatureVerified: true, gatekeeperNotarized: true };
+      signatureVerified: true, gatekeeperNotarized: true };
+    stage = 'signed_app_architecture';
+    receipt.artifact.architectureInspection = inspectMachOArchitectures(executable, Math.min(10_000, deadline - performance.now()));
+    receipt.artifact.architectures = receipt.artifact.architectureInspection.architectures;
+    if (!receipt.artifact.architectures.includes('arm64')) throw new Error('dia_arm64_binary_required');
+    receipt.artifact.executableSha256 = await within(() => sha256(executable), 10_000);
     stage = 'signed_app_os_compatibility';
     receipt.artifact.macosCompatibility = macosCompatibility(JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist]).stdout),
       run('/usr/bin/sw_vers', ['-productVersion']).stdout);
@@ -964,7 +1048,9 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     if (error instanceof Error && ['user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'invalid_keychain_snapshot',
       'empty_keychain_snapshot', 'invalid_default_keychain_snapshot', 'keychain_outside_owned_home_refused',
       'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned',
-      'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed', 'source_macos_version_unsupported'].includes(error.message)) receipt.blocker = error.message;
+      'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed', 'source_macos_version_unsupported',
+      'invalid_macho_header', 'unsupported_macho_architecture', 'unsafe_macho_file', 'macho_changed_during_inspection',
+      'macho_read_budget_exhausted', 'dia_arm64_binary_required'].includes(error.message)) receipt.blocker = error.message;
     const code = (error as { code?: string } | null)?.code;
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
     receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',

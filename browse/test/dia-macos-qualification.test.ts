@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -9,7 +9,7 @@ import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserOperationTimedOut, browserPreflightError, browserRootFacts,
   browserStartupCategory, browserStartupFacts, browserStderrFacts, browserStderrReasons, captureUserKeychains, classifyNativeWaitSample, createBrowserStderrCapture, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands,
-  hasSandboxDisablingArgument, joinOwnedBrowserClose, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches, sampleOwnedDiaWait,
+  hasSandboxDisablingArgument, inspectMachOArchitectures, joinOwnedBrowserClose, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches, sampleOwnedDiaWait,
   observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
   qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
@@ -134,6 +134,115 @@ describe('Dia macOS CI qualification safety', () => {
     expect(DIA_DOWNLOAD).toBe('https://releases.diabrowser.com/release/Dia-latest.dmg');
   });
 
+  describe('bounded Mach-O architecture inspection', () => {
+    const thin = (cpu = 0x0100000c, subtype = 0, little = true, wide = true) => {
+      const buffer = Buffer.alloc((wide ? 32 : 28) + 8);
+      const word = (value: number, at: number) => little ? buffer.writeUInt32LE(value, at) : buffer.writeUInt32BE(value, at);
+      word(wide ? 0xfeedfacf : 0xfeedface, 0);
+      word(cpu, 4);
+      word(subtype, 8);
+      word(2, 12);
+      word(1, 16);
+      word(8, 20);
+      return buffer;
+    };
+    const fat = (little = false, wide = false) => {
+      const buffer = Buffer.alloc(512);
+      const word = (value: number, at: number) => little ? buffer.writeUInt32LE(value, at) : buffer.writeUInt32BE(value, at);
+      const wideWord = (value: bigint, at: number) => little ? buffer.writeBigUInt64LE(value, at) : buffer.writeBigUInt64BE(value, at);
+      word(wide ? 0xcafebabf : 0xcafebabe, 0);
+      word(2, 4);
+      for (const [index, cpu, subtype] of [[0, 0x01000007, 3], [1, 0x0100000c, 0]]) {
+        const at = 8 + index * (wide ? 32 : 20);
+        const image = thin(cpu, subtype);
+        word(cpu, at);
+        word(subtype, at + 4);
+        if (wide) { wideWord(BigInt(128 * (index + 1)), at + 8); wideWord(BigInt(image.length), at + 16); }
+        else { word(128 * (index + 1), at + 8); word(image.length, at + 12); }
+        word(7, at + (wide ? 24 : 16));
+        image.copy(buffer, 128 * (index + 1));
+      }
+      return buffer;
+    };
+    const store = (buffer: Buffer) => {
+      const directory = realpathSync(mkdtempSync(path.join(root, 'macho-')));
+      const file = path.join(directory, 'executable');
+      writeFileSync(file, buffer, { mode: 0o600 });
+      return file;
+    };
+    for (const little of [true, false]) {
+      test(`thin headers honor byte order (${little}) and distinguish arm64 subtypes`, () => {
+        expect(inspectMachOArchitectures(store(thin(0x0100000c, 0, little))).architectures).toEqual(['arm64']);
+        expect(inspectMachOArchitectures(store(thin(0x0100000c, 0x80000002, little))).architectures).toEqual(['arm64e']);
+        expect(inspectMachOArchitectures(store(thin(0x01000007, 3, little))).architectures).toEqual(['x86_64']);
+        expect(inspectMachOArchitectures(store(thin(7, 3, little, false))).architectures).toEqual(['i386']);
+      });
+      for (const wide of [true, false]) {
+        test(`fat headers verify their actual slices (${little}, ${wide})`, () => {
+          const result = inspectMachOArchitectures(store(fat(little, wide)));
+          expect(result).toMatchObject({ method: 'bounded_macho_headers', format: wide ? 'fat64' : 'fat32', slices: 2,
+            architectures: ['x86_64', 'arm64'] });
+          expect(result.bytesRead).toBeLessThanOrEqual(4096);
+        });
+      }
+    }
+
+    for (const invalid of ['magic', 'truncated', 'empty_fat', 'excessive_fat', 'truncated_table', 'table_overlap', 'slice_overlap',
+      'slice_out_of_bounds', 'slice_too_short', 'misaligned', 'alignment_overflow', 'cpu_mismatch', 'subtype_mismatch', 'nested_fat',
+      'duplicate_architecture', 'wide_offset_overflow', 'reserved', 'header_width', 'file_type', 'load_commands', 'unknown_cpu']) {
+      test(`architecture inspection rejects ${invalid} rather than guessing arm64`, () => {
+        let image = fat();
+        if (invalid === 'magic') image = Buffer.from('not a macho executable');
+        if (invalid === 'truncated') image = thin().subarray(0, 20);
+        if (invalid === 'empty_fat') image.writeUInt32BE(0, 4);
+        if (invalid === 'excessive_fat') image.writeUInt32BE(33, 4);
+        if (invalid === 'truncated_table') image = image.subarray(0, 24);
+        if (invalid === 'table_overlap') image.writeUInt32BE(0, 16);
+        if (invalid === 'slice_overlap') image.writeUInt32BE(128, 36);
+        if (invalid === 'slice_out_of_bounds') image.writeUInt32BE(1024, 36);
+        if (invalid === 'slice_too_short') image.writeUInt32BE(28, 40);
+        if (invalid === 'misaligned') image.writeUInt32BE(257, 36);
+        if (invalid === 'alignment_overflow') image.writeUInt32BE(0xffffffff, 44);
+        if (invalid === 'cpu_mismatch') image.writeUInt32LE(0x01000007, 260);
+        if (invalid === 'subtype_mismatch') image.writeUInt32LE(2, 264);
+        if (invalid === 'nested_fat') image.writeUInt32BE(0xcafebabe, 256);
+        if (invalid === 'duplicate_architecture') { image.writeUInt32BE(0x01000007, 28); image.writeUInt32BE(3, 32); thin(0x01000007, 3).copy(image, 256); }
+        if (invalid === 'wide_offset_overflow') { image = fat(false, true); image.writeBigUInt64BE(1n << 60n, 16); }
+        if (invalid === 'reserved') { image = fat(false, true); image.writeUInt32BE(1, 36); }
+        if (invalid === 'header_width') image = thin(0x0100000c, 0, true, false);
+        if (invalid === 'file_type') { image = thin(); image.writeUInt32LE(6, 12); }
+        if (invalid === 'load_commands') { image = thin(); image.writeUInt32LE(1000, 20); }
+        if (invalid === 'unknown_cpu') image = thin(0x010000ff, 0);
+        expect(() => inspectMachOArchitectures(store(image))).toThrow();
+      });
+    }
+
+    test('architecture inspection rejects links, non-files, and expired budgets', () => {
+      const file = store(thin());
+      symlinkSync(file, file + '.link');
+      expect(() => inspectMachOArchitectures(file + '.link')).toThrow('unsafe_macho_file');
+      expect(() => inspectMachOArchitectures(path.dirname(file))).toThrow('unsafe_macho_file');
+      for (const budget of [0, NaN, Infinity]) expect(() => inspectMachOArchitectures(file, budget)).toThrow('macho_read_budget_exhausted');
+      expect(qualifyDia.toString()).not.toContain('/usr/bin/lipo');
+    });
+
+    for (const change of ['append', 'replace']) {
+      test(`architecture inspection detects a file that changes by ${change}`, () => {
+        const image = thin();
+        const file = store(image);
+        let ticks = 0;
+        const clock = spyOn(performance, 'now').mockImplementation(() => {
+          if (++ticks === 3) {
+            if (change === 'append') appendFileSync(file, Buffer.from([0]));
+            else { renameSync(file, file + '.previous'); writeFileSync(file, image); }
+          }
+          return 100;
+        });
+        try { expect(() => inspectMachOArchitectures(file)).toThrow('macho_changed_during_inspection'); }
+        finally { clock.mockRestore(); }
+      });
+    }
+  });
   test('the exact nested macOS account and qualifier socket layout stays below the unchanged limit', () => {
     const sourceProfile = path.posix.join(FRESH_WORK_PREFIX + 'XXXXXX', 'tmp', 'dia-XXXXXX', 'h', 'Library/Application Support/Dia/User Data');
     expect(Buffer.byteLength(sourceProfile + '/SingletonSocket')).toBe(97);
@@ -1451,12 +1560,11 @@ with tarfile.open(file, 'w') as out:
     let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
     try {
       const nativeOptions = nativeDiaLaunchOptions(executable, {
-        HOME: root, PATH: path.dirname(process.execPath),
+        HOME: root, PATH: path.dirname(process.execPath) + ':/usr/bin:/bin:/usr/sbin:/sbin',
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
       });
       expect(nativeOptions.chromiumSandbox).toBe(true);
-      const linuxContainerTestOnly = process.platform === 'linux';
-      context = await chromium.launchPersistentContext(profile, { ...nativeOptions, ...(linuxContainerTestOnly ? { chromiumSandbox: false } : {}) });
+      context = await chromium.launchPersistentContext(profile, nativeOptions);
       expect(observer.children).toHaveLength(1);
       expect(observer.children[0].executable).toBe(executable);
       expect(observer.children[0].pid).toBeGreaterThan(1);
@@ -1468,7 +1576,7 @@ with tarfile.open(file, 'w') as out:
       expect(observer.attempts[0]).toEqual({ admissionOpen: true, argumentsArray: true, pipeFlag: true, profileArgumentCount: 1,
         expectedProfile: true, detached: true, shellDisabled: true, stdioCount: 5, extraPipeDescriptors: true,
         headlessFlag: true, blankStartupArgument: true, tcpDebuggingFlag: false, mockKeychainFlag: false,
-        passwordStoreFlag: false, firstRunSuppressed: false, sandboxRequired: process.platform === 'darwin', sandboxDisablingFlag: linuxContainerTestOnly });
+        passwordStoreFlag: false, firstRunSuppressed: false, sandboxRequired: process.platform === 'darwin', sandboxDisablingFlag: false });
       expect(JSON.stringify(observer.attempts)).not.toContain(executable);
       expect(JSON.stringify(observer.attempts)).not.toContain(profile);
       const page = context.pages()[0] ?? await context.newPage();
