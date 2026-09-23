@@ -227,35 +227,51 @@ describe('bun-polyfill', () => {
         let direct;
         childProcess.spawn = (...args) => { direct = originalSpawn(...args); return direct; };
         require(${JSON.stringify(polyfillPath)});
+        let stage = 'spawn';
+        let directExitCode;
         (async () => {
           const proc = Bun.spawn([process.execPath, '-e', ${JSON.stringify(childScript)}],
             { stdio: ['ignore', 'pipe', 'pipe'] });
+          if (!direct) throw new Error('capture_missing');
           const stdout = proc.stdout.getReader();
           const stderr = proc.stderr.getReader();
           const stdoutRead = stdout.read();
           const stderrRead = stderr.read();
-          await new Promise((resolve, reject) => { direct.once('exit', resolve); direct.once('error', reject); });
+          stage = 'direct_exit';
+          directExitCode = await new Promise((resolve, reject) => { direct.once('exit', resolve); direct.once('error', reject); });
+          stage = 'pending_check';
           await new Promise(resolve => setImmediate(resolve));
           let settled = false;
           proc.exited.then(() => { settled = true; });
           await new Promise(resolve => setImmediate(resolve));
           if (settled) throw new Error('Inherited pipes unexpectedly closed before cancellation');
+          stage = 'cancel';
           await Promise.all([stdout.cancel(), stderr.cancel()]);
           const reads = await Promise.all([stdoutRead, stderrRead]);
+          stage = 'await_exited';
           let timer;
           const code = await Promise.race([proc.exited, new Promise((_, reject) =>
             { timer = setTimeout(() => reject(new Error('cancel did not settle exited')), 5000); })])
             .finally(() => clearTimeout(timer));
-          console.log(JSON.stringify({ code, reads: reads.map(read => read.done), descendantAlive: (() => {
+          console.log(JSON.stringify({ code, directExitCode, reads: reads.map(read => read.done), descendantAlive: (() => {
             try { process.kill(Number(require('node:fs').readFileSync(${JSON.stringify(marker)}, 'utf8')), 0); return true; }
             catch { return false; }
           })() }));
-        })().catch(error => { console.error(error.message); process.exitCode = 1; });
+        })().catch(error => {
+          const reason = error.message === 'Inherited pipes unexpectedly closed before cancellation' ? 'early_pipes'
+            : error.message === 'cancel did not settle exited' ? 'cancel_stalled'
+            : error.message === 'capture_missing' ? 'capture_missing' : 'unexpected';
+          console.error(JSON.stringify({ stage, reason, directExitCode, errorCode: typeof error.code === 'string' ? error.code : null }));
+          process.exitCode = 1;
+        });
       `;
       const result = Bun.spawnSync(['node', '-e', script], { stdout: 'pipe', stderr: 'pipe', timeout: 30_000 });
-      expect(result.exitCode).toBe(0);
-      expect(result.stderr.toString()).toBe('');
-      expect(JSON.parse(result.stdout.toString())).toEqual({ code: 0, reads: [true, true], descendantAlive: true });
+      const errorOutput = result.stderr.toString().trim();
+      let diagnostic: object | null = null;
+      try { if (errorOutput) diagnostic = JSON.parse(errorOutput); }
+      catch { diagnostic = { stage: 'unframed', stderrBytes: Buffer.byteLength(errorOutput) }; }
+      expect({ exitCode: result.exitCode, diagnostic }).toEqual({ exitCode: 0, diagnostic: null });
+      expect(JSON.parse(result.stdout.toString())).toEqual({ code: 0, directExitCode: 0, reads: [true, true], descendantAlive: true });
     } finally {
       if (fs.existsSync(marker)) {
         const pidText = fs.readFileSync(marker, 'utf8');

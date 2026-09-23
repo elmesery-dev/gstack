@@ -6,10 +6,12 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
+import { dlopen, FFIType, ptr } from 'bun:ffi';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
 import { NATIVE_BROWSER_VERSION_COMMAND } from '../src/cookie-import-native-integrity';
 import { createNativeCookieJob, joinNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, parseNativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
+import { decodeNativeCommandLine } from './fixtures/native-cookie-process-observer';
 
 const root = mkdtempSync(path.join(tmpdir(), 'cookie-job-'));
 const resolvedRoot = realpathSync(root);
@@ -324,6 +326,7 @@ function safeLaunchEvidence(file: string): object {
       reasons: observed.reasons, stderrBytes: observed.stderrBytes,
       exitCode: observed.exitCode, signal: observed.signal, spawnError: observed.spawnError,
       runtime: observed.runtime, observedCommandLine: observed.observedCommandLine,
+      folderEvidence: observed.folderEvidence,
     };
   } catch {
     return { spawned: false };
@@ -531,6 +534,28 @@ describe('native Windows process qualification', () => {
 });
 
 describe('native Windows launch diagnostics', () => {
+  test('native Unicode output retains the exact allocation address for short and long buffers', () => {
+    const library = dlopen(process.platform === 'win32' ? 'msvcrt.dll' : process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+      memcpy: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.ptr },
+    });
+    try {
+      for (const length of [32, 128, 512, 1024, 4096]) {
+        const target = Buffer.alloc(length);
+        const address = ptr(target);
+        const source = Buffer.alloc(length);
+        source.writeUInt16LE(4, 0);
+        source.writeBigUInt64LE(BigInt(address) + 16n, 8);
+        source.write('ab', 16, 'utf16le');
+        library.symbols.memcpy(address, ptr(source), length);
+        expect(decodeNativeCommandLine(target, address)).toBe('ab');
+        target.writeBigUInt64LE(BigInt(address) + BigInt(length), 8);
+        expect(decodeNativeCommandLine(target, address)).toBeNull();
+      }
+    } finally {
+      library.close();
+    }
+  });
+
   test.skipIf(process.platform !== 'win32')('the native observer reads only the owned process and preserves Windows argument boundaries', async () => {
     const node = Bun.which('node');
     if (!node) throw new Error('Node is required for process metadata verification');
@@ -560,6 +585,22 @@ describe('native Windows launch diagnostics', () => {
       await closed;
     }
   }, 15_000);
+
+  test.skipIf(process.platform !== 'win32')('the known-folder observer reports hashes and statuses without exposing profile paths', () => {
+    const result = spawnSync(process.execPath, [
+      '--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, 'fixtures/native-cookie-process-observer.ts'),
+      Buffer.from(JSON.stringify({ mode: 'known-folders' })).toString('base64'),
+    ], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout: 5_000, windowsHide: true });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    const resultObject = JSON.parse(result.stdout);
+    expect(resultObject).toMatchObject({ available: true });
+    for (const name of ['local', 'roaming']) {
+      expect(Number.isInteger(resultObject.knownFolders[name].verified.hresult)).toBe(true);
+      expect(resultObject.knownFolders[name].dontVerify.pathHash).toMatch(/^[a-f0-9]{64}$/);
+    }
+    if (process.env.USERPROFILE) expect(result.stdout).not.toContain(process.env.USERPROFILE);
+  });
 
   test.skipIf(process.platform !== 'win32')('the qualification version command reads the explicit executable environment variable', () => {
     const node = Bun.which('node');
@@ -618,52 +659,108 @@ describe('native Windows launch diagnostics', () => {
     expect(JSON.stringify(observed)).not.toContain('sensitive-sentinel');
   });
 
-  test.skipIf(process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true')('compares contained and direct Node Edge launch with identical argv and environment', async () => {
-    const node = Bun.which('node');
-    const edge = nativeBrowserPaths('Edge', process.env).executables.find(existsSync);
-    if (!node || !edge) throw new Error('Native launch comparison requires Node and installed Microsoft Edge');
-    const fixture = mkdtempSync(path.join(root, 'edge-comparison-'));
-    const userDataDir = path.join(fixture, 'User Data');
-    const observation = path.join(fixture, 'launch.json');
-    const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
-    const require = createRequire(import.meta.url);
-    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true, observerExecutable: process.execPath })});`);
-    const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
-    const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
-    const supervisor = nativeSupervisor(input, environment);
-    const contained = await supervisor.done;
-    const containedLaunch = safeLaunchEvidence(observation);
-    if ('error' in contained && contained.error === 'native_cleanup_failed') throw new Error('Contained cleanup was not confirmed; direct comparison refused');
-    if (existsSync(userDataDir)) {
-      if (realpathSync(userDataDir).toLowerCase() !== path.resolve(userDataDir).toLowerCase()) throw new Error('Synthetic profile ownership changed; comparison refused');
-      rmSync(userDataDir, { recursive: true, force: true });
-    }
-    const containedObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
-    rmSync(observation, { force: true });
-    const direct = spawnSync(node, ['--input-type=commonjs', '-e', NATIVE_COOKIE_NODE_SCRIPT], {
-      env: environment, input: JSON.stringify({ ...input, deadline: Date.now() + 25_000 }),
-      encoding: 'utf8', timeout: 30_000, windowsHide: true,
-    });
-    const directObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
-    console.log(JSON.stringify({
-      nativeEdgeLaunchComparison: {
-        contained: 'error' in contained ? contained : { cookiesRead: contained.cookies.length },
-        containedLaunch, direct: safeNativeEnvelope(direct.stdout || ''), directStatus: direct.status,
-        directLaunch: safeLaunchEvidence(observation),
-        argvEqual: containedObservation?.argsHash === directObservation?.argsHash,
-        environmentEqual: containedObservation?.envHash === directObservation?.envHash,
-        observedCommandLinesEqual: containedObservation?.observedCommandLine?.available === true && directObservation?.observedCommandLine?.available === true
-          ? containedObservation.observedCommandLine.commandLineHash === directObservation.observedCommandLine.commandLineHash : null,
-      },
-    }));
-    expect(direct.error).toBeUndefined();
-    expect(direct.status).toBe(0);
-    expect(JSON.parse(direct.stdout)).toMatchObject({ cookies: expect.any(Array) });
-    expect(directObservation).not.toBeNull();
-    expect(alive(directObservation.pid)).toBe(false);
-    expect(containedObservation?.argsHash).toBe(directObservation.argsHash);
-    expect(containedObservation?.envHash).toBe(directObservation.envHash);
-    expect(containedObservation?.observedCommandLine).toMatchObject({ available: true });
-    expect(directObservation.observedCommandLine).toMatchObject({ available: true });
-  }, 65_000);
+  for (const layout of ['flat', 'folders-ready']) {
+    test.skipIf(process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true')(`compares contained and direct Node Edge launch with identical argv and environment (${layout} profile layout)`, async () => {
+      const node = Bun.which('node');
+      const edge = nativeBrowserPaths('Edge', process.env).executables.find(existsSync);
+      if (!node || !edge) throw new Error('Native launch comparison requires Node and installed Microsoft Edge');
+      const fixture = mkdtempSync(path.join(root, 'edge-comparison-'));
+      const userDataDir = path.join(fixture, 'User Data');
+      const observation = path.join(fixture, 'launch.json');
+      const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
+      const require = createRequire(import.meta.url);
+      writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true, observerExecutable: process.execPath })});`);
+      if (layout !== 'flat') {
+        mkdirSync(path.join(fixture, 'AppData', 'Local'), { recursive: true });
+        mkdirSync(path.join(fixture, 'AppData', 'Roaming'), { recursive: true });
+      }
+      const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
+      const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
+      const supervisor = nativeSupervisor(input, environment);
+      const contained = await supervisor.done;
+      const containedLaunch = safeLaunchEvidence(observation);
+      if ('error' in contained && contained.error === 'native_cleanup_failed') throw new Error('Contained cleanup was not confirmed; direct comparison refused');
+      if (existsSync(userDataDir)) {
+        if (realpathSync(userDataDir).toLowerCase() !== path.resolve(userDataDir).toLowerCase()) throw new Error('Synthetic profile ownership changed; comparison refused');
+        rmSync(userDataDir, { recursive: true, force: true });
+      }
+      const containedObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
+      rmSync(observation, { force: true });
+      const direct = spawnSync(node, ['--input-type=commonjs', '-e', NATIVE_COOKIE_NODE_SCRIPT], {
+        env: environment, input: JSON.stringify({ ...input, deadline: Date.now() + 25_000 }),
+        encoding: 'utf8', timeout: 30_000, windowsHide: true,
+      });
+      const directObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
+      console.log(JSON.stringify({
+        nativeEdgeLaunchComparison: {
+          layout,
+          contained: 'error' in contained ? contained : { cookiesRead: contained.cookies.length },
+          containedLaunch, direct: safeNativeEnvelope(direct.stdout || ''), directStatus: direct.status,
+          directLaunch: safeLaunchEvidence(observation),
+          argvEqual: containedObservation?.argsHash === directObservation?.argsHash,
+          environmentEqual: containedObservation?.envHash === directObservation?.envHash,
+          observedCommandLinesEqual: containedObservation?.observedCommandLine?.available === true && directObservation?.observedCommandLine?.available === true
+            ? containedObservation.observedCommandLine.commandLineHash === directObservation.observedCommandLine.commandLineHash : null,
+        },
+      }));
+      expect(direct.error).toBeUndefined();
+      expect(direct.status).toBe(0);
+      expect(JSON.parse(direct.stdout)).toMatchObject({ cookies: expect.any(Array) });
+      expect(directObservation).not.toBeNull();
+      expect(alive(directObservation.pid)).toBe(false);
+      expect(containedObservation?.argsHash).toBe(directObservation.argsHash);
+      expect(containedObservation?.envHash).toBe(directObservation.envHash);
+      expect(containedObservation?.observedCommandLine).toMatchObject({ available: true });
+      expect(directObservation.observedCommandLine).toMatchObject({ available: true });
+      expect(containedObservation.folderEvidence.directoriesAfterProbe).toEqual(containedObservation.folderEvidence.directoriesBefore);
+      expect(directObservation.folderEvidence.directoriesAfterProbe).toEqual(directObservation.folderEvidence.directoriesBefore);
+    }, 65_000);
+  }
+
+  for (const state of ['preserved', 'fresh']) {
+    test.skipIf(process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true')(`separates contained launch initialization from Job membership (${state} filesystem)`, async () => {
+      const node = Bun.which('node');
+      const edge = nativeBrowserPaths('Edge', process.env).executables.find(existsSync);
+      if (!node || !edge) throw new Error('Native initialization comparison requires Node and installed Microsoft Edge');
+      const fixture = mkdtempSync(path.join(root, 'edge-initialization-'));
+      const ownedRoot = realpathSync(fixture);
+      const userDataDir = path.join(fixture, 'User Data');
+      const observation = path.join(fixture, 'launch.json');
+      const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
+      const require = createRequire(import.meta.url);
+      const wrapper = `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true, observerExecutable: process.execPath })});`;
+      const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
+      const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
+      writeFileSync(playwrightEntry, wrapper);
+      const first = await nativeSupervisor(input, environment).done;
+      const firstLaunch = safeLaunchEvidence(observation);
+      const firstObservation = JSON.parse(readFileSync(observation, 'utf8'));
+      if ('error' in first && first.error === 'native_cleanup_failed') throw new Error('Initial containment cleanup was not confirmed');
+      if (realpathSync(fixture) !== ownedRoot) throw new Error('Initialization fixture ownership changed');
+      if (state === 'fresh') {
+        rmSync(fixture, { recursive: true, force: true });
+        mkdirSync(fixture);
+      } else {
+        if (existsSync(userDataDir) && realpathSync(userDataDir) !== path.join(ownedRoot, 'User Data')) throw new Error('Synthetic profile ownership changed');
+        rmSync(userDataDir, { recursive: true, force: true });
+        rmSync(observation, { force: true });
+      }
+      writeFileSync(playwrightEntry, wrapper);
+      const second = await nativeSupervisor(input, environment).done;
+      const secondObservation = JSON.parse(readFileSync(observation, 'utf8'));
+      console.log(JSON.stringify({ nativeEdgeInitializationComparison: {
+        state,
+        first: 'error' in first ? first : { cookiesRead: first.cookies.length }, firstLaunch,
+        second: 'error' in second ? second : { cookiesRead: second.cookies.length }, secondLaunch: safeLaunchEvidence(observation),
+        argvEqual: firstObservation.argsHash === secondObservation.argsHash,
+        environmentEqual: firstObservation.envHash === secondObservation.envHash,
+      } }));
+      expect(firstObservation.argsHash).toBe(secondObservation.argsHash);
+      expect(firstObservation.envHash).toBe(secondObservation.envHash);
+      expect(firstObservation.observedCommandLine).toMatchObject({ available: true });
+      expect(secondObservation.observedCommandLine).toMatchObject({ available: true });
+      expect('error' in second ? second.error : null).not.toBe('native_cleanup_failed');
+      if (state === 'fresh') expect(firstObservation.folderEvidence.directoriesBefore).toEqual(secondObservation.folderEvidence.directoriesBefore);
+    }, 65_000);
+  }
 });
