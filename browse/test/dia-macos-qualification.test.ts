@@ -12,7 +12,8 @@ import {
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyParentDomain, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
   inspectParentDomain, inspectUidProcesses, inspectUserDomain,
-  ownedUserDomainTarget, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
+  ownedUserDomainTarget, ownsFreshAccount, ownsLaunchService, parseDirectoryIds, parseDirectoryRecord, passiveUserDomainState,
+  runFreshAccountQualification, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
 const root = mkdtempSync(path.join(tmpdir(), 'dia-qualification-test-'));
@@ -656,9 +657,10 @@ describe('Dia macOS CI qualification safety', () => {
   test('user-domain teardown is bound to the new account and its pre-creation absence proof', () => {
     const account = { guid: 'A38AC39B-5960-4F0C-B02F-C32A4F625B33', uid: 23456, gid: 23456, home: '/private/tmp/dn-fixture/home' };
     const record = { GeneratedUID: account.guid, UniqueID: '23456', PrimaryGroupID: '23456', NFSHomeDirectory: account.home };
-    const proof = classifyUserDomain(23456, { status: 113, stdout: '', stderr: 'Could not find domain for user uid: 23456' });
-    const current = classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n type = user\n}', stderr: '' });
+    const proof = classifyParentDomain(23456, { status: 0, stdout: 'system = {\n\ttype = system\n\tsubdomains = {}\n}', stderr: '' });
+    const current = classifyParentDomain(23456, { status: 0, stdout: 'system = {\n\ttype = system\n\tsubdomains = {\n\t\tuser/23456\n\t}\n}', stderr: '' });
     expect(ownedUserDomainTarget(record, account, proof, current, 501)).toBe('user/23456');
+    expect(ownedUserDomainTarget(record, account, proof, proof, 501)).toBeNull();
     for (const key of ['GeneratedUID', 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory']) {
       expect(() => ownedUserDomainTarget({ ...record, [key]: 'changed' }, account, proof, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
     }
@@ -666,9 +668,57 @@ describe('Dia macOS CI qualification safety', () => {
     expect(() => ownedUserDomainTarget(record, account, { ...proof, state: 'present' }, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
     expect(() => ownedUserDomainTarget(record, account, { ...proof, uid: 23457 }, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
     expect(() => ownedUserDomainTarget(record, account, proof, current, 23456)).toThrow('fresh_user_domain_ownership_unconfirmed');
-    for (const changed of [{ ...current, hasGuiDomain: true }, { ...current, uid: 23457 }, { ...current, state: 'unavailable' as const }]) {
+    expect(() => ownedUserDomainTarget(record, account, proof, current, NaN)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    for (const changed of [{ ...current, matchingGuiDomains: 1 }, { ...current, uid: 23457 }, { ...current, state: 'unavailable' as const },
+      { ...current, duplicateEntries: 1 }, { ...current, matchingUserDomains: 2 }, { ...current, parseStage: 'missing_subdomains' },
+      { ...current, unrecognizedEntries: 1 }]) {
       expect(() => ownedUserDomainTarget(record, account, proof, changed, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
     }
+  });
+
+  test('duplicated native subdomain entries and equivalent aliases never authorize teardown or absence', () => {
+    for (const entries of [
+      ['user/23456', 'user/23456'], ['user/23456', 'com.apple.xpc.launchd.domain.user.23456'],
+      ['user/23456', 'gui/23456', 'gui/23456'], ['user/501', 'user/501'],
+      ['user/23456', 'pid/22', 'com.apple.xpc.launchd.domain.pid.synthetic-private-process.22'],
+    ]) {
+      const observation = classifyParentDomain(23456, { status: 0,
+        stdout: 'system = {\n\ttype = system\n\tsubdomains = {\n' + entries.map(entry => '\t\t' + entry).join('\n') + '\n\t}\n}', stderr: '' });
+      expect(observation.duplicateEntries).toBe(1);
+      expect(observation.parseStage).toBe('duplicate_subdomain');
+      expect(observation.state).toBe('unavailable');
+      expect(passiveUserDomainState(observation, 23456)).toBe('unavailable');
+    }
+  });
+
+  test('passive absence and presence require consistent complete facts with no GUI association', () => {
+    const absent = classifyParentDomain(23456, { status: 0, stdout: 'system = {\n\ttype = system\n\tsubdomains = {}\n}', stderr: '' });
+    expect(passiveUserDomainState(absent, 23456)).toBe('absent');
+    for (const changed of [undefined, { ...absent, uid: 23457 }, { ...absent, matchingUserDomains: 1 },
+      { ...absent, matchingGuiDomains: 1 }, { ...absent, exitCode: 1 }, { ...absent, duplicateEntries: 1 },
+      { ...absent, unrecognizedEntries: 1 }, { ...absent, state: 'present' as const }]) {
+      expect(passiveUserDomainState(changed, 23456)).toBe('unavailable');
+    }
+    const gui = classifyParentDomain(23456, { status: 0,
+      stdout: 'system = {\n\ttype = system\n\tsubdomains = {\n\t\tuser/23456\n\t\tgui/23456\n\t}\n}', stderr: '' });
+    expect(passiveUserDomainState(gui, 23456)).toBe('unavailable');
+    const oldTargetObservation = classifyUserDomain(23456, { status: 113, stdout: '', stderr: 'Could not find domain for user uid: 23456' });
+    expect(passiveUserDomainState(oldTargetObservation as any, 23456)).toBe('unavailable');
+  });
+
+  test('directory UID inventory retains occupied candidate IDs and refuses malformed or empty listings', () => {
+    expect([...parseDirectoryIds('root 0\nfixture 20000\nnobody -2\nother fixture 20001  \n')]).toEqual([0, 20000, -2, 20001]);
+    for (const value of ['', 'malformed', 'root 0\nfixture unknown\n', 'root 0\nfixture 9007199254740992\n']) {
+      expect(() => parseDirectoryIds(value)).toThrow();
+    }
+  });
+
+  test('normal qualification never invokes the materializing target-domain diagnostic', () => {
+    const implementation = runFreshAccountQualification.toString();
+    expect(implementation).toContain('inspectParentDomain');
+    expect(implementation).toContain('passiveUserDomainState');
+    expect(implementation).not.toMatch(/inspectUserDomain|probeUserDomain|classifyUserDomain/);
+    expect(implementation).not.toMatch(/['"]print['"],\s*['"](?:user|gui)\//);
   });
 
   test('launchd receives a one-shot fresh-user security session without an Aqua or auto-login workaround', () => {

@@ -97,7 +97,7 @@ export function inspectUserDomain(uid: number, deadline: number, env: Record<str
 export function classifyParentDomain(uid: number, result: { status: number | null; stdout: string; stderr: string; error?: unknown }) {
   if (!Number.isSafeInteger(uid) || uid < 20_000 || uid >= 60_000) throw new Error('invalid_fresh_user_domain');
   const observation = { uid, state: 'unavailable' as 'present' | 'absent' | 'unavailable', parseStage: 'command_failure',
-    subdomainCount: 0, matchingUserDomains: 0, matchingGuiDomains: 0, unrecognizedEntries: 0,
+    subdomainCount: 0, matchingUserDomains: 0, matchingGuiDomains: 0, unrecognizedEntries: 0, duplicateEntries: 0,
     exitCode: result.status, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) };
   if (result.error || result.status !== 0) return observation;
   observation.parseStage = 'oversized';
@@ -126,19 +126,36 @@ export function classifyParentDomain(uid: number, result: { status: number | nul
   }
   observation.parseStage = 'missing_subdomains';
   if (!subdomains) return observation;
+  const seen = new Set<string>();
   for (const entry of subdomains) {
     observation.subdomainCount++;
     const user = entry.match(/^(?:user\/|com\.apple\.xpc\.launchd\.domain\.user\.)(\d+)$/);
     const gui = entry.match(/^(?:gui\/(\d+)|com\.apple\.xpc\.launchd\.user\.domain\.(\d+)\.\d+\.Aqua)$/);
     const listedUid = user?.[1] ?? gui?.[1] ?? gui?.[2];
+    const process = entry.match(/^(?:pid\/(\d+)|com\.apple\.xpc\.launchd\.domain\.pid\.[^{}\r\n]+\.(\d+))$/);
+    const session = entry.match(/^(?:session\/(\d+)|com\.apple\.xpc\.launchd\.domain\.session\.(\d+))$/);
+    const identity = user ? 'user/' + listedUid : gui ? 'gui/' + listedUid : process ? 'pid/' + (process[1] ?? process[2])
+      : session ? 'session/' + (session[1] ?? session[2]) : entry;
+    if (seen.has(identity)) observation.duplicateEntries++;
+    seen.add(identity);
     if (listedUid && (!Number.isSafeInteger(Number(listedUid)) || String(Number(listedUid)) !== listedUid)) observation.unrecognizedEntries++;
     else if (user) observation.matchingUserDomains += Number(user[1]) === uid ? 1 : 0;
     else if (gui) observation.matchingGuiDomains += Number(gui[1] ?? gui[2]) === uid ? 1 : 0;
     else if (!/^(?:(?:pid|session|login)\/\d+|com\.apple\.xpc\.launchd\.domain\.(?:pid\.[^{}\r\n]+\.\d+|session\.\d+))$/.test(entry)) observation.unrecognizedEntries++;
   }
-  observation.parseStage = observation.unrecognizedEntries ? 'unrecognized_subdomain' : 'parsed';
-  if (!observation.unrecognizedEntries) observation.state = observation.matchingUserDomains || observation.matchingGuiDomains ? 'present' : 'absent';
+  observation.parseStage = observation.unrecognizedEntries ? 'unrecognized_subdomain' : observation.duplicateEntries ? 'duplicate_subdomain' : 'parsed';
+  if (!observation.unrecognizedEntries && !observation.duplicateEntries) observation.state = observation.matchingUserDomains || observation.matchingGuiDomains ? 'present' : 'absent';
   return observation;
+}
+
+type ParentDomainObservation = ReturnType<typeof classifyParentDomain>;
+
+export function passiveUserDomainState(observation: ParentDomainObservation | undefined, uid: number): 'absent' | 'present' | 'unavailable' {
+  if (!observation || observation.uid !== uid || observation.exitCode !== 0 || observation.parseStage !== 'parsed'
+    || observation.duplicateEntries !== 0 || observation.unrecognizedEntries !== 0 || observation.matchingGuiDomains !== 0) return 'unavailable';
+  if (observation.state === 'absent' && observation.matchingUserDomains === 0) return 'absent';
+  if (observation.state === 'present' && observation.matchingUserDomains === 1) return 'present';
+  return 'unavailable';
 }
 
 export function inspectParentDomain(uid: number, deadline: number, env: Record<string, string>, spawn: typeof spawnSync = spawnSync) {
@@ -271,19 +288,31 @@ export function parseDirectoryRecord(output: string): Record<string, string> {
   return result;
 }
 
+export function parseDirectoryIds(output: string): Set<number> {
+  const ids = new Set<number>();
+  for (const line of output.split('\n').filter(line => line.trim())) {
+    const value = line.match(/^\S.*?\s+(-?\d+)\s*$/)?.[1];
+    if (!value || !Number.isSafeInteger(Number(value))) throw new Error('invalid_directory_id_list');
+    ids.add(Number(value));
+  }
+  if (!ids.size) throw new Error('empty_directory_id_list');
+  return ids;
+}
+
 export function ownsFreshAccount(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>): boolean {
   return record.GeneratedUID?.toUpperCase() === account.guid.toUpperCase() && record.UniqueID === String(account.uid)
     && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
 }
 
 export function ownedUserDomainTarget(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>,
-  beforeCreation: UserDomainObservation | undefined, current: UserDomainObservation, currentUid = process.getuid?.()): string {
+  beforeCreation: ParentDomainObservation | undefined, current: ParentDomainObservation, currentUid = process.getuid?.()): string | null {
+  const currentState = passiveUserDomainState(current, account.uid);
   if (!Number.isSafeInteger(account.uid) || account.uid < 20_000 || account.uid >= 60_000 || account.uid === currentUid
-    || !ownsFreshAccount(record, account) || beforeCreation?.uid !== account.uid || beforeCreation.state !== 'absent'
-    || current.uid !== account.uid || current.state === 'unavailable' || current.hasGuiDomain) {
+    || !Number.isSafeInteger(currentUid) || !ownsFreshAccount(record, account)
+    || passiveUserDomainState(beforeCreation, account.uid) !== 'absent' || currentState === 'unavailable') {
     throw new Error('fresh_user_domain_ownership_unconfirmed');
   }
-  return 'user/' + account.uid;
+  return currentState === 'present' ? 'user/' + account.uid : null;
 }
 
 export function freshLaunchDefinition(account: FreshAccount) {
@@ -540,14 +569,13 @@ export async function runFreshAccountQualification() {
   let userCreated = false;
   let groupCreated = false;
   let serviceAttempted = false;
-  let domainBeforeCreation: UserDomainObservation | undefined;
+  let domainBeforeCreation: ParentDomainObservation | undefined;
   let stage = 'fresh_launcher_preflight';
   const receipt: Record<string, any> = { status: 'incomplete', reason: stage, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
     counts: { pass: 0, fail: 0, skip: 0 }, launcher: { sessionCreate: true, aquaLogin: false },
     launcherCleanup: { serviceStopped: false, userDomainStopped: false, userProcessesStopped: false, accountRemoved: false, groupRemoved: false, stagingRemoved: false } };
   let workerExit: number | undefined;
   let pythonExecutable: string | undefined;
-  const probeUserDomain = (uid: number) => inspectUserDomain(uid, cleanupDeadline || deadline, hostEnv);
   const probeParentDomain = (uid: number) => inspectParentDomain(uid, cleanupDeadline || deadline, hostEnv);
   const snapshotProcesses = (phase: string, uid: number) => {
     const facts = inspectUidProcesses(uid, cleanupDeadline || deadline, hostEnv);
@@ -588,24 +616,22 @@ export async function runFreshAccountQualification() {
     run('/usr/bin/ditto', ['--rsrc', '--extattr', bundle, copiedBundle], 45_000);
     const destinationExecutable = realpathSync(path.join(copiedBundle, path.relative(bundle, originalExecutable)));
     if (!destinationExecutable.startsWith(browserDirectory + path.sep)) throw new Error('destination_bundle_escape');
-    const used = new Set([...run('/usr/bin/dscl', ['.', '-list', '/Users', 'UniqueID']).matchAll(/\s(\d+)$/gm),
-      ...run('/usr/bin/dscl', ['.', '-list', '/Groups', 'PrimaryGroupID']).matchAll(/\s(\d+)$/gm)].map(match => Number(match[1])));
+    const userIds = parseDirectoryIds(run('/usr/bin/dscl', ['.', '-list', '/Users', 'UniqueID']));
+    const groupIds = parseDirectoryIds(run('/usr/bin/dscl', ['.', '-list', '/Groups', 'PrimaryGroupID']));
+    const used = new Set([...userIds, ...groupIds]);
     for (const uid of run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).filter(Boolean)) used.add(Number(uid));
     let uid = 20_000;
     while (used.has(uid) && uid < 60_000) uid++;
     if (uid >= 60_000) throw new Error('fresh_uid_unavailable');
     stage = 'fresh_user_domain_preflight';
-    receipt.userDomain = { parentBeforeLookup: probeParentDomain(uid) };
-    const candidateProcesses = snapshotProcesses('candidate_before_domain_probe', uid);
-    if (receipt.userDomain.parentBeforeLookup.state !== 'absent' || !('count' in candidateProcesses) || candidateProcesses.count !== 0) {
+    domainBeforeCreation = probeParentDomain(uid);
+    receipt.userDomain = { beforeCreation: domainBeforeCreation };
+    receipt.candidateIdentity = { uid, accountUidAbsent: !userIds.has(uid), groupUidAbsent: !groupIds.has(uid) };
+    const candidateProcesses = snapshotProcesses('before_account_creation', uid);
+    if (passiveUserDomainState(domainBeforeCreation, uid) !== 'absent' || !('count' in candidateProcesses) || candidateProcesses.count !== 0
+      || !receipt.candidateIdentity.accountUidAbsent || !receipt.candidateIdentity.groupUidAbsent) {
       throw new Error('candidate_domain_baseline_unconfirmed');
     }
-    domainBeforeCreation = probeUserDomain(uid);
-    receipt.userDomain.beforeCreation = domainBeforeCreation;
-    receipt.userDomain.parentAfterLookup = probeParentDomain(uid);
-    if (domainBeforeCreation.state === 'present') receipt.userDomain.repeatedPrecreationQuery = probeUserDomain(uid);
-    snapshotProcesses('candidate_after_domain_probe', uid);
-    if (domainBeforeCreation.state !== 'absent' || receipt.userDomain.parentAfterLookup.state !== 'absent') throw new Error('fresh_user_domain_not_absent');
     const configFile = path.join(work, 'account.json');
     const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'GITHUB_RUN_ID',
       'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY'].map(name => [name, process.env[name]!]));
@@ -680,32 +706,36 @@ export async function runFreshAccountQualification() {
         }
         (receipt.diagnosticCollection ??= {})[phase] = results;
       };
-      const active = () => run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).some(value => value === String(account!.uid));
+      const active = () => {
+        const facts = inspectUidProcesses(account!.uid, cleanupDeadline, hostEnv);
+        if (!('count' in facts)) throw new Error('uid_process_snapshot_unavailable');
+        return facts.count !== 0;
+      };
       collect('before_signal');
       snapshotProcesses('before_signal', account.uid);
       let domainOwnershipConfirmed = false;
       try {
         if (!receipt.launcherCleanup.serviceStopped) throw new Error('service_still_loaded');
         const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
-        (receipt.userDomain ??= {}).parentBeforeTeardown = probeParentDomain(account.uid);
-        const before = probeUserDomain(account.uid);
+        const before = probeParentDomain(account.uid);
         (receipt.userDomain ??= {}).beforeTeardown = before;
         const domain = ownedUserDomainTarget(record, account, domainBeforeCreation, before);
         domainOwnershipConfirmed = true;
-        if (before.state === 'present') {
+        if (domain !== null) {
           try { rootCommand('/bin/launchctl', ['bootout', domain], 10_000); }
           catch (error) {
             receipt.userDomain.teardownCommandFailure = (error as { diagnostic?: object }).diagnostic ?? { failed: true };
           }
         }
-        receipt.userDomain.parentAfterTeardown = probeParentDomain(account.uid);
-        receipt.userDomain.afterTeardown = probeUserDomain(account.uid);
-        receipt.launcherCleanup.userDomainStopped = receipt.userDomain.afterTeardown.state === 'absent';
+        receipt.userDomain.afterTeardown = probeParentDomain(account.uid);
+        receipt.launcherCleanup.userDomainStopped = passiveUserDomainState(receipt.userDomain.afterTeardown, account.uid) === 'absent';
       } catch { (receipt.userDomain ??= {}).teardownRefusedOrUnconfirmed = true; }
       snapshotProcesses('after_domain_teardown', account.uid);
       try {
-        if (!domainOwnershipConfirmed) throw new Error('user_domain_ownership_unconfirmed');
+        if (!domainOwnershipConfirmed || !receipt.launcherCleanup.userDomainStopped) throw new Error('user_domain_ownership_or_absence_unconfirmed');
         if (active()) {
+          const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
+          if (!ownsFreshAccount(record, account)) throw new Error('account_identity_changed');
           try { rootCommand('/usr/bin/pkill', ['-KILL', '-u', String(account.uid)]); } catch {}
           const until = Math.min(cleanupDeadline, performance.now() + 10_000);
           snapshotProcesses('after_signal', account.uid);
@@ -716,9 +746,8 @@ export async function runFreshAccountQualification() {
       snapshotProcesses('after_wait', account.uid);
       if (domainOwnershipConfirmed) {
         try {
-          receipt.userDomain.parentAfterWait = probeParentDomain(account.uid);
-          receipt.userDomain.afterWait = probeUserDomain(account.uid);
-          receipt.launcherCleanup.userDomainStopped = receipt.userDomain.afterWait.state === 'absent';
+          receipt.userDomain.afterWait = probeParentDomain(account.uid);
+          receipt.launcherCleanup.userDomainStopped = passiveUserDomainState(receipt.userDomain.afterWait, account.uid) === 'absent';
         } catch { receipt.launcherCleanup.userDomainStopped = false; }
       }
       collect('after_wait');
@@ -727,6 +756,9 @@ export async function runFreshAccountQualification() {
           if (!receipt.launcherCleanup.serviceStopped || !receipt.launcherCleanup.userDomainStopped) throw new Error('owned_domain_or_service_still_loaded');
           const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
           if (!ownsFreshAccount(record, account)) throw new Error('account_identity_changed');
+          receipt.userDomain.beforeAccountRemoval = probeParentDomain(account.uid);
+          receipt.launcherCleanup.userDomainStopped = passiveUserDomainState(receipt.userDomain.beforeAccountRemoval, account.uid) === 'absent';
+          if (!receipt.launcherCleanup.userDomainStopped) throw new Error('fresh_uid_domain_reappeared');
           if (active()) { receipt.launcherCleanup.userProcessesStopped = false; throw new Error('fresh_uid_processes_reappeared'); }
           rootCommand('/usr/bin/dscl', ['.', '-delete', '/Users/' + accountName]);
           receipt.launcherCleanup.accountRemoved = true;
