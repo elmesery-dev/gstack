@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
 import { createNativeCookieJob, joinNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, parseNativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
-import { nativeCookieEnvironment, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
+import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
 
 const root = mkdtempSync(path.join(tmpdir(), 'cookie-job-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -174,6 +174,34 @@ describe('owned native-cookie lifecycle', () => {
     expect(run.state().time).toBeLessThan(30_000);
   });
 
+  test.each(['failure', 'success', 'rejection'])('a late member %s cannot overwrite the timeout selected before cleanup', async mode => {
+    let now = 0;
+    let active = 1;
+    let resolveReply!: (reply: NativeCookieReply) => void;
+    let rejectReply!: (error: Error) => void;
+    let resolveClosed!: () => void;
+    const reply = new Promise<NativeCookieReply>((resolve, reject) => { resolveReply = resolve; rejectReply = reject; });
+    const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
+    const result = await superviseNativeCookieImport(request, {
+      now: () => now,
+      sleep: async milliseconds => { now += milliseconds; },
+      createJob: async () => ({
+        name: 'synthetic-owned-job', activeProcesses: () => active, close() {},
+        terminate() {
+          expect(now).toBe(25_000);
+          active = 0;
+          if (mode === 'rejection') rejectReply(new Error('synthetic late rejection'));
+          else resolveReply(mode === 'success' ? { cookies: [] } : { error: 'native_failed', diagnostic: { stage: 'member_exit' } });
+          resolveClosed();
+        },
+      }),
+      startMember: () => ({ result: reply, closed, stop() {} }),
+    });
+    expect(result).toEqual({ error: 'native_timeout' });
+    expect(active).toBe(0);
+    expect(now).toBeLessThan(30_000);
+  });
+
   test('unconfirmed termination is reported as cleanup failure, never success', async () => {
     const run = simulation({ retainAfterTerminate: true });
     expect(await run.run).toEqual({ error: 'native_cleanup_failed' });
@@ -242,10 +270,25 @@ function alive(pid: number): boolean {
 function safeNativeEnvelope(output: string): object {
   try {
     const parsed = JSON.parse(output);
+    if (Array.isArray(parsed.cookies)) return { cookiesRead: parsed.cookies.length };
     const errors = ['native_timeout', 'native_failed', 'native_cleanup_failed', 'native_supervision_failed', 'browser_running', 'native_profile_unsupported'];
     return { error: errors.includes(parsed.error) ? parsed.error : 'unexpected_reply', diagnostic: parseNativeCookieDiagnostic(parsed.diagnostic) };
   } catch {
     return { error: 'no_complete_reply' };
+  }
+}
+
+function safeLaunchEvidence(file: string): object {
+  try {
+    const observed = JSON.parse(readFileSync(file, 'utf8'));
+    return {
+      spawned: Number.isInteger(observed.pid), pipe: observed.args?.includes('--remote-debugging-pipe'),
+      argsHash: observed.argsHash, envHash: observed.envHash,
+      reasons: observed.reasons, stderrBytes: observed.stderrBytes,
+      exitCode: observed.exitCode, signal: observed.signal, spawnError: observed.spawnError,
+    };
+  } catch {
+    return { spawned: false };
   }
 }
 
@@ -379,22 +422,7 @@ describe('native Windows process qualification', () => {
       const observation = path.join(fixture, 'browser.json');
       const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
       const require = createRequire(import.meta.url);
-      writeFileSync(playwrightEntry, `
-        const cp = require('node:child_process');
-        const spawn = cp.spawn;
-        cp.spawn = function(command, args, options) {
-          const child = spawn.call(this, command, args, options);
-          require('node:fs').writeFileSync(${JSON.stringify(observation)}, JSON.stringify({ command, args, pid: child.pid }));
-          return child;
-        };
-        const { chromium } = require(${JSON.stringify(require.resolve('playwright'))});
-        exports.chromium = { async launchPersistentContext(root, options) {
-          const context = await chromium.launchPersistentContext(root, options);
-          await context.addCookies([{ name: 'synthetic', value: 'synthetic', domain: 'example.test', path: '/' }]);
-          if (${JSON.stringify(mode)} === 'stalled-close') context.close = () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); };
-          return context;
-        } };
-      `);
+      writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), mode })});`);
       const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
       const supervisor = spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
       const closed = new Promise<void>(resolve => supervisor.once('close', () => resolve()));
@@ -406,7 +434,7 @@ describe('native Windows process qualification', () => {
       try {
         await closed;
         const result = JSON.parse(output);
-        expect(result).toMatchObject({ cookies: expect.any(Array) });
+        expect({ result, launch: safeLaunchEvidence(observation) }).toMatchObject({ result: { cookies: expect.any(Array) } });
         expect(result.cookies).toHaveLength(1);
         expect(result.cookies[0].domain).toBe('example.test');
         const browser = JSON.parse(readFileSync(observation, 'utf8'));
@@ -461,4 +489,88 @@ describe('native Windows process qualification', () => {
       }
     }, 15_000);
   }
+});
+
+describe('native Windows launch diagnostics', () => {
+  test('the synthetic launch observer records safe reasons without raw stderr or environment values', () => {
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for launch diagnostics');
+    const fixture = mkdtempSync(path.join(root, 'launch-observer-'));
+    const observation = path.join(fixture, 'launch.json');
+    const playwrightEntry = path.join(fixture, 'fake-playwright.cjs');
+    writeFileSync(playwrightEntry, `
+      exports.chromium = { async launchPersistentContext() {
+        const child = require('node:child_process').spawn('synthetic-browser.exe', ['--remote-debugging-pipe'], { env: { SYNTHETIC: 'sensitive-sentinel' } });
+        child.stderr.write('AssignProcessToJobObject ERROR_ACCESS_DENIED sensitive-sentinel');
+        child.emit('exit', 5, null);
+        return { addCookies: async () => {} };
+      } };
+    `);
+    const script = `
+      const cp = require('node:child_process');
+      const child = new (require('node:events').EventEmitter)();
+      child.pid = 12345;
+      child.stderr = new (require('node:stream').PassThrough)();
+      cp.spawn = () => child;
+      const api = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry })});
+      api.chromium.launchPersistentContext('synthetic-profile', {}).then(() => console.log('observed'));
+    `;
+    const result = spawnSync(node, ['-e', script], {
+      env: { PATH: path.dirname(node), TEMP: fixture, TMP: fixture, HOME: fixture, USERPROFILE: fixture, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe('observed');
+    expect(result.stderr).toBe('');
+    const observed = JSON.parse(readFileSync(observation, 'utf8'));
+    expect(observed).toMatchObject({ exitCode: 5, reasons: ['job_assignment_failed', 'permission_denied'] });
+    expect(observed.argsHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(observed.envHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(observed)).not.toContain('sensitive-sentinel');
+  });
+
+  test.skipIf(process.platform !== 'win32' || process.env.GITHUB_ACTIONS !== 'true')('compares contained and direct Node Edge launch with identical argv and environment', async () => {
+    const node = Bun.which('node');
+    const edge = nativeBrowserPaths('Edge', process.env).executables.find(existsSync);
+    if (!node || !edge) throw new Error('Native launch comparison requires Node and installed Microsoft Edge');
+    const fixture = mkdtempSync(path.join(root, 'edge-comparison-'));
+    const userDataDir = path.join(fixture, 'User Data');
+    const observation = path.join(fixture, 'launch.json');
+    const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
+    const require = createRequire(import.meta.url);
+    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright') })});`);
+    const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
+    const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
+    const supervisor = nativeSupervisor(input, environment);
+    const contained = await supervisor.done;
+    const containedLaunch = safeLaunchEvidence(observation);
+    if ('error' in contained && contained.error === 'native_cleanup_failed') throw new Error('Contained cleanup was not confirmed; direct comparison refused');
+    if (existsSync(userDataDir)) {
+      if (realpathSync(userDataDir).toLowerCase() !== path.resolve(userDataDir).toLowerCase()) throw new Error('Synthetic profile ownership changed; comparison refused');
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+    const containedObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
+    rmSync(observation, { force: true });
+    const direct = spawnSync(node, ['--input-type=commonjs', '-e', NATIVE_COOKIE_NODE_SCRIPT], {
+      env: environment, input: JSON.stringify({ ...input, deadline: Date.now() + 25_000 }),
+      encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    });
+    const directObservation = existsSync(observation) ? JSON.parse(readFileSync(observation, 'utf8')) : null;
+    console.log(JSON.stringify({
+      nativeEdgeLaunchComparison: {
+        contained: 'error' in contained ? contained : { cookiesRead: contained.cookies.length },
+        containedLaunch, direct: safeNativeEnvelope(direct.stdout || ''), directStatus: direct.status,
+        directLaunch: safeLaunchEvidence(observation),
+        argvEqual: containedObservation?.argsHash === directObservation?.argsHash,
+        environmentEqual: containedObservation?.envHash === directObservation?.envHash,
+      },
+    }));
+    expect(direct.error).toBeUndefined();
+    expect(direct.status).toBe(0);
+    expect(JSON.parse(direct.stdout)).toMatchObject({ cookies: expect.any(Array) });
+    expect(directObservation).not.toBeNull();
+    expect(alive(directObservation.pid)).toBe(false);
+    expect(containedObservation?.argsHash).toBe(directObservation.argsHash);
+    expect(containedObservation?.envHash).toBe(directObservation.envHash);
+  }, 65_000);
 });

@@ -20,6 +20,7 @@ export const NATIVE_CODE_INPUTS = Object.freeze([
   'browse/test/cookie-import-native-job.test.ts',
   'browse/test/cookie-import-native-qualification.ts',
   'browse/test/fixtures/native-cookie-process.cjs',
+  'browse/test/fixtures/native-cookie-launch.cjs',
   'node_modules/playwright/package.json',
   'node_modules/playwright/index.js',
   'node_modules/playwright-core/package.json',

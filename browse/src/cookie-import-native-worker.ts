@@ -106,7 +106,7 @@ export async function superviseNativeCookieImport(
     job = await (dependencies.createJob ?? createNativeCookieJob)();
     if (now() >= deadline || dependencies.signal?.aborted) return { error: 'native_timeout' };
     member = (dependencies.startMember ?? startMember)({ ...request, deadline }, job.name);
-    void member.result.then(value => { reply = value; }, () => { reply = { error: 'native_failed' }; });
+    void member.result.then(value => { reply ??= value; }, () => { reply ??= { error: 'native_failed' }; });
     void member.closed.then(() => { closed = true; }, () => { closed = true; });
     while (!reply && !closed && now() < deadline && !dependencies.signal?.aborted) await sleep(Math.min(20, deadline - now()));
     reply ??= { error: now() >= deadline ? 'native_timeout' : 'native_failed' };

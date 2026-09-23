@@ -1,6 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$OutputRoot,
   [switch]$Child,
+  [switch]$Initialized,
   [string]$ExpectedSid,
   [string]$BinDirectory,
   [string]$GitDirectory
@@ -28,6 +29,10 @@ if ($Child) {
     $env:LOCALAPPDATA = [Environment]::ExpandEnvironmentVariables($rawLocal)
     $env:APPDATA = [Environment]::ExpandEnvironmentVariables($rawRoaming)
   } finally { $folders.Dispose() }
+  if (-not $Initialized) {
+    & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -NonInteractive -File $PSCommandPath -Child -Initialized -ExpectedSid $ExpectedSid -BinDirectory $BinDirectory -GitDirectory $GitDirectory -OutputRoot $OutputRoot
+    exit $LASTEXITCODE
+  }
   $profile = [Environment]::GetFolderPath('UserProfile')
   $local = [Environment]::GetFolderPath('LocalApplicationData', 'DoNotVerify')
   $roaming = [Environment]::GetFolderPath('ApplicationData', 'DoNotVerify')
