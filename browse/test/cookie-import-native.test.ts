@@ -321,7 +321,7 @@ describe('production adapter source-bound qualification', () => {
   });
 });
 
-function runNodeWorker(mode: string, cookies: object[] = []) {
+function runNodeWorker(mode: string, cookies: object[] = [], exitCode = 21) {
   const fixture = mkdtempSync(path.join(root, 'worker-'));
   const observation = path.join(fixture, 'observed.json');
   const playwrightEntry = path.join(fixture, 'playwright.cjs');
@@ -332,7 +332,7 @@ function runNodeWorker(mode: string, cookies: object[] = []) {
         if (${JSON.stringify(mode)} === 'locked') throw new Error('ProcessSingleton sensitive-sentinel');
         if (${JSON.stringify(mode)} === 'policy') throw new Error('Remote debugging requires a non-default data directory sensitive-sentinel');
         if (${JSON.stringify(mode)} === 'failure') throw new Error('sensitive-sentinel');
-        if (${JSON.stringify(mode)} === 'process-exit') throw new Error('<process did exit: exitCode=21, signal=null> sensitive-sentinel');
+        if (${JSON.stringify(mode)} === 'process-exit') throw new Error('<process did exit: exitCode=${exitCode}, signal=null> sensitive-sentinel');
         return { cookies: async () => ${JSON.stringify(cookies)}, close: async () => {} };
       },
     };
@@ -423,7 +423,12 @@ describe('production Node Playwright worker', () => {
 
   test('reports only the managed browser exit code, not raw launch errors', () => {
     const { result } = runNodeWorker('process-exit');
-    expect(result).toEqual({ error: 'native_failed', diagnostic: { stage: 'browser_launch', exitCode: 21 } });
+    expect(result).toEqual({ error: 'browser_running', diagnostic: { stage: 'browser_launch', exitCode: 21 } });
     expect(JSON.stringify(result)).not.toContain('sensitive-sentinel');
+  });
+
+  test.each([0, 1, 20, 22, 24, -1, -1073741819])('does not classify unrelated browser exit %d as a profile lock', exitCode => {
+    const { result } = runNodeWorker('process-exit', [], exitCode);
+    expect(result).toEqual({ error: 'native_failed', diagnostic: { stage: 'browser_launch', exitCode } });
   });
 });

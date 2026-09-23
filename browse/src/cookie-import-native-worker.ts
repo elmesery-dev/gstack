@@ -71,13 +71,13 @@ progress();
     await new Promise(resolve => process.stdout.write(JSON.stringify({ cookies }) + '\n', resolve));
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
-    const code = /ProcessSingleton|profile.*in use|user data directory is already in use|opening in existing browser session/i.test(message)
+    const exited = message.match(/<process did exit: exitCode=(-?\d+), signal=(?:null|SIG[A-Z]+)>/);
+    const exitCode = exited ? Number(exited[1]) : undefined;
+    const code = (stage === 'browser_launch' && exitCode === 21) || /ProcessSingleton|profile.*in use|user data directory is already in use|opening in existing browser session/i.test(message)
       ? 'browser_running'
       : /remote debugging requires a non-default data directory/i.test(message)
         ? 'native_profile_unsupported'
         : /Timeout|native_timeout/.test(message) ? 'native_timeout' : 'native_failed';
-    const exited = message.match(/<process did exit: exitCode=(-?\d+), signal=(?:null|SIG[A-Z]+)>/);
-    const exitCode = exited ? Number(exited[1]) : undefined;
     await new Promise(resolve => process.stdout.write(JSON.stringify({ error: code, diagnostic: { stage, ...(Number.isInteger(exitCode) ? { exitCode } : {}) } }) + '\n', resolve));
   } finally {
     stage = 'browser_close';

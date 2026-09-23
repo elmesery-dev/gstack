@@ -38,12 +38,12 @@ function nativeFixtureEnvironment(fixture: string, node: string): Record<string,
   });
 }
 
-function fixtureFileOwners(file: string): object {
+function fixtureFileOwners(file: string, timeout = 5_000): object {
   if (process.platform !== 'win32') return { available: false, reason: 'not_windows' };
   const result = spawnSync(process.execPath, [
     '--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, 'fixtures/native-cookie-file-owners.ts'),
     Buffer.from(JSON.stringify({ root: resolvedRoot, file, testPid: process.pid })).toString('base64'),
-  ], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout: 5_000, maxBuffer: 65536, windowsHide: true });
+  ], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout, maxBuffer: 65536, windowsHide: true });
   try { return { ...JSON.parse(result.stdout), exitCode: result.status, stderrBytes: Buffer.byteLength(result.stderr || '') }; }
   catch { return { available: false, reason: 'owner_probe_no_receipt', exitCode: result.status }; }
 }
@@ -53,6 +53,7 @@ function clearOwnedFixtureContents(fixture: string, identity: { path: string; de
   if (before.isSymbolicLink() || realpathSync(fixture) !== identity.path || before.dev !== identity.dev || before.ino !== identity.ino) {
     throw new Error('Native fixture root identity changed');
   }
+  const ownerProbeDeadline = Date.now() + 5_000;
   for (const entry of readdirSync(fixture)) {
     const child = path.join(fixture, entry);
     const state = lstatSync(child);
@@ -62,9 +63,16 @@ function clearOwnedFixtureContents(fixture: string, identity: { path: string; de
     }
     const relative = path.relative(identity.path, realpathSync(child));
     if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native fixture entry is outside its owned root');
+    const ownersBeforeDelete = state.isFile() && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/i.test(entry)
+      ? Date.now() < ownerProbeDeadline ? fixtureFileOwners(child, Math.max(1, ownerProbeDeadline - Date.now())) : { available: false, reason: 'owner_probe_budget_exhausted' }
+      : undefined;
+    if (ownersBeforeDelete) console.log(JSON.stringify({ nativeFixtureBeforeDelete: { file: path.relative(resolvedRoot, child), owners: ownersBeforeDelete } }));
     try { rmSync(child, { recursive: true, force: true }); }
     catch (error) {
-      console.error(JSON.stringify({ nativeFixtureFileLock: { file: path.relative(resolvedRoot, child), code: (error as NodeJS.ErrnoException).code, owners: state.isFile() ? fixtureFileOwners(child) : undefined } }));
+      console.error(JSON.stringify({ nativeFixtureFileLock: {
+        file: path.relative(resolvedRoot, child), code: (error as NodeJS.ErrnoException).code, ownersBeforeDelete,
+        ownersAfterFailure: state.isFile() ? fixtureFileOwners(child) : undefined,
+      } }));
       throw error;
     }
   }
