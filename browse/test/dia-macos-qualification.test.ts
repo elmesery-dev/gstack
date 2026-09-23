@@ -7,7 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserPreflightError, browserStartupCategory, captureUserKeychains, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
+  allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserPreflightError, browserRootFacts,
+  browserStartupCategory, browserStartupFacts, captureUserKeychains, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
   qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
@@ -261,6 +262,65 @@ describe('Dia macOS CI qualification safety', () => {
     for (const [url] of pages.slice(1, 10)) expect(allowedFixturePage(url, 'http://127.0.0.1:8123')).toBe(false);
   });
 
+  test('signed macOS requirements compare numeric versions and preserve unknown metadata', () => {
+    expect(macosCompatibility({ LSMinimumSystemVersion: '14.0' }, '15.6.1')).toEqual({ hostVersion: '15.6.1',
+      minimumSystemVersion: '14.0', minimumArm64Version: null, compatible: true });
+    expect(macosCompatibility({ LSMinimumSystemVersion: '26.0' }, '15.6.1').compatible).toBe(false);
+    expect(macosCompatibility({ LSMinimumSystemVersion: '15.9' }, '15.10').compatible).toBe(true);
+    expect(macosCompatibility({ LSMinimumSystemVersion: '15.6.1' }, '15.6').compatible).toBe(false);
+    expect(macosCompatibility({ LSMinimumSystemVersion: '15.6' }, '15.6.0').compatible).toBe(true);
+    expect(macosCompatibility({ LSMinimumSystemVersion: '14.0', LSMinimumSystemVersionByArchitecture: { arm64: '26.0' } }, '15.6.1').compatible).toBe(false);
+    expect(macosCompatibility({ LSMinimumSystemVersion: '26.0', LSMinimumSystemVersionByArchitecture: { arm64: '14.0' } }, '15.6.1').compatible).toBe(false);
+    expect(macosCompatibility({ LSMinimumSystemVersionByArchitecture: { arm64: '14.0' } }, '15.6.1').compatible).toBe(true);
+    for (const plist of [{}, null, { LSMinimumSystemVersion: 'synthetic-private-value' }, { LSMinimumSystemVersion: 14 },
+      { LSMinimumSystemVersion: '14.0', LSMinimumSystemVersionByArchitecture: 'synthetic-private-value' },
+      { LSMinimumSystemVersion: '14.0', LSMinimumSystemVersionByArchitecture: [] },
+      { LSMinimumSystemVersion: '14.0', LSMinimumSystemVersionByArchitecture: { arm64: 'private-version' } }]) {
+      const facts = macosCompatibility(plist, '15.6.1');
+      expect(facts.compatible).toBeNull();
+      expect(JSON.stringify(facts)).not.toContain('private');
+    }
+    expect(macosCompatibility({ LSMinimumSystemVersion: '14.0' }, 'private-host-version').compatible).toBeNull();
+  });
+
+  test('bounded startup categories do not hide a disallowed page beyond the receipt limit', () => {
+    const urls = [...Array(64).fill('about:blank'), 'https://private.invalid/?token=synthetic-private-value'];
+    const facts = browserStartupFacts(urls, 'http://127.0.0.1:8123');
+    expect(facts).toMatchObject({ count: 65, truncated: true, allowed: false });
+    expect(facts.categories).toHaveLength(64);
+    expect(JSON.stringify(facts)).not.toContain('private');
+  });
+
+  test('browser root facts retain exit and allowlisted signal evidence without process payloads', () => {
+    const facts = browserRootFacts([
+      { pid: 300, process: { exitCode: null, signalCode: null, spawnargs: ['synthetic-private-value'] } },
+      { pid: 301, process: { exitCode: 0, signalCode: null } },
+      { pid: 302, process: { exitCode: null, signalCode: 'SIGABRT' } },
+      { pid: 303, process: { exitCode: null, signalCode: 'synthetic-private-signal' } },
+    ] as any);
+    expect(facts).toEqual([{ pid: 300, exitCode: null, signal: null }, { pid: 301, exitCode: 0, signal: null },
+      { pid: 302, exitCode: null, signal: 'SIGABRT' }, { pid: 303, exitCode: null, signal: 'other' }]);
+    expect(JSON.stringify(facts)).not.toContain('private');
+  });
+
+  test('browser cleanup distinguishes live groups from signal errors without retaining raw errors', () => {
+    expect(browserCleanupError(new Error('owned_process_group_still_live')).reason).toBe('group_still_live');
+    expect(browserCleanupError(new Error('cleanup_budget_exhausted')).reason).toBe('cleanup_deadline');
+    expect(browserCleanupError(Object.assign(new Error('synthetic-private-value'), { code: 'EPERM', errno: 1 })))
+      .toEqual({ reason: 'signal_or_probe_failed', code: 'EPERM', errno: 1 });
+    const unknown = browserCleanupError({ message: 'synthetic-private-value', code: 'private-code', errno: 'private-errno' });
+    expect(unknown).toEqual({ reason: 'signal_or_probe_failed', code: 'unclassified', errno: null });
+  });
+
+  test('process-group diagnostics distinguish owned zombies, live members, and unrelated UID counts', () => {
+    const facts = browserGroupFacts('20000 300 1 300 Z\n20000 301 1 300 S+\n501 302 1 300 S\n20000 400 1 400 S\n', 20000, 300);
+    expect(facts).toEqual({ available: true, count: 2, foreignUidCount: 1, zombies: 1, live: 1, truncated: false,
+      processes: [{ pid: 300, ppid: 1, state: 'Z' }, { pid: 301, ppid: 1, state: 'S' }] });
+    expect(browserGroupFacts(Array.from({ length: 70 }, (_, index) => `20000 ${index + 300} 1 300 S`).join('\n'), 20000, 300).processes).toHaveLength(64);
+    expect(() => browserGroupFacts('private-invalid-row', 20000, 300)).toThrow('invalid_group_snapshot');
+    expect(() => browserGroupFacts('', 20000, 0)).toThrow('invalid_group_snapshot_target');
+  });
+
   for (const [error, category] of [
     [new Error('browserType.launchPersistentContext: browser_launch_policy_rejected synthetic-private-value'), 'launch_policy_rejected'],
     [new Error('background_browser_ownership_failed'), 'ownership_unconfirmed'],
@@ -268,6 +328,11 @@ describe('Dia macOS CI qualification safety', () => {
     [new Error('background_browser_render_failed'), 'render_mismatch'],
     [Object.assign(new Error('synthetic-private-value'), { name: 'TimeoutError' }), 'operation_timeout'],
     [new Error('native_operation_timed_out'), 'operation_timeout'],
+    [new Error('operation_timeout'), 'operation_timeout'],
+    [new Error('qualification_budget_exhausted'), 'operation_timeout'],
+    [new Error('source_process_ownership_unconfirmed'), 'ownership_unconfirmed'],
+    [new Error('destination_process_ownership_unconfirmed'), 'ownership_unconfirmed'],
+    [new Error('onboarding_or_external_page'), 'startup_page_rejected'],
     [Object.assign(new Error('synthetic-private-value'), { code: 'ENOENT' }), 'executable_unavailable'],
     [Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' }), 'permission_denied'],
     [{ name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND', message: 'synthetic-private-value' }, 'module_unavailable'],
@@ -1136,6 +1201,8 @@ with tarfile.open(file, 'w') as out:
       expect(observer.children).toHaveLength(1);
       expect(observer.children[0].executable).toBe(executable);
       expect(observer.children[0].pid).toBeGreaterThan(1);
+      expect(browserRootFacts(observer.children)).toEqual([{ pid: observer.children[0].pid, exitCode: null, signal: null }]);
+      expect(browserStartupFacts(context.pages().map(page => page.url()), 'http://127.0.0.1:8123').allowed).toBe(true);
       expect(observer.attempts).toHaveLength(1);
       expect(observer.attempts[0]).toEqual({ admissionOpen: true, argumentsArray: true, pipeFlag: true, profileArgumentCount: 1,
         expectedProfile: true, detached: true, shellDisabled: true, stdioCount: 5, extraPipeDescriptors: true,

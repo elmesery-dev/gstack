@@ -184,10 +184,10 @@ export function browserPreflightError(error: unknown): string {
   if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') return 'module_export_unavailable';
   if (['ERR_REQUIRE_ESM', 'ERR_UNKNOWN_FILE_EXTENSION', 'ERR_INVALID_PACKAGE_CONFIG'].includes(code ?? '')) return 'module_format_error';
   if (/\bbrowser_launch_policy_rejected\b/.test(message)) return 'launch_policy_rejected';
-  if (message === 'background_browser_ownership_failed') return 'ownership_unconfirmed';
-  if (message === 'background_browser_startup_page_rejected') return 'startup_page_rejected';
+  if (['background_browser_ownership_failed', 'source_process_ownership_unconfirmed', 'destination_process_ownership_unconfirmed'].includes(message)) return 'ownership_unconfirmed';
+  if (['background_browser_startup_page_rejected', 'onboarding_or_external_page'].includes(message)) return 'startup_page_rejected';
   if (message === 'background_browser_render_failed') return 'render_mismatch';
-  if ((error instanceof Error && error.name === 'TimeoutError') || message === 'native_operation_timed_out') return 'operation_timeout';
+  if ((error instanceof Error && error.name === 'TimeoutError') || ['native_operation_timed_out', 'operation_timeout', 'qualification_budget_exhausted'].includes(message)) return 'operation_timeout';
   if (code === 'ENOENT' || /Executable doesn't exist|spawn .* ENOENT/.test(message)) return 'executable_unavailable';
   if (['EACCES', 'EPERM'].includes(code ?? '') || /spawn .* EACCES/.test(message)) return 'permission_denied';
   if (code === 'ERR_OUT_OF_RANGE' || (error instanceof Error && error.name === 'RangeError')) return 'invalid_runtime_range';
@@ -199,6 +199,67 @@ export function browserPreflightError(error: unknown): string {
   if (/Target page, context or browser has been closed|Browser closed|Target closed/.test(message)) return 'target_closed';
   if (/Protocol error/.test(message)) return 'protocol_error';
   return 'unclassified_browser_error';
+}
+
+export function macosCompatibility(plist: unknown, host: string) {
+  const properties = plist && typeof plist === 'object' ? plist as Record<string, any> : {};
+  const version = (value: unknown) => typeof value === 'string' && /^\d{1,3}(?:\.\d{1,3}){0,2}$/.test(value.trim()) ? value.trim() : null;
+  const hostVersion = version(host);
+  const minimumSystemVersion = version(properties.LSMinimumSystemVersion);
+  const minimumArm64Version = version(properties.LSMinimumSystemVersionByArchitecture?.arm64);
+  const requirements = [minimumSystemVersion, minimumArm64Version].filter((value): value is string => value !== null);
+  const malformed = (properties.LSMinimumSystemVersion !== undefined && minimumSystemVersion === null)
+    || (properties.LSMinimumSystemVersionByArchitecture !== undefined && (!properties.LSMinimumSystemVersionByArchitecture
+      || typeof properties.LSMinimumSystemVersionByArchitecture !== 'object' || Array.isArray(properties.LSMinimumSystemVersionByArchitecture)))
+    || (properties.LSMinimumSystemVersionByArchitecture?.arm64 !== undefined && minimumArm64Version === null);
+  const compatible = hostVersion && requirements.length && !malformed ? requirements.every(minimum => {
+    const actual = hostVersion.split('.').map(Number);
+    const required = minimum.split('.').map(Number);
+    for (let index = 0; index < 3; index++) {
+      const difference = (actual[index] ?? 0) - (required[index] ?? 0);
+      if (difference) return difference > 0;
+    }
+    return true;
+  }) : null;
+  return { hostVersion, minimumSystemVersion, minimumArm64Version, compatible };
+}
+
+export function browserStartupFacts(urls: string[], origin: string) {
+  return { count: urls.length, categories: urls.slice(0, 64).map(browserStartupCategory), truncated: urls.length > 64,
+    allowed: urls.every(url => allowedFixturePage(url, origin)) };
+}
+
+export function browserRootFacts(children: Array<{ pid: number; process: { exitCode: number | null; signalCode: string | null } }>) {
+  return children.slice(0, 64).map(child => ({ pid: child.pid, exitCode: Number.isInteger(child.process.exitCode) ? child.process.exitCode : null,
+    signal: child.process.signalCode == null ? null
+      : ['SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL'].includes(child.process.signalCode) ? child.process.signalCode : 'other' }));
+}
+
+export function browserCleanupError(error: unknown) {
+  const code = (error as { code?: unknown } | null)?.code;
+  const errno = (error as { errno?: unknown } | null)?.errno;
+  const reason = error instanceof Error && error.message === 'owned_process_group_still_live' ? 'group_still_live'
+    : error instanceof Error && error.message === 'cleanup_budget_exhausted' ? 'cleanup_deadline' : 'signal_or_probe_failed';
+  return { reason, code: typeof code === 'string' && ['ESRCH', 'EPERM', 'EACCES', 'EINVAL', 'ENOSYS', 'ETIMEDOUT'].includes(code) ? code : 'unclassified',
+    errno: typeof errno === 'number' && Number.isSafeInteger(errno) ? errno : null };
+}
+
+export function browserGroupFacts(output: string, uid: number, pgid: number) {
+  if (!Number.isSafeInteger(uid) || uid < 0 || !Number.isSafeInteger(pgid) || pgid < 1) throw new Error('invalid_group_snapshot_target');
+  const processes: Array<{ pid: number; ppid: number; state: string }> = [];
+  let foreignUidCount = 0;
+  for (const line of output.split('\n').filter(line => line.trim())) {
+    const fields = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/);
+    if (!fields) throw new Error('invalid_group_snapshot');
+    if (Number(fields[4]) !== pgid) continue;
+    if (Number(fields[1]) !== uid) { foreignUidCount++; continue; }
+    const pid = Number(fields[2]);
+    const ppid = Number(fields[3]);
+    if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(ppid)) throw new Error('invalid_group_snapshot');
+    processes.push({ pid, ppid, state: ['I', 'R', 'S', 'T', 'U', 'Z', 'D', 'X'].includes(fields[5][0]) ? fields[5][0] : 'other' });
+  }
+  return { available: true, count: processes.length, foreignUidCount, zombies: processes.filter(process => process.state === 'Z').length,
+    live: processes.filter(process => process.state !== 'Z').length, truncated: processes.length > 64, processes: processes.slice(0, 64) };
 }
 
 export function playwrightModuleLoadFacts(snapshot: string, error: unknown) {
@@ -447,6 +508,8 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
   let profileCreationAttempted = false;
   let profileOwnership: ReturnType<typeof createOwnedDiaProfile> | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
+  let browserRole: 'source' | 'destination' | undefined;
+  const attemptStarts: Partial<Record<'source' | 'destination', number>> = {};
   const receipt: Record<string, any> = {
     status: 'incomplete', reason: 'not_run', runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
     platform: { os: 'darwin', architecture: 'arm64', release: release(), bun: Bun.version, playwright: '1.62.1' },
@@ -457,6 +520,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       'dia_profile_and_domain_discovered', 'native_keychain_decryption_and_verified_import', 'default_storage_preserved',
       'wrong_identity_not_verified', 'explicit_storage_reset'].map(name => [name, 'not_run'])), counts: { pass: 0, fail: 0, skip: 0 },
     coverage: { mockKeychain: false, nativeKeychainRead: false, nativePermissionPrompts: false, accountLogin: false, sync: false, browserProfileImport: false },
+    browsers: { source: { stage: 'not_started', launchReturned: false }, destination: { stage: 'not_started', launchReturned: false } },
     cleanup: { ownedBrowsersStopped: false, sourceProfileRemoved: false, keychainRestored: false, mountDetached: false, fixtureRemoved: false },
   };
   const run = (command: string, args: string[], milliseconds = 10_000, env = environment) => {
@@ -537,6 +601,10 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     if (!architectures.includes('arm64')) throw new Error('dia_arm64_binary_required');
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
       architectures, executableSha256: await within(() => sha256(executable), 10_000), signatureVerified: true, gatekeeperNotarized: true };
+    stage = 'signed_app_os_compatibility';
+    receipt.artifact.macosCompatibility = macosCompatibility(JSON.parse(run('/usr/bin/plutil', ['-convert', 'json', '-o', '-', plist]).stdout),
+      run('/usr/bin/sw_vers', ['-productVersion']).stdout);
+    if (receipt.artifact.macosCompatibility.compatible === false) throw new Error('source_macos_version_unsupported');
     stage = 'temporary_keychain';
     receipt.keychainStage = 'capture_original';
     const originalKeychains = captureUserKeychains(environment, [home, root]);
@@ -572,7 +640,13 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     receipt.keychainStage = 'completed';
     delete process.env.DEBUG;
     delete process.env.PWDEBUG;
+    browserRole = 'source';
+    const sourceFacts = receipt.browsers.source;
+    sourceFacts.stage = 'runtime_import';
     const { chromium } = await import('playwright');
+    sourceFacts.stage = 'fixture_setup';
+    browserRole = undefined;
+    stage = 'synthetic_fixture_setup';
     const destinationExecutable = realpathSync(account.destinationExecutable);
     observer = observeBrowserLaunches(new Map([[executable, sourceProfile], [destinationExecutable, destinationProfile]]));
     const token = randomBytes(24).toString('hex');
@@ -590,20 +664,38 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     assertOwnedDiaProfile(profileOwnership);
     receipt.isolation.sourceProfileOwnershipConfirmed = true;
     stage = 'dia_headless_startup_or_onboarding';
+    browserRole = 'source';
+    sourceFacts.stage = 'launch';
+    attemptStarts.source = observer.attempts.length;
     launchAttempts++;
     source = await within(() => chromium.launchPersistentContext(sourceProfile, nativeDiaLaunchOptions(executable, environment)), 40_000);
+    sourceFacts.launchReturned = true;
+    sourceFacts.stage = 'ownership';
+    sourceFacts.ownedRootCount = observer.children.filter(child => child.executable === executable).length;
     if (observer.children.filter(child => child.executable === executable).length !== 1) throw new Error('source_process_ownership_unconfirmed');
-    if (source.pages().some(page => !allowedFixturePage(page.url(), origin))) throw new Error('onboarding_or_external_page');
+    sourceFacts.stage = 'startup_pages';
+    sourceFacts.startupPages = browserStartupFacts(source.pages().map(page => page.url()), origin);
+    if (!sourceFacts.startupPages.allowed) throw new Error('onboarding_or_external_page');
+    sourceFacts.stage = 'route_registration';
     await within(() => source!.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort()), 10_000);
+    sourceFacts.stage = 'page_selection';
     const sourcePage = source.pages()[0] ?? await within(() => source!.newPage(), 10_000);
+    sourceFacts.stage = 'seed_navigation';
     const seed = await within(() => sourcePage.goto(origin + '/seed', { waitUntil: 'domcontentloaded', timeout: 10_000 }), 10_000);
+    sourceFacts.stage = 'seed_validation';
+    sourceFacts.seedResponseStatus = seed?.status() ?? null;
+    sourceFacts.postNavigationPages = browserStartupFacts(source.pages().map(page => page.url()), origin);
     check('headless_without_account_interaction', seed?.status() === 200 && sourcePage.url() === origin + '/seed'
       && source.pages().every(page => allowedFixturePage(page.url(), origin)));
     receipt.sourceBrowserVersion = source.browser()?.version();
+    sourceFacts.stage = 'cookies_readback';
     const sourceCookies = await within(() => source!.cookies(origin), 10_000);
     check('synthetic_session_created', sourceCookies.some(cookie => cookie.name === 'dia_fixture_session' && cookie.value === token));
+    sourceFacts.stage = 'close';
     await within(() => source!.close(), 10_000);
     source = undefined;
+    sourceFacts.stage = 'completed';
+    browserRole = undefined;
     stage = 'native_profile_persistence';
     assertOwnedDiaProfile(profileOwnership);
     const cookieFile = path.join(sourceProfile, 'Default/Cookies');
@@ -622,26 +714,45 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     const { listProfiles, listDomains } = await import('../../browse/src/cookie-import-browser');
     check('dia_profile_and_domain_discovered', listProfiles('Dia').some(profile => profile.name === 'Default')
       && listDomains('Dia', 'Default').domains.some(entry => entry.domain === '127.0.0.1' && entry.count >= 1));
+    browserRole = 'destination';
+    const destinationFacts = receipt.browsers.destination;
+    destinationFacts.stage = 'launch';
+    attemptStarts.destination = observer.attempts.length;
     launchAttempts++;
     destination = await within(() => chromium.launchPersistentContext(destinationProfile, nativeDiaLaunchOptions(destinationExecutable, environment)), 40_000);
+    destinationFacts.launchReturned = true;
+    destinationFacts.stage = 'ownership';
+    destinationFacts.ownedRootCount = observer.children.filter(child => child.executable === destinationExecutable).length;
     if (observer.children.filter(child => child.executable === destinationExecutable).length !== 1) throw new Error('destination_process_ownership_unconfirmed');
+    destinationFacts.stage = 'startup_pages';
+    destinationFacts.startupPages = browserStartupFacts(destination.pages().map(page => page.url()), origin);
+    destinationFacts.stage = 'page_selection';
     const target = destination.pages()[0] ?? await within(() => destination!.newPage(), 10_000);
+    destinationFacts.stage = 'protected_navigation';
     await within(() => target.goto(origin + '/protected', { waitUntil: 'domcontentloaded', timeout: 10_000 }), 10_000);
+    destinationFacts.postNavigationPages = browserStartupFacts(destination.pages().map(page => page.url()), origin);
+    destinationFacts.stage = 'storage_seed';
     await within(() => target.evaluate(() => { localStorage.setItem('fixture-local', 'preserved'); sessionStorage.setItem('fixture-session', 'preserved'); }), 10_000);
+    destinationFacts.stage = 'cookie_import';
     const { runCookieImport } = await import('../../browse/src/cookie-import-operation');
     const tracked: string[] = [];
     const imported = await within(() => runCookieImport({ browser: 'Dia', profile: 'Default', domains: ['127.0.0.1'], verifyAuth: true },
       { page: target, url: target.url() }, domains => tracked.push(...domains), { identitySelector: '#fixture-identity', expectedIdentity: identity }), 30_000);
     check('native_keychain_decryption_and_verified_import', imported.imported >= 1 && imported.failed === 0 && imported.verification.verified && tracked.includes('127.0.0.1'));
     receipt.coverage.nativeKeychainRead = true;
+    destinationFacts.stage = 'storage_preservation';
     check('default_storage_preserved', await within(() => target.evaluate(() => localStorage.getItem('fixture-local') === 'preserved' && sessionStorage.getItem('fixture-session') === 'preserved'), 10_000));
+    destinationFacts.stage = 'wrong_identity';
     const wrong = await within(() => runCookieImport({ browser: 'Dia', profile: 'Default', domains: ['127.0.0.1'], verifyAuth: true },
       { page: target, url: target.url() }, () => {}, { identitySelector: '#fixture-identity', expectedIdentity: 'Different synthetic account', timeoutMs: 500 }), 15_000);
     check('wrong_identity_not_verified', !wrong.verification.verified && wrong.verification.reason === 'identity_mismatch');
+    destinationFacts.stage = 'storage_reset';
     const reset = await within(() => runCookieImport({ browser: 'Dia', profile: 'Default', domains: ['127.0.0.1'], clearStorage: true, verifyAuth: true },
       { page: target, url: target.url() }, () => {}, { identitySelector: '#fixture-identity', expectedIdentity: identity }), 30_000);
     check('explicit_storage_reset', reset.reset === 'cleared' && reset.verification.verified
       && await within(() => target.evaluate(() => localStorage.getItem('fixture-local') === null && sessionStorage.getItem('fixture-session') === null), 10_000));
+    destinationFacts.stage = 'completed';
+    browserRole = undefined;
     for (const file of sourceFiles) if (await within(() => sha256(path.join(repository, file)), 5_000) !== receipt.sourceHashes[file]) throw new Error('source_changed_during_qualification');
     if (await within(() => sha256(executable), 10_000) !== receipt.artifact.executableSha256) throw new Error('source_app_changed_during_qualification');
     receipt.status = 'passed';
@@ -649,35 +760,79 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
   } catch (error) {
     receipt.reason = stage;
     receipt.failureStage = stage;
+    if (browserRole) {
+      const facts = receipt.browsers[browserRole];
+      facts.error = browserPreflightError(error);
+      receipt.blocker = facts.error;
+      if (facts.stage === 'runtime_import') facts.moduleLoad = playwrightModuleLoadFacts(repository, error);
+    }
     if (error instanceof Error && error.message === 'onboarding_or_external_page') receipt.blocker = 'onboarding_or_unexpected_startup_page';
     if (error instanceof Error && error.message === 'preexisting_browser_state_refused') receipt.blocker = 'preexisting_browser_state_refused';
     if (error instanceof Error && ['user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'invalid_keychain_snapshot',
       'empty_keychain_snapshot', 'invalid_default_keychain_snapshot', 'keychain_outside_owned_home_refused',
       'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned',
-      'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed'].includes(error.message)) receipt.blocker = error.message;
+      'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed', 'source_macos_version_unsupported'].includes(error.message)) receipt.blocker = error.message;
     const code = (error as { code?: string } | null)?.code;
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
     receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',
+      ...(browserRole ? { browser: browserRole, browserStage: receipt.browsers[browserRole].stage } : {}),
       ...(stage === 'temporary_keychain' ? { keychainStage: receipt.keychainStage } : {}) };
     receipt.status = Object.values(receipt.cases).includes('failed') ? 'failed' : 'incomplete';
   } finally {
     cleaning = true;
     cleanupDeadline = performance.now() + 45_000;
     observer?.stop();
-    for (const context of [source, destination]) if (context) await bounded(context.close().catch(() => {}), 5_000).catch(() => {});
+    for (const role of ['source', 'destination'] as const) {
+      const facts = receipt.browsers[role];
+      const children = (observer?.children ?? []).filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role);
+      facts.ownedRootCount = children.length;
+      facts.rootStatesBeforeCleanup = browserRootFacts(children);
+      facts.launchAttempts = attemptStarts[role] === undefined ? [] : (observer?.attempts ?? [])
+        .slice(attemptStarts[role], role === 'source' ? attemptStarts.destination : undefined);
+      facts.cleanup = { closeAttempted: false, groups: [] };
+    }
+    for (const [role, context] of [['source', source], ['destination', destination]] as const) {
+      if (!context) continue;
+      receipt.browsers[role].cleanup.closeAttempted = true;
+      try { await bounded(context.close(), 5_000); }
+      catch (error) { receipt.browsers[role].cleanup.closeError = browserPreflightError(error); }
+    }
     let stopped = !observer || observer.children.length >= launchAttempts;
+    receipt.browserCleanup = { launchAttempts, capturedRootCount: observer?.children.length ?? 0, rootCaptureComplete: stopped };
     for (const child of observer?.children ?? []) {
+      const role = child.executable === account.destinationExecutable ? 'destination' : 'source';
+      const group: Record<string, any> = { pid: child.pid, stage: 'probe_before_signal', signalSent: false, absenceConfirmed: false };
+      receipt.browsers[role].cleanup.groups.push(group);
       try {
-        try { process.kill(-child.pid, 0); process.kill(-child.pid, 'SIGKILL'); }
-        catch (error: any) { if (error.code !== 'ESRCH') throw error; }
+        try {
+          process.kill(-child.pid, 0);
+          group.stage = 'signal';
+          process.kill(-child.pid, 'SIGKILL');
+          group.signalSent = true;
+        } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
+        group.stage = 'probe_after_signal';
         const until = Math.min(cleanupDeadline, performance.now() + 5_000);
         while (true) {
           try { process.kill(-child.pid, 0); }
-          catch (error: any) { if (error.code === 'ESRCH') break; throw error; }
+          catch (error: any) { if (error.code === 'ESRCH') { group.absenceConfirmed = true; break; } throw error; }
           if (performance.now() >= until) throw new Error('owned_process_group_still_live');
           await Bun.sleep(50);
         }
-      } catch { stopped = false; }
+        group.stage = 'completed';
+      } catch (error) {
+        stopped = false;
+        group.failure = browserCleanupError(error);
+        try {
+          const timeout = Math.floor(Math.min(2_000, cleanupDeadline - performance.now()));
+          if (timeout < 1) throw new Error('cleanup_budget_exhausted');
+          const snapshot = spawnSync('/bin/ps', ['-axo', 'uid=,pid=,ppid=,pgid=,state='], {
+            env: environment, encoding: 'utf8', timeout, maxBuffer: 128 * 1024,
+          });
+          if (snapshot.error || snapshot.status !== 0 || !snapshot.stdout.trim()) throw new Error('process_snapshot_unavailable');
+          group.membersAfterFailure = browserGroupFacts(snapshot.stdout, account.uid, child.pid);
+        } catch { group.membersAfterFailure = { available: false }; }
+      }
+      group.rootAfterCleanup = browserRootFacts([child])[0];
     }
     receipt.cleanup.ownedBrowsersStopped = stopped;
     receipt.observedBrowserRoots = observer?.children.length ?? 0;
