@@ -55,3 +55,14 @@ test('curated Windows and native qualification use the same pinned Node runtime'
     expect(setup.if).toBeUndefined();
   }
 });
+
+test('focused Windows diagnostics include the repaired lock and close cases without default-profile qualification', () => {
+  const windows = Bun.YAML.parse(readFileSync(path.join(root, '.github/workflows/windows-free-tests.yml'), 'utf8')) as any;
+  const run = windows.jobs['windows-free-tests'].steps.find((step: any) => step.name === 'Run focused native launch and credential diagnostics').run;
+  const pattern = run.match(/--test-name-pattern '([^']+)'/)?.[1];
+  expect(pattern).toBeDefined();
+  const selected = new RegExp(pattern);
+  for (const name of ['native Windows launch diagnostics > observer', 'native Windows process qualification > a locked real Edge profile leaves its existing owner alive',
+    'native Windows process qualification > real Edge synthetic profile: normal-close', 'native Windows process qualification > real Edge synthetic profile: stalled-close']) expect(selected.test(name)).toBe(true);
+  expect(selected.test('native Windows process qualification > an exclusively created default Edge profile persists v20')).toBe(false);
+});

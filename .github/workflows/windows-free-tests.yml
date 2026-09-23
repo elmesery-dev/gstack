@@ -150,7 +150,7 @@ jobs:
         run: |
           set -o pipefail
           status=0
-          bun test browse/test/cookie-import-native-job.test.ts --test-name-pattern 'native Windows launch diagnostics' 2>&1 | tee "$RUNNER_TEMP/gstack-free-test-native-diagnostics.log" || status=1
+          bun test browse/test/cookie-import-native-job.test.ts --test-name-pattern 'native Windows launch diagnostics|a locked real Edge profile|real Edge synthetic profile' 2>&1 | tee "$RUNNER_TEMP/gstack-free-test-native-diagnostics.log" || status=1
           bun test browse/test/cookie-credential-deadline.test.ts browse/test/cookie-import-node.test.ts browse/test/bun-polyfill.test.ts 2>&1 | tee "$RUNNER_TEMP/gstack-free-test-credential-diagnostics.log" || status=1
           exit "$status"
 
