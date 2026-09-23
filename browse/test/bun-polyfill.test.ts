@@ -224,7 +224,7 @@ describe('bun-polyfill', () => {
         const { spawn } = require('node:child_process');
         const fs = require('node:fs');
         const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}],
-          { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+          { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true, detached: process.platform === 'win32' });
         fs.writeFileSync(${JSON.stringify(pidPath)}, String(descendant.pid));
         const deadline = Date.now() + 5000;
         const ready = () => {
@@ -242,6 +242,11 @@ describe('bun-polyfill', () => {
         require(${JSON.stringify(polyfillPath)});
         let stage = 'spawn';
         let directExitCode;
+        let markerValid = false;
+        let stdoutAck = false;
+        let stderrAck = false;
+        let descendantAlive = false;
+        let checkErrorCode = null;
         (async () => {
           const proc = Bun.spawn([process.execPath, '-e', ${JSON.stringify(childScript)}],
             { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -252,14 +257,21 @@ describe('bun-polyfill', () => {
           const stderrRead = stderr.read();
           stage = 'direct_exit';
           directExitCode = await new Promise((resolve, reject) => { direct.once('exit', resolve); direct.once('error', reject); });
-          const readiness = (() => {
-            try {
-              const marker = JSON.parse(require('node:fs').readFileSync(${JSON.stringify(marker)}, 'utf8'));
-              process.kill(marker.pid, 0);
-              return marker.stdout === true && marker.stderr === true ? 'ready' : 'invalid';
-            } catch { return 'missing'; }
-          })();
-          if (readiness !== 'ready') throw new Error('descendant_not_ready');
+          let readyPid;
+          try {
+            const fs = require('node:fs');
+            const marker = JSON.parse(fs.readFileSync(${JSON.stringify(marker)}, 'utf8'));
+            readyPid = marker.pid;
+            markerValid = Number.isSafeInteger(readyPid) && readyPid > 0
+              && String(readyPid) === fs.readFileSync(${JSON.stringify(pidPath)}, 'utf8');
+            stdoutAck = marker.stdout === true;
+            stderrAck = marker.stderr === true;
+          } catch (error) { checkErrorCode = typeof error.code === 'string' ? error.code : 'invalid_marker'; }
+          if (markerValid) {
+            try { process.kill(readyPid, 0); descendantAlive = true; }
+            catch (error) { checkErrorCode = typeof error.code === 'string' ? error.code : 'liveness_error'; }
+          }
+          if (!markerValid || !stdoutAck || !stderrAck || !descendantAlive) throw new Error('descendant_not_ready');
           stage = 'pending_check';
           await new Promise(resolve => setImmediate(resolve));
           let settled = false;
@@ -283,7 +295,8 @@ describe('bun-polyfill', () => {
             : error.message === 'cancel did not settle exited' ? 'cancel_stalled'
             : error.message === 'capture_missing' ? 'capture_missing'
             : error.message === 'descendant_not_ready' ? 'descendant_not_ready' : 'unexpected';
-          console.error(JSON.stringify({ stage, reason, directExitCode, errorCode: typeof error.code === 'string' ? error.code : null }));
+          console.error(JSON.stringify({ stage, reason, directExitCode, markerValid, stdoutAck, stderrAck,
+            descendantAlive, checkErrorCode, errorCode: typeof error.code === 'string' ? error.code : null }));
           process.exitCode = 1;
         });
       `;
