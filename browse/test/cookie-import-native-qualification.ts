@@ -6,6 +6,7 @@ import path from 'node:path';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
 import { nativeCookieEnvironment } from '../src/cookie-import-native-worker';
 import { hashNativeFile, nativeCodeHashes, nativeCodeMatches, NATIVE_QUALIFICATION_DATA } from '../src/cookie-import-native-integrity';
+import { createNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, type NativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 
 if (process.platform !== 'win32') {
   console.error('Native cookie qualification requires Windows; no cases ran and no qualification was issued.');
@@ -17,13 +18,29 @@ if (process.env.GITHUB_ACTIONS !== 'true' || process.env.CI !== 'true') {
 }
 
 const output = mkdtempSync(path.join(process.argv[2] || tmpdir(), 'cookie-native-qualification-'));
-function incomplete(reason: string): never {
-  const receipt = { status: 'incomplete', reason, counts: { pass: 0, fail: 0, skip: 0 }, activation: 'No build was qualified; production extraction remains disabled.' };
+function incomplete(reason: string, diagnostic?: NativeCookieDiagnostic): never {
+  const receipt = { status: 'incomplete', reason, ...(diagnostic ? { diagnostic } : {}), counts: { pass: 0, fail: 0, skip: 0 }, activation: 'No build was qualified; production extraction remains disabled.' };
   writeFileSync(path.join(output, 'qualification.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   console.log(JSON.stringify({ ...receipt, artifactDirectory: output }));
   process.exit(2);
 }
 if (Bun.version !== '1.4.0') incomplete('bun_1_4_0_required');
+let emptyJob: NativeCookieJob | undefined;
+try {
+  emptyJob = await createNativeCookieJob();
+  if (emptyJob.activeProcesses() !== 0) throw new NativeCookieJobError('job_query');
+  emptyJob.terminate();
+  if (emptyJob.activeProcesses() !== 0) throw new NativeCookieJobError('job_query');
+  emptyJob.close();
+  const preflight = { status: 'passed', activeProcesses: 0 };
+  writeFileSync(path.join(output, 'job-preflight.json'), JSON.stringify(preflight, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  console.log(JSON.stringify({ nativeJobPreflight: preflight }));
+} catch (error) {
+  const diagnostic = nativeCookieDiagnostic(error, 'job_create');
+  try { emptyJob?.close(); } catch {}
+  writeFileSync(path.join(output, 'job-preflight.json'), JSON.stringify({ status: 'failed', diagnostic }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+  incomplete('native_job_preflight_failed', diagnostic);
+}
 const root = path.resolve(import.meta.dir, '../..');
 let sourceHashes: Record<string, string>;
 try {
@@ -82,6 +99,7 @@ const receipt = {
   },
   browserVersion: versionProbe.stdout.trim(),
   supervisorArchitecture: process.arch,
+  jobPreflight: { status: 'passed', activeProcesses: 0 },
   counts,
   inputsUnchanged,
   sourceHashes,

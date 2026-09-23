@@ -150,7 +150,8 @@ async function qualifiedAdapterFixture() {
   for (const file of NATIVE_CODE_INPUTS) {
     const destination = path.join(fixture, file);
     mkdirSync(path.dirname(destination), { recursive: true });
-    copyFileSync(path.resolve(import.meta.dir, '../..', file), destination);
+    if (file === 'browse/dist/server-node.mjs') continue;
+    copyFileSync(path.resolve(import.meta.dir, '../..', file === 'browse/dist/bun-polyfill.cjs' ? 'browse/src/bun-polyfill.cjs' : file), destination);
   }
   const activation = path.join(fixture, NATIVE_QUALIFICATION_DATA);
   writeFileSync(activation, '[]\n');
@@ -371,7 +372,7 @@ describe('production Node Playwright worker', () => {
 
   test.each([['locked', 'browser_running'], ['policy', 'native_profile_unsupported'], ['failure', 'native_failed']])('classifies %s without leaking browser stderr or retrying', (mode, error) => {
     const { result } = runNodeWorker(mode);
-    expect(result).toEqual({ error });
+    expect(result).toEqual({ error, diagnostic: { stage: 'browser_launch' } });
     expect(JSON.stringify(result)).not.toContain('sensitive-sentinel');
   });
 });

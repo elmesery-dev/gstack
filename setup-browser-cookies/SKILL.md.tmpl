@@ -21,62 +21,44 @@ allowed-tools:
 
 # Setup Browser Cookies
 
-Copy selected cookies into gstack's fallback browser. Aside stays first: when it is ready, use its existing sessions instead. Importing cookies alone does not prove sign-in.
+Use Aside's sessions when ready; otherwise import into the fallback. Copying does not prove sign-in.
 
-## How it works
-
-1. Find the browse binary
-2. Run `cookie-import-browser` to detect installed browsers and open the picker UI
-3. User selects the source browser, account/profile, and cookie domains
-4. Report copying separately from any requested authentication check
-
-## Steps
-
-### 1. Find the browse binary
+## 1. Resolve the fallback
 
 {{BROWSE_SETUP}}
 
-Check whether the fallback is already connected to the user's real browser:
 ```bash
-$B status 2>/dev/null | grep -q "Mode: cdp" && echo "CDP_MODE=true" || echo "CDP_MODE=false"
+$B status
 ```
-If `CDP_MODE=true`, stop: the real browser's sessions are already available.
+If status says `Mode: cdp`, stop: the real browser already has sessions.
 
-### 2. Open the cookie picker
+## 2. Confirm options before import
 
-If a target site is known, navigate there first. Keep that target tab open and unchanged during import, storage reset, or verification.
+Navigate to the known target; keep its tab open and unchanged. Both options default off; enable only on explicit request:
+
+- **`--verify-auth` / picker checkbox:** reloads the target. Have the user privately configure daemon `GSTACK_COOKIE_AUTH_SELECTOR` and `GSTACK_COOKIE_AUTH_EXPECTED_IDENTITY` **before startup**. Never invent values or assume CLI env reconfigures an existing daemon. Missing config rejects before mutation. Require a successful same-origin response and exactly one visible element whose whitespace-normalized text exactly matches the expected identity.
+- **`--clear-storage`:** for suspected stale storage, obtain explicit approval. Chromium only: clears captured-origin localStorage (shared across same-origin context tabs) and target-tab sessionStorage. Other origins, other tabs' sessionStorage, IndexedDB, and service workers stay intact. It uses an isolated world/native deadline; other engines reject reset, not imports/auth checks. Never auto-approve or claim rollback after partial failure.
+
+## 3. Select source and scope
 
 ```bash
 $B cookie-import-browser
 ```
 
-The picker detects supported browsers: Chrome, Chromium, Brave, Edge, and macOS-only Comet, Arc, and Dia. Ask the user to confirm the source browser and account/profile, then select domains. Profile labels prefer the current `Local State` name; directory labels such as `Default` or `Profile 2` distinguish duplicate names. An unreadable profile is unknown, not empty. Never silently choose between plausible accounts or treat the legacy Comet default as the user's choice.
+Ask the user to choose browser, account/profile, and domains, then say when done. Never guess accounts or treat default Comet as consent. Unreadable profiles are unknown, not empty. Rerun for an expired five-minute one-use link.
 
-Tell the user: **"Cookie picker opened. Select your browser, profile, and domains, then tell me when you're done."** The opening link is one-use and expires after five minutes; rerun the command if it expires.
+Direct import: pass the chosen browser and `--domain` after navigating to a matching target. `--profile` takes a directory, not a display name; omit only for an unambiguous relevant profile, otherwise use the picker. `--all` requires consent for all non-expired profile cookies; it cannot accompany `--domain` or `--clear-storage`.
 
-### 3. Direct import (alternative)
+For examples, profile labels/disambiguation, supported sources and platform setup, read [BROWSER.md's cookie reference](../BROWSER.md#choosing-a-source-and-checking-sign-in).
 
-Skip the picker only when the source browser and profile are settled. Navigate to a matching target first. Example, after the user selects Chrome's `Profile 2`:
+## 4. Report honestly
 
-```bash
-$B goto https://example.com
-$B cookie-import-browser chrome --domain example.com --profile "Profile 2"
-```
+Report receipt/picker counts, partial/zero/error and reset outcomes, not raw `$B cookies`. Imports affect the context, not one tab. **Not checked** means no requested check; **not verified** means it failed; **verified** requires positive target evidence. Zero imports, counts, or HTTP 200 never prove login.
 
-Substitute the actual selected browser, profile directory, and site. `--profile` takes a directory, not the display name. If omitted, only an unambiguous relevant profile is selected; otherwise use the picker. `--all` imports all non-expired cookies from the selected profile only with explicit user consent; it cannot accompany `--domain` or `--clear-storage`.
+Never request/publish cookie values, passwords, identity/profile text, session details, or raw errors in public logs. Picker labels/counts/status exclude cookie values.
 
-### 4. Report import and authentication separately
+## Platform boundaries
 
-Read the import receipt or picker status, not raw `$B cookies` output. Report imported/failed counts, partial/zero/error outcomes, and reset status. **Imported, not checked** means cookies were copied but sign-in is unknown. **Not verified** means a requested check failed. Never call the session ready based on cookie counts or HTTP 200.
+Dia is macOS-only. Keychain approval is the user's choice. Database retries are bounded; permission denial needs user action, not repeated prompts.
 
-`--verify-auth` (or the picker's explicit checkbox) reloads the captured target and requires one visible element whose whitespace-normalized text exactly matches the expected identity on the same origin with a successful response. Have the user configure `GSTACK_COOKIE_AUTH_SELECTOR` and `GSTACK_COOKIE_AUTH_EXPECTED_IDENTITY` privately in the daemon environment **before startup**. Do not invent values or assume setting them on a CLI call changes a running daemon. Missing configuration errors before cookie or storage mutation. Without configuration, leave verification off and report **not checked**; only report **verified** with positive target evidence.
-
-Storage is preserved by default. Offer `--clear-storage` only for suspected stale storage on a Chromium target and obtain explicit approval: it clears the captured origin's localStorage (shared by that origin across tabs in the context) and the target tab's sessionStorage. It runs in an isolated world with a native deadline; other target engines reject reset without affecting ordinary imports or auth checks. It does not reset sibling origins, other tabs' sessionStorage, IndexedDB, or service workers. Never auto-approve it; report partial reset failures without claiming rollback.
-
-## Notes
-
-- On macOS, the first import per browser may prompt for Keychain permission; the user decides whether to allow it. Dia is macOS-only.
-- On Linux, `v11` cookies may require `secret-tool`/libsecret access; `v10` cookies use Chromium's standard fallback key
-- Windows supports DPAPI-compatible cookies, not every App-Bound Encryption cookie. Native extraction remains disabled pending qualification. Closing Chrome does not defeat Chrome 136+ default-user-data-directory protection, including numbered profiles. No TCP fallback or copying real profiles; use manual sign-in in gstack's headed browser when a display is available.
-- Treat source/profile labels and session information as sensitive. Never ask for cookie values, passwords, or identity text in public logs; report sanitized outcomes, not raw errors or account text.
-- Imports affect the browser context, not only one tab. The picker shows source/profile, domains, counts, and status, never cookie values. Transient database reads have bounded retries; permission denial requires user action, not repeated prompts.
+Windows supports DPAPI-compatible cookies, not all App-Bound Encryption; native extraction stays disabled pending qualification. Closing Chrome cannot bypass Chrome 136+ default-directory protection, including numbered profiles. No TCP fallback or real-profile copies. Offer headed manual sign-in only with a display available.

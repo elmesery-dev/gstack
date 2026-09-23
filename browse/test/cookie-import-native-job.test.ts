@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
-import { createNativeCookieJob, joinNativeCookieJob, type NativeCookieJob } from '../src/cookie-import-native-job';
+import { createNativeCookieJob, joinNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, parseNativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 import { nativeCookieEnvironment, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
 
 const root = mkdtempSync(path.join(tmpdir(), 'cookie-job-'));
@@ -38,11 +38,11 @@ function kernelContract(mode: string) {
           OpenJobObjectW: (access, inherit, name) => { calls.push(['open', access, inherit, name.toString('utf16le')]); return 42; },
           SetInformationJobObject: (handle, kind, buffer, length) => { calls.push(['limits', handle, kind, length, buffer.readUInt32LE(16)]); return 1; },
           QueryInformationJobObject: (handle, kind, buffer, length) => { calls.push(['query', handle, kind, length]); buffer.writeUInt32LE(3, 40); return 1; },
-          GetCurrentProcess: () => 999,
+          OpenProcess: (access, inherit, pid) => { calls.push(['open-process', access, inherit, pid === process.pid]); return 999; },
           AssignProcessToJobObject: (job, process) => { calls.push(['assign', job, process]); return ${mode === 'join-fail' ? 0 : 1}; },
           TerminateJobObject: (job, code) => { calls.push(['terminate', job, code]); return 1; },
           CloseHandle: handle => { calls.push(['close', handle]); return 1; },
-          GetLastError: () => 0,
+          GetLastError: () => ${mode === 'join-fail' ? 5 : 0},
         } };
       },
     };
@@ -58,9 +58,9 @@ function kernelContract(mode: string) {
       job.terminate(); job.close(); job.close();
       console.log(JSON.stringify({ name: job.name, active, calls }));
     } else {
-      let error;
-      try { await joinNativeCookieJob('Local\\\\gstack-cookie-12345678-1234-1234-1234-123456789abc'); } catch (caught) { error = caught.message; }
-      console.log(JSON.stringify({ calls, error }));
+      let error, diagnostic;
+      try { await joinNativeCookieJob('Local\\\\gstack-cookie-12345678-1234-1234-1234-123456789abc'); } catch (caught) { error = caught.message; diagnostic = caught.diagnostic; }
+      console.log(JSON.stringify({ calls, error, diagnostic }));
     }
   `;
   const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-e', script], {
@@ -74,6 +74,14 @@ function kernelContract(mode: string) {
 }
 
 describe('production Windows Job Object API contract', () => {
+  test('diagnostics expose only known native stages and numeric Windows errors', () => {
+    expect(nativeCookieDiagnostic(new NativeCookieJobError('job_assign', 5), 'job_create')).toEqual({ stage: 'job_assign', win32Error: 5 });
+    expect(nativeCookieDiagnostic(new Error('sensitive-sentinel'), 'ffi_open')).toEqual({ stage: 'ffi_open' });
+    expect(parseNativeCookieDiagnostic({ stage: 'job_assign', win32Error: 87, message: 'sensitive-sentinel' })).toEqual({ stage: 'job_assign', win32Error: 87 });
+    expect(parseNativeCookieDiagnostic({ stage: 'sensitive-sentinel', win32Error: 5 })).toBeUndefined();
+    expect(parseNativeCookieDiagnostic({ stage: 'job_assign', win32Error: 'sensitive-sentinel' })).toEqual({ stage: 'job_assign' });
+  });
+
   test('owner creates a non-inheritable kill-on-close job and queries active members', () => {
     const result = kernelContract('create');
     expect(result.name).toMatch(/^Local\\gstack-cookie-[0-9a-f-]{36}$/);
@@ -89,13 +97,17 @@ describe('production Windows Job Object API contract', () => {
     const result = kernelContract('join');
     expect(result.error).toBeUndefined();
     expect(result.calls).toContainEqual(['open', 1, 0, 'Local\\gstack-cookie-12345678-1234-1234-1234-123456789abc\0']);
+    expect(result.calls).toContainEqual(['open-process', 0x0101, 0, true]);
     expect(result.calls).toContainEqual(['assign', 42, 999]);
+    expect(result.calls).toContainEqual(['close', 999]);
     expect(result.calls).toContainEqual(['close', 42]);
   });
 
   test('failed self-assignment closes its handle and fails without a child launch', () => {
     const result = kernelContract('join-fail');
     expect(result.error).toBe('native_supervision_failed');
+    expect(result.diagnostic).toEqual({ stage: 'job_assign', win32Error: 5 });
+    expect(result.calls).toContainEqual(['close', 999]);
     expect(result.calls).toContainEqual(['close', 42]);
   });
 });
@@ -179,6 +191,18 @@ describe('owned native-cookie lifecycle', () => {
     expect(terminated).toBe(1);
   });
 
+  test('a failed job close still stops its owned member and cannot report success', async () => {
+    let stopped = false;
+    const result = await superviseNativeCookieImport(request, {
+      now: () => 0,
+      sleep: async () => {},
+      createJob: async () => ({ name: 'synthetic', activeProcesses: () => 0, terminate() {}, close() { throw new Error('sensitive-close-detail'); } }),
+      startMember: () => ({ result: Promise.resolve({ cookies: [] }), closed: Promise.resolve(), stop() { stopped = true; } }),
+    });
+    expect(result).toEqual({ error: 'native_cleanup_failed', diagnostic: { stage: 'job_close' } });
+    expect(stopped).toBe(true);
+  });
+
   test('locked-profile errors are classified and never retried', async () => {
     const run = simulation({ reply: { error: 'browser_running' } });
     expect(await run.run).toEqual({ error: 'browser_running' });
@@ -199,7 +223,7 @@ describe('owned native-cookie lifecycle', () => {
       createJob: async () => { throw new Error('sensitive-sentinel'); },
       startMember: () => { started = true; throw new Error('unexpected'); },
     });
-    expect(result).toEqual({ error: 'native_supervision_failed' });
+    expect(result).toEqual({ error: 'native_supervision_failed', diagnostic: { stage: 'job_create' } });
     expect(started).toBe(false);
   });
 
@@ -211,6 +235,16 @@ describe('owned native-cookie lifecycle', () => {
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
+function safeNativeEnvelope(output: string): object {
+  try {
+    const parsed = JSON.parse(output);
+    const errors = ['native_timeout', 'native_failed', 'native_cleanup_failed', 'native_supervision_failed', 'browser_running', 'native_profile_unsupported'];
+    return { error: errors.includes(parsed.error) ? parsed.error : 'unexpected_reply', diagnostic: parseNativeCookieDiagnostic(parsed.diagnostic) };
+  } catch {
+    return { error: 'no_complete_reply' };
+  }
 }
 
 function nativeSupervisor(input: NativeCookieRequest, env: NodeJS.ProcessEnv) {
@@ -228,7 +262,7 @@ function nativeSupervisor(input: NativeCookieRequest, env: NodeJS.ProcessEnv) {
   void done.catch(() => {});
   child.stdin.on('error', () => {});
   child.stdin.write(JSON.stringify({ ...input, deadline: Date.now() + 25_000, qualifiedBunVersions: [Bun.version] }) + '\n');
-  return { child, done };
+  return { child, done, envelope: () => safeNativeEnvelope(output) };
 }
 
 describe('native Windows process qualification', () => {
@@ -269,7 +303,9 @@ describe('native Windows process qualification', () => {
       const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir: mapping.userDataDir, playwrightEntry };
       const env = nativeCookieEnvironment(process.env);
       supervisor = nativeSupervisor(input, env);
-      expect((await supervisor.done as { cookies: unknown[] }).cookies).toHaveLength(1);
+      const seeded = await supervisor.done;
+      expect(seeded).toMatchObject({ cookies: expect.any(Array) });
+      expect((seeded as { cookies: unknown[] }).cookies).toHaveLength(1);
       const database = new Database(path.join(mapping.userDataDir, 'Default', 'Network', 'Cookies'), { readonly: true });
       try {
         const row = database.query("SELECT hex(substr(encrypted_value, 1, 3)) AS prefix FROM cookies WHERE name = 'synthetic-native-qualification' AND host_key = 'example.test'").get() as { prefix: string } | null;
@@ -319,10 +355,10 @@ describe('native Windows process qualification', () => {
     try {
       const readyBy = Date.now() + 10_000;
       while (!existsSync(marker) && Date.now() < readyBy) await Bun.sleep(20);
-      expect(existsSync(marker)).toBe(true);
+      expect({ ready: existsSync(marker), reply: owner.envelope() }).toMatchObject({ ready: true });
       const { pid } = JSON.parse(readFileSync(marker, 'utf8'));
       contender = nativeSupervisor({ ...input, playwrightEntry: require.resolve('playwright') }, env);
-      expect(await contender.done).toEqual({ error: 'browser_running' });
+      expect(await contender.done).toMatchObject({ error: 'browser_running' });
       expect(alive(pid)).toBe(true);
     } finally {
       contender?.child.kill();
@@ -368,6 +404,7 @@ describe('native Windows process qualification', () => {
       try {
         await closed;
         const result = JSON.parse(output);
+        expect(result).toMatchObject({ cookies: expect.any(Array) });
         expect(result.cookies).toHaveLength(1);
         expect(result.cookies[0].domain).toBe('example.test');
         const browser = JSON.parse(readFileSync(observation, 'utf8'));
@@ -391,14 +428,7 @@ describe('native Windows process qualification', () => {
       const fixture = mkdtempSync(path.join(root, 'native-'));
       const pids = path.join(fixture, 'owned.json');
       const playwrightEntry = path.join(fixture, 'playwright.cjs');
-      writeFileSync(playwrightEntry, `
-        exports.chromium = { async launchPersistentContext() {
-          const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true });
-          require('node:fs').writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, child.pid]));
-          if (${JSON.stringify(mode)} === 'worker-crash') setTimeout(() => process.exit(3), 100);
-          await new Promise(() => {});
-        } };
-      `);
+      writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-process.cjs'))})(${JSON.stringify({ pidsFile: pids, mode })});`);
       const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
       const sibling = spawn(node, ['-e', 'setInterval(() => {}, 1000)'], { env: environment, stdio: 'ignore', windowsHide: true });
       const supervisor = spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
@@ -409,7 +439,7 @@ describe('native Windows process qualification', () => {
       supervisor.stdin.write(JSON.stringify({ ...request, nodeExecutable: node, playwrightEntry, userDataDir: fixture, deadline: started + (mode === 'timeout' ? 3_000 : 25_000), qualifiedBunVersions: [Bun.version] }) + '\n');
       try {
         while (!existsSync(pids) && Date.now() - started < 2_500) await Bun.sleep(20);
-        expect(existsSync(pids)).toBe(true);
+        expect({ ready: existsSync(pids), reply: safeNativeEnvelope(output) }).toMatchObject({ ready: true });
         const owned = JSON.parse(readFileSync(pids, 'utf8')) as number[];
         if (mode === 'owner-exit') supervisor.kill();
         await closed;
@@ -421,7 +451,7 @@ describe('native Windows process qualification', () => {
           expect(JSON.parse(output)).toEqual({ error: 'native_timeout' });
           expect(Date.now() - started).toBeLessThan(8_000);
         }
-        if (mode === 'worker-crash') expect(JSON.parse(output)).toEqual({ error: 'native_failed' });
+        if (mode === 'worker-crash') expect(JSON.parse(output)).toMatchObject({ error: 'native_failed' });
       } finally {
         supervisor.kill();
         sibling.kill();

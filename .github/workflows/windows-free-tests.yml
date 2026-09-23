@@ -91,6 +91,9 @@ jobs:
         run: bun run gen:skill-docs --host all
         shell: bash
 
+      - name: Install Chromium for the Node worker smoke
+        run: bunx playwright install chromium
+
       # The Windows job verifies the new portability work this PR delivers,
       # not the entire free suite. After v1.20.0.0 ships, full-suite Windows
       # parity is a P4 follow-up TODO that depends on porting many tests off
@@ -158,7 +161,7 @@ jobs:
         run: bash browse/scripts/build-node-server.sh
         shell: bash
       - name: Qualify owned native cookie extraction
-        run: bun --no-env-file --no-install --no-macros --config=NUL browse/test/cookie-import-native-qualification.ts "$env:RUNNER_TEMP"
+        run: ./.github/scripts/run-cookie-native-qualification.ps1 -OutputRoot "$env:RUNNER_TEMP"
       - name: Preserve qualification evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
