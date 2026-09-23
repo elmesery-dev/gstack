@@ -237,6 +237,22 @@ describe("installed pre-push guard uses the actual destination", () => {
     expect(push.stderr.match(/HIGH  aws\.access_key/g)).toHaveLength(1);
   });
 
+  test("supplementary NFKC expansion cannot move a seam finding out of its owning core", () => {
+    const { repo, origin, head } = fixture(false);
+    const prefix = "\uFA6C".repeat(64);
+    const credential = `key ${key}\n`;
+    const padding = "x".repeat(768 * 1024 - Buffer.byteLength(prefix) - credential.length - 1);
+    const payload = `${prefix}${padding}\n${credential}${"z".repeat(100)}\n`;
+    expect(scan(payload).findings.map((finding) => finding.id)).toContain("aws.access_key");
+    fs.writeFileSync(path.join(repo, "payload.txt"), payload);
+    git(repo, "add", "payload.txt");
+    git(repo, "commit", "-qm", "supplementary normalization seam");
+    const push = spawnSync("git", ["push", "origin", "main"], { cwd: repo, encoding: "utf8", timeout: 30_000 });
+    expect(push.status).toBe(1);
+    expect(push.stderr.match(/HIGH  aws\.access_key/g)).toHaveLength(1);
+    expect(git(origin, "rev-parse", "refs/heads/main")).toBe(head);
+  });
+
   test("a partial-line overlap cannot manufacture an anchored assignment finding", () => {
     const { repo } = fixture(false);
     const value = ["8Fk2pQ9vXz4wL7mN", "3rT6yB1cD5eG0hJq"].join("");

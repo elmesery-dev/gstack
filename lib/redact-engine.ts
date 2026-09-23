@@ -155,8 +155,8 @@ function normalizeOriginal(input: string, spanEnds?: number[]): { normalized: st
     ZERO_WIDTH.lastIndex = 0;
 
     const norm = ch.normalize("NFKC");
-    for (const nch of norm) {
-      out.push(nch);
+    for (let j = 0; j < norm.length; j++) {
+      out.push(norm[j]);
       map.push(i);
       spanEnds?.push(i + 1);
     }
