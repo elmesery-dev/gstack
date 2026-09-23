@@ -60,7 +60,6 @@ jobs:
           bun-version: 1.4.0
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
-        if: inputs.native_diagnostics_only
         with:
           node-version: 24.18.0
 

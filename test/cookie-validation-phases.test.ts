@@ -46,3 +46,12 @@ test('the existing quality and behavior phases retain their complete separate sh
   expect(qualityFiles.every(file => file.startsWith('test/skill-llm-eval'))).toBe(true);
   expect(behaviorFiles.every(file => !qualityFiles.includes(file))).toBe(true);
 });
+
+test('curated Windows and native qualification use the same pinned Node runtime', () => {
+  const windows = Bun.YAML.parse(readFileSync(path.join(root, '.github/workflows/windows-free-tests.yml'), 'utf8')) as any;
+  for (const job of ['windows-free-tests', 'cookie-native-qualification']) {
+    const setup = windows.jobs[job].steps.find((step: any) => step.uses?.startsWith('actions/setup-node@'));
+    expect(setup.with['node-version']).toBe('24.18.0');
+    expect(setup.if).toBeUndefined();
+  }
+});
