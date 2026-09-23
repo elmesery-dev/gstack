@@ -11,7 +11,7 @@ on:
       validation_phase:
         description: 'Validation branch phase; run quality before behavior on unchanged inputs'
         type: choice
-        options: [all, quality, cookie-quality, behavior]
+        options: [all, quality, cookie-quality, behavior, cookie-behavior]
         default: all
 
 concurrency:
@@ -154,11 +154,15 @@ jobs:
           import { mkdirSync, writeFileSync } from "node:fs";
           import { buildRunManifest, collectPaidTestFiles } from "./scripts/test-paid-shards.ts";
           const phase = process.env.VALIDATION_PHASE;
-          if (!["quality", "cookie-quality", "behavior"].includes(phase)) throw new Error("Invalid validation phase");
+          if (!["quality", "cookie-quality", "behavior", "cookie-behavior"].includes(phase)) throw new Error("Invalid validation phase");
+          const cookieBehavior = phase === "cookie-behavior";
           const discovered = phase === "cookie-quality" ? ["test/skill-llm-eval.test.ts"]
+            : cookieBehavior ? ["test/skill-e2e-bws.test.ts", "test/skill-e2e-qa-workflow.test.ts", "test/skill-e2e-design.test.ts", "test/skill-e2e-diagram.test.ts", "test/skill-e2e-deploy.test.ts"]
             : collectPaidTestFiles().filter(file => file.startsWith("test/skill-llm-eval") === (phase === "quality"));
-          const manifest = buildRunManifest({ tier: "gate", profile: "full", sliceCount: 6, evalsAll: process.env.EVALS_ALL === "1", discovered });
+          const manifest = buildRunManifest({ tier: "gate", profile: "full", sliceCount: 6, evalsAll: !cookieBehavior && process.env.EVALS_ALL === "1", discovered,
+            ...(cookieBehavior ? { changedFiles: ["browse/src/cookie-picker-routes.ts", "browse/src/cookie-import-browser.ts", "browse/src/bun-polyfill.cjs"], env: { ...process.env, EVALS_ALL: "" } } : {}) });
           if (phase === "cookie-quality") manifest.selection = { e2e: [], judges: ["setup-browser-cookies/SKILL.md workflow"] };
+          if (cookieBehavior) manifest.selection = { e2e: ["browse-basic", "browse-snapshot", "qa-quick", "qa-only-no-fix", "design-review-detector-shim-dom", "diagram-triplet", "canary-workflow", "benchmark-workflow"], judges: [] };
           manifest.selectionReason = phase + " validation subset; " + manifest.selectionReason;
           mkdirSync("/tmp/paid-plan", { recursive: true });
           writeFileSync("/tmp/paid-plan/manifest.json", JSON.stringify(manifest, null, 2) + "\n");
