@@ -110,6 +110,10 @@ function gsMain(fn) {
   try {
     fn();
   } catch (e) {
+    if (e && e.gstackUnreadableSettings === true) {
+      process.stderr.write("gstack-settings-hook: " + e.message + " -- refusing to mutate\n");
+      process.exit(3);
+    }
     process.stderr.write("gstack-settings-hook: internal error (" + (e && e.message) + ") -- refusing to mutate\n");
     process.exit(4);
   }
@@ -168,6 +172,9 @@ function gsResolveSettingsPath(input) {
   var resolved;
   try { resolved = fs.realpathSync(absolute); }
   catch (e) {
+    if (e && (e.code === "EACCES" || e.code === "EPERM")) {
+      throw Object.assign(new Error("cannot read " + absolute + " (" + e.code + ")"), { gstackUnreadableSettings: true });
+    }
     if (!e || e.code !== "ENOENT") throw e;
     try {
       if (fs.lstatSync(absolute).isSymbolicLink()) throw new Error("settings link has no target");
@@ -301,7 +308,7 @@ GSTACK_SETTINGS_INPUT="$SETTINGS_FILE"
 export GSTACK_SETTINGS_INPUT
 SETTINGS_FILE=$(bun -e "$_HOOK_JS_PRELUDE"'gsMain(function () {
   process.stdout.write(gsResolveSettingsPath(process.env.GSTACK_SETTINGS_INPUT));
-});') || exit 4
+});') || exit $?
 
 # ─── Mutation lock ────────────────────────────────────────────────────
 # Accepted tradeoffs (adversarial-reviewed): (1) the lock serializes gstack

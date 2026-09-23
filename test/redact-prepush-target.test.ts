@@ -192,10 +192,10 @@ describe("installed pre-push guard uses the actual destination", () => {
   test("installed wrapper forwards refs and rejects malformed input instead of passing it on", () => {
     const { repo, origin, head } = fixture(false);
     const hook = git(repo, "rev-parse", "--git-path", "hooks/pre-push");
-    const result = spawnSync(hook, ["origin", origin], {
+    const result = spawnSync("bash", [hook, "origin", origin], {
       cwd: repo, input: "refs/heads/main malformed\n", encoding: "utf8", timeout: 30_000,
     });
-    expect(result.status).toBe(1);
+    expect(result.status, result.stderr || result.error?.message).toBe(1);
     expect(result.stderr).toContain("could not parse a pre-push ref line");
     expect(git(origin, "rev-parse", "refs/heads/main")).toBe(head);
   });

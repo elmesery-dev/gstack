@@ -36,6 +36,26 @@ function run(args: string[], file = settings) {
   return spawnSync('bash', [hook, ...args], { env: env(file), encoding: 'utf8', timeout: 10_000 });
 }
 
+function runWithRealpathFailure(args: string[], code: string, afterTemp = false) {
+  const fakeBin = path.join(root, 'bin');
+  const preload = path.join(root, 'realpath-permission.ts');
+  fs.mkdirSync(fakeBin);
+  fs.writeFileSync(preload, `const fs = require('fs');
+const original = fs.realpathSync;
+fs.realpathSync = (file, ...args) => {
+  if (String(file) === process.env.GSTACK_SETTINGS_INPUT && (!${afterTemp} || (process.env.GSTACK_TMP_PATH && fs.existsSync(process.env.GSTACK_TMP_PATH)))) {
+    throw Object.assign(new Error('synthetic realpath permission failure'), { code: ${JSON.stringify(code)} });
+  }
+  return original(file, ...args);
+};
+`);
+  fs.writeFileSync(path.join(fakeBin, 'bun'), '#!/bin/sh\nexec "$ACTUAL_BUN" --preload "$FS_PROBE" "$@"\n', { mode: 0o755 });
+  return spawnSync('bash', [hook, ...args], {
+    env: { ...env(), PATH: fakeBin + path.delimiter + process.env.PATH, ACTUAL_BUN: process.execPath, FS_PROBE: preload },
+    encoding: 'utf8', timeout: 10_000,
+  });
+}
+
 describe('settings hook preserves the resolved settings target', () => {
   test('add, ensure and remove preserve the link, real target and private mode', () => {
     const add = run(addArgs());
@@ -146,7 +166,7 @@ describe('settings hook preserves the resolved settings target', () => {
     fs.chmodSync(target, 0o000);
     try {
       const result = run(addArgs());
-      expect(result.status).toBe(3);
+      expect(result.status, result.stderr).toBe(3);
       expect(result.stderr).toContain('cannot read');
       expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
       expect(fs.readdirSync(path.dirname(target))).toEqual(['settings.json']);
@@ -155,6 +175,31 @@ describe('settings hook preserves the resolved settings target', () => {
     }
     expect(fs.readFileSync(target, 'utf8')).toBe(original);
   });
+
+  for (const code of ['EACCES', 'EPERM']) {
+    test(`a ${code} realpath failure keeps the unreadable-settings exit contract`, () => {
+      const original = fs.readFileSync(target, 'utf8');
+      const result = runWithRealpathFailure(addArgs(), code);
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toContain('cannot read');
+      expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+      expect(fs.readdirSync(path.dirname(target))).toEqual(['settings.json']);
+      expect(fs.readFileSync(target, 'utf8')).toBe(original);
+    });
+  }
+
+  for (const action of ['add-event', 'rollback']) {
+    test(`a late permission failure during ${action} removes its temporary settings copy`, () => {
+      if (action === 'rollback') expect(run(addArgs()).status).toBe(0);
+      const original = fs.readFileSync(target, 'utf8');
+      const result = runWithRealpathFailure(action === 'rollback' ? ['rollback'] : addArgs(), 'EACCES', true);
+      expect(result.status, result.stderr).toBe(3);
+      expect(result.stderr).toContain('cannot read');
+      expect(fs.lstatSync(settings).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(target, 'utf8')).toBe(original);
+      expect(fs.readdirSync(path.dirname(target)).filter(name => name.startsWith('settings.json.tmp.'))).toEqual([]);
+    });
+  }
 
   test('concurrent writes through file and directory aliases both survive', async () => {
     const directoryAlias = path.join(root, 'linked-directory');

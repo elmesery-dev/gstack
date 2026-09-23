@@ -323,6 +323,8 @@ describe('CSO native Windows build contract', () => {
     for(let i=0;i<3;i++){
       const started=command(['start','--repo',repository,'--offline']);expectSuccessfulProcess(started,'gstack-cso start');
       const run=JSON.parse(started.stdout),dir=path.join(profile,'.gstack','security','cso',run.repoId,run.runId),leases=path.join(dir,'.mutation-lock-leases');
+      const initialized=command(['resume',run.runId]);expectSuccessfulProcess(initialized,'gstack-cso initialize mutation lease');
+      expect(fs.realpathSync(leases).startsWith(fs.realpathSync(profile)+path.sep)).toBe(true);
       if(i===0){
         const churn=path.join(leases,'churn');let inode=0n;
         for(let attempt=0;attempt<1024;attempt++){

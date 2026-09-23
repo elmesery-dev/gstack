@@ -41,8 +41,9 @@ describe('terminal-agent watchdog (v1.44+)', () => {
     expect(block).toContain('readAgentRecord(stateDir)');
     expect(block).toContain('isAgentRecordGone(record)');
     const control = fs.readFileSync(CONTROL_TS, 'utf-8');
-    expect(control).toContain('if (!actual.commandLine) {');
+    expect(control).toContain('if (result.status === 0) state = result.stdout?.trim()?.[0];');
     expect(control).toContain("if (state === 'Z') return 'gone'");
+    expect(control.indexOf("if (state === 'Z') return 'gone'")).toBeLessThan(control.indexOf('return actual.commandLine.split'));
     // Negative: no executable name-based process lookup. Allow the strings
     // to appear in prose comments (the watchdog doc explains what it
     // replaces), reject only actual invocations.

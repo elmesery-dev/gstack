@@ -87,7 +87,7 @@ jobs:
         env:
           TMPDIR: /tmp
         run: |
-          files=(browse/test/terminal-agent-lifecycle.test.ts browse/test/terminal-agent-watchdog.test.ts browse/test/server-embedder-terminal-port.test.ts browse/test/server-factory.test.ts test/gstack-settings-hook-symlink.test.ts test/gstack-settings-hook-schema-aware.test.ts)
+          files=(browse/test/terminal-agent-lifecycle.test.ts browse/test/terminal-agent-native-observation.test.ts browse/test/terminal-agent-watchdog.test.ts browse/test/server-embedder-terminal-port.test.ts browse/test/server-factory.test.ts test/gstack-settings-hook-symlink.test.ts test/gstack-settings-hook-schema-aware.test.ts)
           for file in "${files[@]}"; do test -f "$file"; done
           bun test "${files[@]}"
 

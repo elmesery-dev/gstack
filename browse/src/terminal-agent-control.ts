@@ -240,19 +240,19 @@ function agentStatus(record: AgentRecord, ownerPid?: number): 'owned' | 'gone' |
   if (!record.startTime || !record.ownerPid || !record.ownerStartTime) return 'unknown';
   if (ownerPid !== undefined && (record.ownerPid !== ownerPid || record.ownerStartTime !== readAgentStartTime(ownerPid))) return 'unknown';
   const actual = agentProcessInfo(record.pid);
-  if (!actual.startTime) return 'unknown';
+  if (!actual.startTime) return isAgentRecordLive(record) ? 'unknown' : 'gone';
   if (actual.startTime !== record.startTime) return 'gone';
-  if (!actual.commandLine) {
-    try {
-      const state = process.platform === 'linux'
-        ? fs.readFileSync(`/proc/${record.pid}/stat`, 'utf8').match(/^\d+ \(.*\) ([A-Z])/u)?.[1]
-        : process.platform === 'darwin'
-          ? spawnSync('ps', ['-p', String(record.pid), '-o', 'stat='], { encoding: 'utf8', windowsHide: true, timeout: 2000 }).stdout?.trim()?.[0]
-          : undefined;
-      if (state === 'Z') return 'gone';
-    } catch {}
-    return 'unknown';
-  }
+  try {
+    let state: string | undefined;
+    if (process.platform === 'linux') {
+      state = fs.readFileSync(`/proc/${record.pid}/stat`, 'utf8').match(/^\d+ \(.*\) ([A-Z])/u)?.[1];
+    } else if (process.platform === 'darwin') {
+      const result = spawnSync('ps', ['-p', String(record.pid), '-o', 'stat='], { encoding: 'utf8', windowsHide: true, timeout: 2000 });
+      if (result.status === 0) state = result.stdout?.trim()?.[0];
+    }
+    if (state === 'Z') return 'gone';
+  } catch {}
+  if (!isAgentRecordLive(record)) return 'gone';
   return actual.commandLine.split(/\s+/).some(arg => arg.replace(/^['"]|['"]$/g, '') === `--agent-gen=${record.gen}`)
     ? 'owned' : 'unknown';
 }
@@ -292,9 +292,10 @@ export function stopAgentByRecord(record: AgentRecord, graceMs = 1000): boolean 
     }
     return agentStatus(record) === 'gone';
   };
-  if (!killAgentByRecord(record, 'SIGTERM')) return false;
+  if (!killAgentByRecord(record, 'SIGTERM')) return agentStatus(record) === 'gone';
   if (waitForExit(graceMs)) return true;
-  if (agentStatus(record) !== 'owned') return false;
-  if (!killAgentByRecord(record, 'SIGKILL')) return false;
+  const afterGrace = agentStatus(record);
+  if (afterGrace !== 'owned') return afterGrace === 'gone';
+  if (!killAgentByRecord(record, 'SIGKILL')) return agentStatus(record) === 'gone';
   return waitForExit(graceMs);
 }

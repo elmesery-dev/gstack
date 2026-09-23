@@ -346,6 +346,7 @@ describe('CSO runtime staging gates', () => {
     expect(gate.run).toContain('bun test "${files[@]}"');
     for (const file of [
       'browse/test/terminal-agent-lifecycle.test.ts',
+      'browse/test/terminal-agent-native-observation.test.ts',
       'browse/test/terminal-agent-watchdog.test.ts',
       'browse/test/server-embedder-terminal-port.test.ts',
       'browse/test/server-factory.test.ts',
