@@ -8,9 +8,9 @@ import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
-  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost,
+  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
-import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord } from '../../.github/scripts/run-dia-native-qualification';
+import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, freshQualificationPassed, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
 const root = mkdtempSync(path.join(tmpdir(), 'dia-qualification-test-'));
@@ -486,6 +486,99 @@ with tarfile.open(file, 'w') as out:
     const linked = read(link, uid);
     expect(linked.status).toBe(2);
     expect(linked.stdout).toBe('');
+  });
+
+  test('receipt collection rejects linked ancestors and incomplete JSON without disclosing content', () => {
+    const python = Bun.which('python3');
+    if (!python) throw new Error('Python 3 is required for receipt boundary tests');
+    const directory = realpathSync(mkdtempSync(path.join(root, 'receipt-ancestors-')));
+    const nested = path.join(directory, 'nested');
+    mkdirSync(nested, { mode: 0o700 });
+    const file = path.join(nested, 'receipt.json');
+    writePrivateReceipt(file, { status: 'incomplete' });
+    const linked = path.join(directory, 'linked');
+    symlinkSync(nested, linked, 'dir');
+    const read = (selected: string) => spawnSync(python, ['-I', '-c', PRIVATE_RECEIPT_READ, selected, String(process.getuid!()), directory], {
+      encoding: 'utf8', timeout: 3_000,
+    });
+    expect(read(file).status).toBe(0);
+    const rejected = read(path.join(linked, 'receipt.json'));
+    expect(rejected.status).toBe(2);
+    expect(rejected.stdout).toBe('');
+    writeFileSync(file, '{"synthetic-private-value":');
+    const partial = read(file);
+    expect(partial.status).toBe(2);
+    expect(partial.stdout).toBe('');
+  });
+
+  test('receipt publication is private, atomic, and refuses unintended overwrites or symlink targets', () => {
+    const directory = realpathSync(mkdtempSync(path.join(root, 'atomic-receipt-')));
+    const file = path.join(directory, 'receipt.json');
+    writePrivateReceipt(file, { status: 'incomplete', phase: 'first' });
+    expect(lstatSync(file).mode & 0o777).toBe(0o600);
+    expect(() => writePrivateReceipt(file, { status: 'passed' })).toThrow();
+    expect(JSON.parse(readFileSync(file, 'utf8')).phase).toBe('first');
+    writePrivateReceipt(file, { status: 'incomplete', phase: 'second' }, true);
+    expect(JSON.parse(readFileSync(file, 'utf8')).phase).toBe('second');
+    const link = path.join(directory, 'linked.json');
+    symlinkSync(file, link);
+    expect(() => writePrivateReceipt(link, { status: 'passed' }, true)).toThrow('unsafe_receipt_replacement');
+    expect(JSON.parse(readFileSync(file, 'utf8')).phase).toBe('second');
+    expect(readdirSync(directory).some(name => name.startsWith('.dia-receipt-'))).toBe(false);
+  });
+
+  test('an atomic owner-checked diagnostic receipt is readable while its producer is still alive', async () => {
+    const python = Bun.which('python3');
+    if (!python) throw new Error('Python 3 is required for receipt boundary tests');
+    const directory = realpathSync(mkdtempSync(path.join(root, 'live-receipt-')));
+    const file = path.join(directory, 'receipt.json');
+    const module = pathToFileURL(path.resolve(import.meta.dir, '../../.github/scripts/qualify-dia-macos.ts')).href;
+    const child = Bun.spawn([process.execPath, '--no-env-file', '--no-install', '--no-macros', '--config=/dev/null', '-e', `
+      const { writePrivateReceipt } = await import(${JSON.stringify(module)});
+      writePrivateReceipt(${JSON.stringify(file)}, { status: 'incomplete', reason: 'worker_diagnostic', cleanup: { complete: false } });
+      console.log('ready');
+      setInterval(() => {}, 1000);
+    `], { cwd: directory, env: { HOME: directory, PATH: path.dirname(process.execPath) }, stdout: 'pipe', stderr: 'pipe' });
+    try {
+      const reader = child.stdout.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('ready');
+      reader.releaseLock();
+      expect(child.exitCode).toBeNull();
+      const result = spawnSync(python, ['-I', '-c', PRIVATE_RECEIPT_READ, file, String(process.getuid!()), directory], {
+        encoding: 'utf8', timeout: 3_000,
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ status: 'incomplete', reason: 'worker_diagnostic', cleanup: { complete: false } });
+      expect(child.exitCode).toBeNull();
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+  });
+
+  test('UID process diagnostics preserve zombie/service/browser distinctions without argv or arbitrary names', () => {
+    const facts = uidProcessFacts('20000 301 1 Ss cfprefsd\n20000 302 1 Z bun\n20000 303 301 R Google Chrome for Testing\n20000 304 1 S synthetic-private-value\n501 999 1 S security\n', 20000);
+    expect(facts).toEqual({ available: true, count: 4, zombies: 1, live: 3, truncated: false, processes: [
+      { pid: 301, ppid: 1, state: 'S', basename: 'cfprefsd' }, { pid: 302, ppid: 1, state: 'Z', basename: 'bun' },
+      { pid: 303, ppid: 301, state: 'R', basename: 'Google Chrome for Testing' }, { pid: 304, ppid: 1, state: 'S', basename: 'other' },
+    ] });
+    expect(JSON.stringify(facts)).not.toContain('synthetic-private-value');
+    expect(JSON.stringify(facts)).not.toContain('999');
+    expect(uidProcessFacts('20000 401 1 S cfprefsd\n', 20000).processes[0].pid).toBe(401);
+    expect(uidProcessFacts('20000 402 1 Z+ bun\n', 20000)).toMatchObject({ count: 1, zombies: 1, live: 0 });
+    expect(() => uidProcessFacts('malformed synthetic-private-value', 20000)).toThrow('invalid_uid_process_snapshot');
+    expect(uidProcessFacts(Array.from({ length: 80 }, (_, index) => `20000 ${1000 + index} 1 S bun`).join('\n'), 20000))
+      .toMatchObject({ count: 80, truncated: true });
+    expect(uidProcessFacts(Array.from({ length: 80 }, (_, index) => `20000 ${1000 + index} 1 S bun`).join('\n'), 20000).processes).toHaveLength(64);
+  });
+
+  test('captured passing inner receipts cannot qualify a run with incomplete cleanup', () => {
+    const cleanup = { serviceStopped: true, userProcessesStopped: true, accountRemoved: true, groupRemoved: true, stagingRemoved: true };
+    expect(freshQualificationPassed(0, 'passed', 'passed', cleanup)).toBe(true);
+    for (const key of Object.keys(cleanup)) expect(freshQualificationPassed(0, 'passed', 'passed', { ...cleanup, [key]: false })).toBe(false);
+    expect(freshQualificationPassed(0, 'passed', 'passed', {})).toBe(false);
+    expect(freshQualificationPassed(2, 'passed', 'passed', cleanup)).toBe(false);
+    expect(freshQualificationPassed(0, 'incomplete', 'passed', cleanup)).toBe(false);
   });
 
   test('the registered spawn observer records the actual owned child and closes launch admission', async () => {

@@ -1,11 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { accessSync, chmodSync, constants, copyFileSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
-  playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost } from './qualify-dia-macos';
+  playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
@@ -43,27 +43,65 @@ except Exception:
 `;
 
 export const PRIVATE_RECEIPT_READ = `import json, os, stat, sys
+fds = []
 try:
     file, uid, root = sys.argv[1], int(sys.argv[2]), os.path.realpath(sys.argv[3])
-    if os.path.realpath(file) != file or os.path.commonpath([file, root]) != root:
+    if root != sys.argv[3] or not os.path.isabs(file) or os.path.normpath(file) != file or os.path.commonpath([file, root]) != root:
         raise ValueError()
-    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o022 or info.st_size > 1024**2:
+    parts = os.path.relpath(file, root).split(os.sep)
+    if any(part in ('', '.', '..') for part in parts):
+        raise ValueError()
+    fds.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW))
+    for part in parts[:-1]:
+        fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
+        parent = os.fstat(fds[-1])
+        if parent.st_uid != uid or parent.st_mode & 0o022:
             raise ValueError()
-        data = os.read(fd, 1024**2 + 1)
-        if len(data) > 1024**2:
-            raise ValueError()
-        value = json.loads(data)
-        if not isinstance(value, dict):
-            raise ValueError()
-        print(json.dumps(value))
-    finally:
-        os.close(fd)
+    fds.append(os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fds[-1]))
+    fd = fds[-1]
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_mode & 0o022 or info.st_size > 1024**2:
+        raise ValueError()
+    data = os.read(fd, 1024**2 + 1)
+    after = os.fstat(fd)
+    if len(data) != info.st_size or (info.st_size, info.st_mtime_ns, info.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise ValueError()
+    value = json.loads(data)
+    if not isinstance(value, dict):
+        raise ValueError()
+    print(json.dumps(value))
 except Exception:
     sys.exit(2)
+finally:
+    for fd in reversed(fds):
+        os.close(fd)
 `;
+
+export function uidProcessFacts(output: string, uid: number) {
+  const known = ['bun', 'security', 'osascript', 'launchd', 'cfprefsd', 'trustd', 'distnoted', 'lsd', 'tccd', 'securityd', 'secd', 'usernoted',
+    'UserEventAgent', 'pkd', 'nsurlsessiond', 'containermanagerd', 'Google Chrome for Testing', 'Google Chrome', 'Chromium',
+    'Chromium Helper', 'Dia', 'Dia Helper', 'chrome', 'chrome_crashpad_handler'];
+  const aliases = new Map(known.flatMap(name => [name, name.slice(0, 15), name.slice(0, 16)].map(alias => [alias, name] as const)));
+  const processes: Array<{ pid: number; ppid: number; state: string; basename: string }> = [];
+  for (const line of output.split('\n').filter(line => line.trim())) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+?)\s*$/);
+    if (!match) throw new Error('invalid_uid_process_snapshot');
+    if (Number(match[1]) !== uid) continue;
+    const pid = Number(match[2]);
+    const ppid = Number(match[3]);
+    if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(ppid) || ppid < 0) throw new Error('invalid_uid_process_snapshot');
+    const state = ['I', 'R', 'S', 'T', 'U', 'Z', 'D', 'X'].includes(match[4][0]) ? match[4][0] : 'other';
+    processes.push({ pid, ppid, state, basename: aliases.get(match[5]) ?? 'other' });
+  }
+  return { available: true, count: processes.length, zombies: processes.filter(process => process.state === 'Z').length,
+    live: processes.filter(process => process.state !== 'Z').length, truncated: processes.length > 64, processes: processes.slice(0, 64) };
+}
+
+export function freshQualificationPassed(workerExit: number | undefined, backgroundStatus: unknown, qualificationStatus: unknown, cleanup: Record<string, unknown>): boolean {
+  return workerExit === 0 && backgroundStatus === 'passed' && qualificationStatus === 'passed'
+    && ['serviceStopped', 'userProcessesStopped', 'accountRemoved', 'groupRemoved', 'stagingRemoved'].every(key => cleanup[key] === true)
+    && Object.values(cleanup).every(value => value === true);
+}
 
 interface FreshAccount {
   work: string; home: string; temporary: string; snapshot: string; bun: string; destinationExecutable: string;
@@ -261,16 +299,18 @@ async function freshWorker(configFile: string) {
       if (receipt.browserPreflight.stage === 'runtime_import') receipt.browserPreflight.moduleLoad = playwrightModuleLoadFacts(account.snapshot, error);
       receipt.browserPreflight.ownedRootCount = observer?.children.length ?? 0;
       receipt.browserPreflight.launchAttempts = observer?.attempts ?? [];
-      receipt.browserPreflight.rootStatesBeforeCleanup = (observer?.children ?? []).map(child => ({
-        exitCode: Number.isInteger(child.process.exitCode) ? child.process.exitCode : null,
-        signal: child.process.signalCode == null ? null
-          : ['SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL'].includes(child.process.signalCode) ? child.process.signalCode : 'other',
-      }));
     }
     receipt.initialFailure = { stage: receipt.reason, blocker: receipt.blocker ?? 'native_preflight_failed' };
   } finally {
     cleaning = true;
-    if (receipt.browserPreflight && !receipt.browserPreflight.launchAttempts) receipt.browserPreflight.launchAttempts = observer?.attempts ?? [];
+    if (receipt.browserPreflight) {
+      receipt.browserPreflight.launchAttempts ??= observer?.attempts ?? [];
+      receipt.browserPreflight.rootStatesBeforeCleanup = (observer?.children ?? []).map(child => ({
+        pid: child.pid, exitCode: Number.isInteger(child.process.exitCode) ? child.process.exitCode : null,
+        signal: child.process.signalCode == null ? null
+          : ['SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL'].includes(child.process.signalCode) ? child.process.signalCode : 'other',
+      }));
+    }
     observer?.stop();
     if (context) await limit(context.close().catch(() => {}), 5_000).catch(() => {});
     let stopped = !launchAttempted || observer?.children.length === 1;
@@ -300,9 +340,7 @@ async function freshWorker(configFile: string) {
       } catch { receipt.cleanupFailure = 'probe_keychain_restore_failed'; }
     }
     if (!receipt.cleanup.probeBrowsersStopped || !receipt.cleanup.probeKeychainRestored) { receipt.status = 'incomplete'; receipt.reason = 'background_probe_cleanup_incomplete'; }
-    const update = path.join(account.temporary, 'preflight-' + randomBytes(8).toString('hex') + '.json');
-    writeFileSync(update, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-    renameSync(update, preflightFile);
+    writePrivateReceipt(preflightFile, receipt, true);
   }
   if (receipt.status !== 'passed') return 2;
   const result = spawnSync(account.bun, ['--no-env-file', '--no-install', '--no-macros', '--config=/dev/null',
@@ -447,25 +485,45 @@ export async function runFreshAccountQualification() {
       try { owned = ownsFreshAccount(parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID'])), account); } catch {}
     }
     if (owned && account) {
+      const collect = (phase: string) => {
+        const results: Record<string, string> = {};
+        for (const [name, filename] of [['backgroundPreflight', 'dia-background-preflight.json'], ['qualification', 'dia-native-qualification.json']]) {
+          try {
+            if (!pythonExecutable) throw new Error('receipt_reader_unavailable');
+            const text = rootCommand(pythonExecutable, ['-I', '-c', PRIVATE_RECEIPT_READ, path.join(temporary, filename), String(account!.uid), work], 3_000);
+            if (text.length > 1024 * 1024) throw new Error('oversized_receipt');
+            receipt[name] = JSON.parse(text);
+            results[name] = 'captured';
+          } catch { results[name] = 'unavailable'; }
+        }
+        (receipt.diagnosticCollection ??= {})[phase] = results;
+      };
+      const snapshotProcesses = (phase: string) => {
+        try {
+          const timeout = Math.floor(Math.min(2_000, cleanupDeadline - performance.now()));
+          if (timeout < 1) throw new Error('cleanup_deadline_exhausted');
+          const snapshot = spawnSync('/bin/ps', ['-x', '-u', String(account!.uid), '-o', 'uid=,pid=,ppid=,state=,ucomm='], {
+            env: hostEnv, encoding: 'utf8', timeout, maxBuffer: 128 * 1024,
+          });
+          if (snapshot.error || (snapshot.status !== 0 && !(snapshot.status === 1 && !snapshot.stdout.trim() && !snapshot.stderr.trim()))) throw new Error('uid_process_snapshot_failed');
+          (receipt.uidProcessSnapshots ??= {})[phase] = uidProcessFacts(snapshot.stdout, account!.uid);
+        } catch { (receipt.uidProcessSnapshots ??= {})[phase] = { available: false }; }
+      };
+      collect('before_signal');
+      snapshotProcesses('before_signal');
       try {
         const active = () => run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).some(value => value === String(account!.uid));
         if (active()) {
           try { rootCommand('/usr/bin/pkill', ['-KILL', '-u', String(account.uid)]); } catch {}
           const until = Math.min(cleanupDeadline, performance.now() + 10_000);
+          snapshotProcesses('after_signal');
           while (active() && performance.now() < until) await Bun.sleep(100);
         }
         receipt.launcherCleanup.userProcessesStopped = !active();
       } catch {}
+      snapshotProcesses('after_wait');
+      collect('after_wait');
       if (receipt.launcherCleanup.userProcessesStopped) {
-        for (const [name, filename] of [['backgroundPreflight', 'dia-background-preflight.json'], ['qualification', 'dia-native-qualification.json']]) {
-          const file = path.join(temporary, filename);
-          try {
-            if (!pythonExecutable) throw new Error('receipt_reader_unavailable');
-            const text = rootCommand(pythonExecutable, ['-I', '-c', PRIVATE_RECEIPT_READ, file, String(account.uid), work]);
-            if (text.length > 1024 * 1024) throw new Error('oversized_receipt');
-            receipt[name] = JSON.parse(text);
-          } catch {}
-        }
         try {
           if (!receipt.launcherCleanup.serviceStopped) throw new Error('service_still_loaded');
           const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
@@ -502,10 +560,11 @@ export async function runFreshAccountQualification() {
     if (account) receipt.launcher = { ...receipt.launcher, uid: account.uid, gid: account.gid, accountGuid: account.guid, groupGuid: account.groupGuid, serviceLabel: account.label,
       sourceRevision: account.sourceRevision, archiveSha256: account.archiveSha256, bunSha256: account.bunSha256, destinationSha256: account.destinationSha256 };
     const clean = Object.values(receipt.launcherCleanup).every(value => value === true);
-    receipt.status = workerExit === 0 && receipt.backgroundPreflight?.status === 'passed' && receipt.qualification?.status === 'passed' && clean ? 'passed' : 'incomplete';
+    receipt.workerExitCode = workerExit ?? null;
+    receipt.status = freshQualificationPassed(workerExit, receipt.backgroundPreflight?.status, receipt.qualification?.status, receipt.launcherCleanup) ? 'passed' : 'incomplete';
     if (!clean) receipt.recovery = 'Discard this disposable runner. Do not reuse its account, session, profile, or Keychain.';
     if (receipt.backgroundPreflight?.status !== 'passed' && receipt.backgroundPreflight) receipt.reason = receipt.backgroundPreflight.reason;
-    writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    writePrivateReceipt(output, receipt);
   }
   return receipt;
 }

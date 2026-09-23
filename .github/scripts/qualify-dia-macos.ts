@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync, type ChildProcess } from 'node:child_process';
-import { accessSync, chmodSync, constants, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, createReadStream, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, release } from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,28 @@ import type { BrowserContext } from 'playwright';
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
 export const DIA_DOWNLOAD = 'https://releases.diabrowser.com/release/Dia-latest.dmg';
+
+export function writePrivateReceipt(file: string, value: unknown, replace = false): void {
+  const directory = path.dirname(file);
+  const owner = process.getuid?.();
+  const parent = lstatSync(directory);
+  if (!path.isAbsolute(file) || path.resolve(file) !== file || realpathSync(directory) !== directory
+    || !parent.isDirectory() || parent.uid !== owner || (parent.mode & 0o022) !== 0) throw new Error('unsafe_receipt_directory');
+  if (replace && existsSync(file)) {
+    const previous = lstatSync(file);
+    if (!previous.isFile() || previous.uid !== owner || realpathSync(file) !== file || (previous.mode & 0o022) !== 0) throw new Error('unsafe_receipt_replacement');
+  }
+  const text = JSON.stringify(value, null, 2) + '\n';
+  if (Buffer.byteLength(text) > 1024 * 1024) throw new Error('receipt_too_large');
+  const temporary = path.join(directory, '.dia-receipt-' + randomBytes(12).toString('hex') + '.json');
+  writeFileSync(temporary, text, { mode: 0o600, flag: 'wx' });
+  try {
+    if (replace) renameSync(temporary, file);
+    else linkSync(temporary, file);
+  } finally {
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+}
 
 export function validateQualificationHost(env: NodeJS.ProcessEnv, platform = process.platform, architecture = process.arch): void {
   if (platform !== 'darwin' || architecture !== 'arm64' || env.CI !== 'true' || env.GITHUB_ACTIONS !== 'true'
@@ -523,7 +545,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     if (Object.values(receipt.cleanup).some(value => value !== true)) { receipt.status = 'failed'; receipt.reason = 'cleanup_incomplete'; }
     receipt.counts = { pass: Object.values(receipt.cases).filter(value => value === 'passed').length,
       fail: Object.values(receipt.cases).filter(value => value === 'failed').length, skip: 0 };
-    writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+    writePrivateReceipt(output, receipt);
   }
   return receipt;
 }
@@ -571,7 +593,7 @@ if (import.meta.main) {
         receipt.runAttempt = process.env.GITHUB_RUN_ATTEMPT;
         receipt.supervisor = { completed: false, exitCode: child.status };
         receipt.recovery = 'Discard this disposable runner; do not reuse its Keychain or staged profile.';
-        writeFileSync(output, JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600, flag: existsSync(output) ? 'w' : 'wx' });
+        writePrivateReceipt(output, receipt, existsSync(output));
         console.log(JSON.stringify({ status: 'incomplete', reason: 'qualification_worker_did_not_complete', artifact: 'dia-native-qualification.json' }));
         process.exitCode = 2;
       } else {
