@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, FRESH_WORK_PREFIX, type FreshAccount,
-  joinOwnedBrowserClose, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord,
+  nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord, stopOwnedBrowserGroup,
   playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 export { FRESH_WORK_PREFIX, ownsFreshAccount, parseDirectoryRecord } from './qualify-dia-macos';
 
@@ -480,13 +480,7 @@ async function freshWorker(configFile: string) {
     for (const child of observer?.children ?? []) {
       const until = performance.now() + 5_000;
       try {
-        try { process.kill(-child.pid, 0); process.kill(-child.pid, 'SIGKILL'); } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
-        await joinOwnedBrowserClose(child, until);
-        while (true) {
-          try { process.kill(-child.pid, 0); } catch (error: any) { if (error.code === 'ESRCH') break; throw error; }
-          if (performance.now() >= until) throw new Error('probe_browser_still_live');
-          await Bun.sleep(50);
-        }
+        await stopOwnedBrowserGroup(child, until, {});
       } catch { stopped = false; }
     }
     receipt.cleanup.probeBrowsersStopped = stopped;

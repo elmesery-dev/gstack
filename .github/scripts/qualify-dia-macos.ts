@@ -646,6 +646,48 @@ export async function joinOwnedBrowserClose(child: ReturnType<typeof observeBrow
   if (!child.closeObserved) throw new Error('owned_child_close_unconfirmed');
 }
 
+export async function stopOwnedBrowserGroup(child: ReturnType<typeof observeBrowserLaunches>['children'][number], deadline: number,
+  facts: Record<string, any>, signal: (pid: number, signal: 0 | 'SIGKILL') => unknown = (pid, signal) => process.kill(pid, signal)) {
+  if (!Number.isSafeInteger(child.pid) || child.pid <= 1 || child.pid === process.pid) throw new Error('owned_browser_pid_unconfirmed');
+  if (!Number.isFinite(deadline) || performance.now() >= deadline) throw new Error('cleanup_budget_exhausted');
+  facts.stage = 'probe_before_signal';
+  try {
+    signal(-child.pid, 0);
+    facts.stage = 'signal';
+    signal(-child.pid, 'SIGKILL');
+    facts.signalSent = true;
+  } catch (error: any) {
+    if (error.code !== 'ESRCH') facts.initialSignalFailure = { stage: facts.stage, ...browserCleanupError(error) };
+  }
+  facts.stage = 'join_child_close';
+  await joinOwnedBrowserClose(child, deadline);
+  facts.childCloseObserved = child.closeObserved;
+  facts.stage = 'probe_after_signal';
+  while (true) {
+    try { signal(-child.pid, 0); }
+    catch (error: any) {
+      if (error.code !== 'ESRCH') throw error;
+      facts.absenceConfirmed = true;
+      facts.stage = 'completed';
+      return;
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error('owned_process_group_still_live');
+    await Bun.sleep(Math.min(50, remaining));
+  }
+}
+
+export async function observePendingBrowserLaunch<T>(launch: () => Promise<T>, observe: (deadline: number) => void,
+  deadline: number, delay = 10_000): Promise<T> {
+  const sampleDeadline = Math.min(deadline, performance.now() + 25_000);
+  const timer = setTimeout(() => {
+    if (performance.now() + 1000 >= sampleDeadline) return;
+    observe(sampleDeadline);
+  }, delay);
+  try { return await launch(); }
+  finally { clearTimeout(timer); }
+}
+
 export function classifyNativeWaitSample(output: string) {
   const families = {
     security_keychain: /\b(?:SecKeychain\w*|SecItem\w*|securityd|Security)\b|libsecurity_keychain/,
@@ -659,17 +701,28 @@ export function classifyNativeWaitSample(output: string) {
   let mainThreadSeen = false;
   let mainThread = false;
   let frames = 0;
+  const shape = { graphLines: 0, nonemptyGraphLines: 0, threadTokenLines: 0, numericPrefixLines: 0, imageAnnotatedLines: 0,
+    nonAsciiGraphLines: 0, unrecognizedGraphLines: 0, graphEnd: 'missing', binaryImagesSeen: /^Binary Images:/m.test(output) };
   if (Buffer.byteLength(output) > 1024 * 1024) return { available: false, reason: 'sample_output_oversized' };
   for (const line of output.split('\n')) {
-    if (/^Call graph:\s*$/.test(line)) { callGraphSeen = true; continue; }
+    if (/^Call graph:\s*$/.test(line)) { callGraphSeen = true; shape.graphEnd = 'eof'; continue; }
     if (!callGraphSeen) continue;
-    if (/^(?:Total number in stack|Sort by top of stack|Binary Images:)/.test(line)) break;
+    if (/^(?:Total number in stack|Sort by top of stack|Binary Images:)/.test(line)) {
+      shape.graphEnd = line.startsWith('Binary Images:') ? 'binary_images' : line.startsWith('Total number') ? 'totals' : 'top_of_stack';
+      break;
+    }
+    shape.graphLines++;
+    if (line.trim()) shape.nonemptyGraphLines++;
+    if (/\bThread[_\s]/.test(line)) shape.threadTokenLines++;
+    if (/^\s*\d+\s/.test(line)) shape.numericPrefixLines++;
+    if (/\(in [^)]+\)/.test(line)) shape.imageAnnotatedLines++;
+    if (/[^\x00-\x7f]/.test(line)) shape.nonAsciiGraphLines++;
     if (/^\s*\d+\s+Thread_/.test(line)) {
       mainThread = /\bcom\.apple\.main-thread\b/.test(line);
       mainThreadSeen ||= mainThread;
       continue;
     }
-    if (!/^\s*[+|:! ]*\d+\s+\S/.test(line)) continue;
+    if (!/^\s*[+|:! ]*\d+\s+\S/.test(line)) { if (line.trim()) shape.unrecognizedGraphLines++; continue; }
     frames++;
     for (const [name, pattern] of Object.entries(families)) {
       if (!pattern.test(line)) continue;
@@ -677,7 +730,7 @@ export function classifyNativeWaitSample(output: string) {
       if (mainThread) mainThreadFrameCounts[name]++;
     }
   }
-  return { available: callGraphSeen && frames > 0, callGraphSeen, mainThreadSeen, frames, frameCounts, mainThreadFrameCounts };
+  return { available: callGraphSeen && frames > 0, callGraphSeen, mainThreadSeen, frames, frameCounts, mainThreadFrameCounts, shape };
 }
 
 export function sampleOwnedDiaWait(child: ReturnType<typeof observeBrowserLaunches>['children'][number], uid: number, expectedExecutable: string,
@@ -717,7 +770,9 @@ export function sampleOwnedDiaWait(child: ReturnType<typeof observeBrowserLaunch
     }
     result.waitFamilies = classifyNativeWaitSample(stdout);
     result.available = result.waitFamilies.available;
-    result.reason = result.available ? 'sampled' : 'sample_format_unavailable';
+    result.reason = result.available ? 'sampled' : result.waitFamilies.reason ?? (!result.waitFamilies.callGraphSeen ? 'sample_call_graph_missing'
+      : result.waitFamilies.shape.nonemptyGraphLines === 0 ? 'sample_graph_empty'
+        : result.waitFamilies.shape.unrecognizedGraphLines === 0 ? 'sample_no_stack_frames' : 'sample_graph_unrecognized');
   } catch { result.reason = 'sampling_unavailable_or_budget_exhausted'; }
   return result;
 }
@@ -772,7 +827,6 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
   let profileOwnership: ReturnType<typeof createOwnedDiaProfile> | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let browserRole: 'source' | 'destination' | undefined;
-  let sourceExecutable: string | undefined;
   const attemptStarts: Partial<Record<'source' | 'destination', number>> = {};
   const receipt: Record<string, any> = {
     status: 'incomplete', reason: 'not_run', runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -861,7 +915,6 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     if (!executableName || path.basename(executableName) !== executableName) throw new Error('invalid_bundle_executable');
     const executable = realpathSync(path.join(app, 'Contents/MacOS', executableName));
     if (!executable.startsWith(realpathSync(app) + path.sep)) throw new Error('bundle_executable_escape');
-    sourceExecutable = executable;
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
       signatureVerified: true, gatekeeperNotarized: true };
     stage = 'signed_app_architecture';
@@ -936,7 +989,18 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     sourceFacts.stage = 'launch';
     attemptStarts.source = observer.attempts.length;
     launchAttempts++;
-    source = await within(() => chromium.launchPersistentContext(sourceProfile, nativeDiaLaunchOptions(executable, environment)), 40_000);
+    sourceFacts.nativeWait = { available: false, attempted: false, reason: 'launch_settled_before_sample_or_window_expired' };
+    source = await observePendingBrowserLaunch(
+      () => within(() => chromium.launchPersistentContext(sourceProfile, nativeDiaLaunchOptions(executable, environment)), 40_000),
+      sampleDeadline => {
+        try {
+          const children = observer!.children.filter(child => child.executable === executable);
+          sourceFacts.nativeWait = children.length === 1
+            ? sampleOwnedDiaWait(children[0], account.uid, executable, sampleDeadline, environment)
+            : { available: false, attempted: false, reason: 'source_root_ownership_unconfirmed' };
+          sourceFacts.nativeWait.phase = 'launch_pending_before_timeout';
+        } catch { sourceFacts.nativeWait = { available: false, attempted: false, reason: 'sampling_observer_failed' }; }
+      }, deadline);
     sourceFacts.launchReturned = true;
     sourceFacts.stage = 'ownership';
     sourceFacts.ownedRootCount = observer.children.filter(child => child.executable === executable).length;
@@ -1037,11 +1101,6 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       facts.error = browserPreflightError(error, stderrReasons);
       receipt.blocker = facts.error;
       if (facts.stage === 'runtime_import') facts.moduleLoad = playwrightModuleLoadFacts(repository, error);
-      if (browserRole === 'source' && facts.stage === 'launch' && facts.timedOut && !facts.launchReturned && facts.error === 'operation_timeout') {
-        facts.nativeWait = children.length === 1 && sourceExecutable
-          ? sampleOwnedDiaWait(children[0], account.uid, sourceExecutable, deadline, environment)
-          : { available: false, reason: 'source_root_ownership_unconfirmed', attempted: false };
-      }
     }
     if (error instanceof Error && error.message === 'onboarding_or_external_page') receipt.blocker = 'onboarding_or_unexpected_startup_page';
     if (error instanceof Error && error.message === 'preexisting_browser_state_refused') receipt.blocker = 'preexisting_browser_state_refused';
@@ -1086,23 +1145,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       receipt.browsers[role].cleanup.groups.push(group);
       const until = Math.min(cleanupDeadline, performance.now() + 5_000);
       try {
-        try {
-          process.kill(-child.pid, 0);
-          group.stage = 'signal';
-          process.kill(-child.pid, 'SIGKILL');
-          group.signalSent = true;
-        } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
-        group.stage = 'join_child_close';
-        await joinOwnedBrowserClose(child, until);
-        group.childCloseObserved = child.closeObserved;
-        group.stage = 'probe_after_signal';
-        while (true) {
-          try { process.kill(-child.pid, 0); }
-          catch (error: any) { if (error.code === 'ESRCH') { group.absenceConfirmed = true; break; } throw error; }
-          if (performance.now() >= until) throw new Error('owned_process_group_still_live');
-          await Bun.sleep(50);
-        }
-        group.stage = 'completed';
+        await stopOwnedBrowserGroup(child, until, group);
       } catch (error) {
         stopped = false;
         group.childCloseObserved = child.closeObserved;

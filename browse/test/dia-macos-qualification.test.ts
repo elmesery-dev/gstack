@@ -9,7 +9,8 @@ import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserOperationTimedOut, browserPreflightError, browserRootFacts,
   browserStartupCategory, browserStartupFacts, browserStderrFacts, browserStderrReasons, captureUserKeychains, classifyNativeWaitSample, createBrowserStderrCapture, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands,
-  hasSandboxDisablingArgument, inspectMachOArchitectures, joinOwnedBrowserClose, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches, sampleOwnedDiaWait,
+  hasSandboxDisablingArgument, inspectMachOArchitectures, joinOwnedBrowserClose, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches,
+  observePendingBrowserLaunch, sampleOwnedDiaWait, stopOwnedBrowserGroup,
   observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
   qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
@@ -551,11 +552,47 @@ Binary Images:
     const result = classifyNativeWaitSample(output);
     expect(result).toEqual({ available: true, callGraphSeen: true, mainThreadSeen: true, frames: 4,
       frameCounts: { security_keychain: 1, appkit_bootstrap: 1, network: 1, runloop: 1 },
-      mainThreadFrameCounts: { security_keychain: 1, appkit_bootstrap: 1, network: 0, runloop: 1 } });
+      mainThreadFrameCounts: { security_keychain: 1, appkit_bootstrap: 1, network: 0, runloop: 1 },
+      shape: { graphLines: 6, nonemptyGraphLines: 6, threadTokenLines: 2, numericPrefixLines: 2, imageAnnotatedLines: 4,
+        nonAsciiGraphLines: 0, unrecognizedGraphLines: 0, graphEnd: 'totals', binaryImagesSeen: true } });
     expect(JSON.stringify(result)).not.toContain('private');
     expect(JSON.stringify(result)).not.toContain('SecKeychain');
     expect(classifyNativeWaitSample('private missing call graph').available).toBe(false);
     expect(classifyNativeWaitSample('x'.repeat(1024 * 1024 + 1))).toEqual({ available: false, reason: 'sample_output_oversized' });
+  });
+
+  test('sample structure distinguishes an empty graph from unrecognized stack rows without exposing text', () => {
+    const empty = classifyNativeWaitSample('Call graph:\n\nTotal number in stack:\nBinary Images:\nprivate-image');
+    expect(empty).toMatchObject({ available: false, frames: 0, callGraphSeen: true,
+      shape: { graphLines: 1, nonemptyGraphLines: 0, unrecognizedGraphLines: 0, graphEnd: 'totals', binaryImagesSeen: true } });
+    const unfamiliar = classifyNativeWaitSample('Call graph:\n ◇ private-row (in Security)\nBinary Images:\nprivate-image');
+    expect(unfamiliar).toMatchObject({ available: false, frames: 0,
+      shape: { nonemptyGraphLines: 1, unrecognizedGraphLines: 1, nonAsciiGraphLines: 1, imageAnnotatedLines: 1, graphEnd: 'binary_images' } });
+    expect(JSON.stringify(unfamiliar)).not.toContain('private');
+    expect(JSON.stringify(unfamiliar)).not.toContain('Security');
+  });
+
+  test('a pending launch is sampled once with a deadline before the native launch timeout', async () => {
+    let resolve!: (value: string) => void;
+    const pending = new Promise<string>(done => { resolve = done; });
+    const started = performance.now();
+    const deadlines: number[] = [];
+    const result = await observePendingBrowserLaunch(() => pending, deadline => { deadlines.push(deadline); resolve('ready'); }, started + 60_000, 5);
+    expect(result).toBe('ready');
+    expect(deadlines).toHaveLength(1);
+    expect(deadlines[0]).toBeLessThan(started + 30_000);
+    expect(deadlines[0]).toBeGreaterThan(started + 24_000);
+  });
+
+  test('settled launches cancel sampling and exhausted sampling windows do not extend the launch', async () => {
+    let observations = 0;
+    const observe = () => { observations++; };
+    expect(await observePendingBrowserLaunch(async () => 'ready', observe, performance.now() + 60_000, 5)).toBe('ready');
+    const original = new Error('original_launch_failure');
+    await expect(observePendingBrowserLaunch(async () => { throw original; }, observe, performance.now() + 60_000, 5)).rejects.toBe(original);
+    expect(await observePendingBrowserLaunch(async () => { await Bun.sleep(10); return 'ready'; }, observe, performance.now() + 100, 0)).toBe('ready');
+    await Bun.sleep(10);
+    expect(observations).toBe(0);
   });
 
   test('native wait sampling uses only the observed live child and never writes a stack artifact', () => {
@@ -619,6 +656,39 @@ Binary Images:
       .rejects.toThrow('cleanup_budget_exhausted');
   });
 
+  for (const phase of ['probe', 'signal']) {
+    test(`an initial ${phase} error is retained while child reaping still precedes the final absence proof`, async () => {
+      const facts: Record<string, any> = { signalSent: false, absenceConfirmed: false };
+      const child: any = { pid: 12345, closeObserved: false };
+      child.closed = Promise.resolve().then(() => { child.closeObserved = true; });
+      const calls: Array<0 | 'SIGKILL'> = [];
+      await stopOwnedBrowserGroup(child, performance.now() + 1000, facts, (_pid, signal) => {
+        calls.push(signal);
+        if (!child.closeObserved) {
+          if (phase === 'signal' && signal === 0) return;
+          throw Object.assign(new Error('private-probe-error'), { code: 'EPERM', errno: 1 });
+        }
+        throw Object.assign(new Error('gone'), { code: 'ESRCH' });
+      });
+      expect(calls).toEqual(phase === 'probe' ? [0, 0] : [0, 'SIGKILL', 0]);
+      expect(facts).toMatchObject({ stage: 'completed', signalSent: false, childCloseObserved: true, absenceConfirmed: true,
+        initialSignalFailure: { stage: phase === 'probe' ? 'probe_before_signal' : 'signal', code: 'EPERM', errno: 1 } });
+      expect(JSON.stringify(facts)).not.toContain('private-probe-error');
+    });
+  }
+
+  test('permission errors and zombies never replace the required child close and actual group absence', async () => {
+    const facts = { signalSent: false, absenceConfirmed: false };
+    const waiting: any = { pid: 12345, closed: new Promise(() => {}), closeObserved: false };
+    const denied = () => { throw Object.assign(new Error('denied'), { code: 'EPERM' }); };
+    await expect(stopOwnedBrowserGroup(waiting, performance.now() + 10, facts, denied)).rejects.toThrow('operation_timeout');
+    expect(facts.absenceConfirmed).toBe(false);
+    const closed: any = { pid: 12345, closed: Promise.resolve(), closeObserved: true };
+    await expect(stopOwnedBrowserGroup(closed, performance.now() + 1000, facts, denied)).rejects.toMatchObject({ code: 'EPERM' });
+    expect(facts.absenceConfirmed).toBe(false);
+    await expect(stopOwnedBrowserGroup(closed, performance.now() + 10, facts, () => {})).rejects.toThrow('owned_process_group_still_live');
+    expect(facts.absenceConfirmed).toBe(false);
+  });
   for (const [error, category] of [
     [new Error('browserType.launchPersistentContext: browser_launch_policy_rejected synthetic-private-value'), 'launch_policy_rejected'],
     [new Error('background_browser_ownership_failed'), 'ownership_unconfirmed'],
@@ -1529,9 +1599,10 @@ with tarfile.open(file, 'w') as out:
       const owned = observer.children[0];
       expect(owned.closeObserved).toBe(false);
       const until = performance.now() + 5_000;
-      process.kill(-owned.pid, 'SIGKILL');
-      await joinOwnedBrowserClose(owned, until);
+      const facts: Record<string, any> = { signalSent: false, absenceConfirmed: false };
+      await stopOwnedBrowserGroup(owned, until, facts);
       expect(owned.closeObserved).toBe(true);
+      expect(facts).toMatchObject({ signalSent: true, childCloseObserved: true, absenceConfirmed: true });
       let absent = false;
       while (performance.now() < until) {
         try { process.kill(-owned.pid, 0); }
