@@ -10,7 +10,7 @@ import {
   allowedFixturePage, assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
-import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
+import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed, inspectUserDomain,
   ownedUserDomainTarget, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
@@ -430,6 +430,114 @@ describe('Dia macOS CI qualification safety', () => {
     expect(classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n subdomains = { gui/23456 }\n}', stderr: '' }).hasGuiDomain).toBe(true);
     expect(classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n session = Aqua\n}', stderr: '' }).hasGuiDomain).toBe(true);
     expect(classifyUserDomain(23456, { status: 0, stdout: 'user/501 = { }', stderr: '' }).state).toBe('unavailable');
+  });
+
+  test('domain structure retains counts and creator correlation, never arbitrary labels or environment values', () => {
+    const stdout = `user/23456 = {
+\ttype = user
+\thandle = 23456
+\tactive count = 3
+\ton-demand count = 0
+\tservice count = 2
+\tactive service count = 1
+\texternal activation count = 0
+\tin-progress bootstraps = 0
+\tpended requests = 0
+\tcreator = launchctl.4567
+\tcreator euid = 0
+\tenvironment = {
+\t\tsynthetic-private-variable => synthetic-private-value
+\t\tservice count = 999
+\t}
+\tservices = {
+\t\t234 0 synthetic-private-service
+\t\t0 0 synthetic-private-job
+\t}
+\tsubdomains = {
+\t\tsynthetic-private-child
+\t}
+\tunmanaged processes = {
+\t}
+\tendpoints = {}
+}`;
+    const observation = classifyUserDomain(23456, { status: 0, stdout, stderr: '' }, 4567);
+    expect(observation.structure).toMatchObject({ complete: true, type: 'user', handleMatchesUid: true, creator: 'launchctl', creatorIsProbe: true,
+      counts: { 'service count': 2, 'active service count': 1, 'creator euid': 0, 'in-progress bootstraps': 0 },
+      sectionNonemptyLines: { services: 2, subdomains: 1, 'unmanaged processes': 0, endpoints: 0, jobs: null } });
+    expect(JSON.stringify(observation)).not.toContain('synthetic-private');
+    expect(JSON.stringify(observation)).not.toContain('4567');
+    expect(classifyUserDomain(23456, { status: 0, stdout, stderr: '' }, 4568).structure?.creatorIsProbe).toBe(false);
+    expect(classifyUserDomain(23456, { status: 0, stdout, stderr: '' }).structure?.creatorIsProbe).toBeNull();
+    expect(classifyUserDomain(23456, { status: 0, stdout: stdout.replace('launchctl.4567', 'synthetic-private-creator.4567'), stderr: '' }, 4567).structure?.creator).toBe('other');
+  });
+
+  test('missing, malformed, duplicate, and incomplete domain facts never become empty-baseline evidence', () => {
+    const minimal = 'user/23456 = {\n\ttype = user\n\thandle = 23456\n}';
+    const observation = classifyUserDomain(23456, { status: 0, stdout: minimal, stderr: '' });
+    expect(observation.structure?.counts['service count']).toBeNull();
+    expect(observation.structure?.sectionNonemptyLines.services).toBeNull();
+    expect(observation.structure?.creatorIsProbe).toBeNull();
+    for (const stdout of [minimal.slice(0, -1), minimal.replace('\thandle', '\ttype = user\n\thandle'),
+      minimal.replace('\thandle = 23456', '\tservices = {\n\t\tsynthetic-private-service')]) {
+      expect(classifyUserDomain(23456, { status: 0, stdout, stderr: '' }).structure?.complete).toBe(false);
+    }
+    for (const value of ['-1', 'NaN', '1.5', '9007199254740992', 'synthetic-private-value']) {
+      const stdout = minimal.replace('\thandle', '\tservice count = ' + value + '\n\thandle');
+      expect(classifyUserDomain(23456, { status: 0, stdout, stderr: '' }).structure?.counts['service count']).toBeNull();
+    }
+  });
+
+  test('the registered domain probe binds its creator check to the shell exec PID and bounds the query', () => {
+    const env = { PATH: '/usr/bin:/bin', HOME: root };
+    let called = false;
+    const observation = inspectUserDomain(23456, performance.now() + 10_000, env, ((command: string, args: string[], options: any) => {
+      called = true;
+      expect(command).toBe('/usr/bin/sudo');
+      expect(args).toEqual(['-n', '/bin/sh', '-c', 'printf "GSTACK_DIA_DOMAIN_PROBE_PID=%s\\n" "$$"; exec /bin/launchctl print "$1"',
+        'gstack-dia-domain-probe', 'user/23456']);
+      expect(options.env).toBe(env);
+      expect(options.timeout).toBeGreaterThan(0);
+      expect(options.timeout).toBeLessThanOrEqual(3_000);
+      expect(Number.isInteger(options.timeout)).toBe(true);
+      expect(options.maxBuffer).toBe(1024 * 1024);
+      return { status: 0, stdout: 'GSTACK_DIA_DOMAIN_PROBE_PID=4567\nuser/23456 = {\n\ttype = user\n\tcreator = launchctl.4567\n}', stderr: '' };
+    }) as typeof spawnSync);
+    expect(called).toBe(true);
+    expect(observation.state).toBe('present');
+    expect(observation.structure?.creatorIsProbe).toBe(true);
+    expect(JSON.stringify(observation)).not.toContain('GSTACK_DIA_DOMAIN_PROBE_PID');
+  });
+
+  test('domain probe failures preserve unknown state instead of manufacturing absence or creator ownership', () => {
+    for (const result of [
+      { status: 0, stdout: 'user/23456 = {\n\ttype = user\n}', stderr: '' },
+      { status: 0, stdout: 'GSTACK_DIA_DOMAIN_PROBE_PID=9007199254740992\nuser/23456 = {\n\ttype = user\n}', stderr: '' },
+      { status: 113, stdout: '', stderr: 'Could not find domain for user uid: 23456' },
+      { status: null, stdout: null, stderr: null, error: new Error('synthetic-private-error') },
+    ]) {
+      const observation = inspectUserDomain(23456, performance.now() + 10_000, {}, (() => result) as typeof spawnSync);
+      expect(observation.state).toBe('unavailable');
+      expect(observation.structure).toBeUndefined();
+      expect(JSON.stringify(observation)).not.toContain('synthetic-private');
+    }
+    expect(inspectUserDomain(23456, performance.now() + 10_000, {}, (() => ({ status: 113,
+      stdout: 'GSTACK_DIA_DOMAIN_PROBE_PID=4567\n', stderr: 'Could not find domain for user uid: 23456' })) as typeof spawnSync).state).toBe('absent');
+    const never = (() => { throw new Error('must_not_spawn'); }) as typeof spawnSync;
+    expect(() => inspectUserDomain(0, performance.now() + 10_000, {}, never)).toThrow('invalid_fresh_user_domain');
+    for (const deadline of [0, NaN, Infinity]) expect(() => inspectUserDomain(23456, deadline, {}, never)).toThrow('fresh_launcher_deadline');
+  });
+
+  test('the domain probe PID protocol survives real shell exec without logging the PID or child output', () => {
+    const fixture = path.join(root, 'domain-probe.cjs');
+    writeFileSync(fixture, 'process.stdout.write("user/23456 = {\\n\\ttype = user\\n\\tcreator = launchctl." + process.pid + "\\n}");');
+    const observation = inspectUserDomain(23456, performance.now() + 10_000, { PATH: '/usr/bin:/bin', HOME: root },
+      ((_command: string, args: string[], options: any) => spawnSync('/bin/sh', ['-c',
+        args[3].replace('/bin/launchctl print "$1"', '"$1" "$2"'), args[4], process.execPath, fixture],
+      { ...options, timeout: 3_000 })) as typeof spawnSync);
+    expect(observation.state).toBe('present');
+    expect(observation.structure?.creatorIsProbe).toBe(true);
+    expect(observation.structure?.complete).toBe(true);
+    expect(JSON.stringify(observation)).not.toContain('GSTACK_DIA_DOMAIN_PROBE_PID');
   });
 
   test('user-domain teardown is bound to the new account and its pre-creation absence proof', () => {

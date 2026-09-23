@@ -18,9 +18,18 @@ interface UserDomainObservation {
   exitCode: number | null;
   stdoutBytes: number;
   stderrBytes: number;
+  structure?: {
+    complete: boolean;
+    type: 'user' | 'other' | 'unavailable';
+    handleMatchesUid: boolean | null;
+    creator: 'launchctl' | 'other' | 'unavailable';
+    creatorIsProbe: boolean | null;
+    counts: Record<string, number | null>;
+    sectionNonemptyLines: Record<string, number | null>;
+  };
 }
 
-export function classifyUserDomain(uid: number, result: { status: number | null; stdout: string; stderr: string; error?: unknown }): UserDomainObservation {
+export function classifyUserDomain(uid: number, result: { status: number | null; stdout: string; stderr: string; error?: unknown }, probePid?: number): UserDomainObservation {
   if (!Number.isSafeInteger(uid) || uid < 20_000 || uid >= 60_000) throw new Error('invalid_fresh_user_domain');
   const text = result.stdout.trimStart();
   const diagnostic = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
@@ -28,10 +37,60 @@ export function classifyUserDomain(uid: number, result: { status: number | null;
   const present = !result.error && result.status === 0
     && (text.startsWith('user/' + uid + ' = {') || text.startsWith('com.apple.xpc.launchd.domain.user.' + uid + ' = {'));
   const absent = !result.error && Number.isInteger(result.status) && result.status! > 0 && missing.test(diagnostic);
-  return { uid, state: present ? 'present' : absent ? 'absent' : 'unavailable',
+  const observation: UserDomainObservation = { uid, state: present ? 'present' : absent ? 'absent' : 'unavailable',
     hasGuiDomain: present && (new RegExp('\\bgui/' + uid + '(?:\\b|/)').test(text) || /\bsession\s*=\s*Aqua\b/.test(text)
       || new RegExp('com\\.apple\\.xpc\\.launchd\\.user\\.domain\\.' + uid + '\\.\\d+\\.Aqua\\b').test(text)),
     exitCode: result.status, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) };
+  if (!present || observation.stdoutBytes > 1024 * 1024) return observation;
+  const lines = text.trimEnd().split('\n');
+  const indent = lines.find(line => /^\s+type = \S+\s*$/.test(line))?.match(/^(\s+)/)?.[1];
+  const fields = new Map<string, string>();
+  const sections: Record<string, number | null> = Object.fromEntries(['services', 'jobs', 'subdomains', 'unmanaged processes', 'endpoints',
+    'externally-hosted endpoints', 'pending requests', 'pending attachments'].map(key => [key, null]));
+  let complete = Boolean(indent) && lines.at(-1) === '}';
+  for (let index = 1; indent && index < lines.length - 1; index++) {
+    const line = lines[index];
+    if (!line.trim()) continue;
+    if (!line.startsWith(indent) || /^\s/.test(line.slice(indent.length))) { complete = false; break; }
+    const entry = line.slice(indent.length).match(/^([^=]+?) = (.*)$/);
+    if (!entry || fields.has(entry[1])) { complete = false; break; }
+    fields.set(entry[1], entry[2]);
+    if (entry[2] === '{') {
+      let nonemptyLines = 0;
+      while (++index < lines.length - 1 && lines[index] !== indent + '}') {
+        if (lines[index].trim()) nonemptyLines++;
+      }
+      if (index >= lines.length - 1) { complete = false; break; }
+      if (Object.hasOwn(sections, entry[1])) sections[entry[1]] = nonemptyLines;
+    } else if (entry[2] === '{}' && Object.hasOwn(sections, entry[1])) sections[entry[1]] = 0;
+  }
+  const counts = Object.fromEntries(['active count', 'on-demand count', 'service count', 'active service count', 'external activation count',
+    'in-progress bootstraps', 'pended requests', 'creator euid'].map(key => {
+    const value = fields.get(key);
+    return [key, value && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : null];
+  }));
+  const creatorPid = fields.get('creator')?.match(/^launchctl\.(\d+)$/)?.[1];
+  observation.structure = { complete, type: fields.has('type') ? fields.get('type') === 'user' ? 'user' : 'other' : 'unavailable',
+    handleMatchesUid: fields.has('handle') ? fields.get('handle') === String(uid) : null,
+    creator: creatorPid ? 'launchctl' : fields.has('creator') ? 'other' : 'unavailable',
+    creatorIsProbe: creatorPid && Number.isSafeInteger(probePid) && probePid! > 0 ? Number(creatorPid) === probePid : null,
+    counts, sectionNonemptyLines: sections };
+  return observation;
+}
+
+export function inspectUserDomain(uid: number, deadline: number, env: Record<string, string>, spawn: typeof spawnSync = spawnSync): UserDomainObservation {
+  if (!Number.isSafeInteger(uid) || uid < 20_000 || uid >= 60_000) throw new Error('invalid_fresh_user_domain');
+  if (!Number.isFinite(deadline)) throw new Error('fresh_launcher_deadline');
+  const timeout = Math.floor(Math.min(3_000, deadline - performance.now()));
+  if (!Number.isFinite(timeout) || timeout < 1) throw new Error('fresh_launcher_deadline');
+  const result = spawn('/usr/bin/sudo', ['-n', '/bin/sh', '-c', 'printf "GSTACK_DIA_DOMAIN_PROBE_PID=%s\\n" "$$"; exec /bin/launchctl print "$1"',
+    'gstack-dia-domain-probe', 'user/' + uid], { env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
+  const stdout = typeof result.stdout === 'string' ? result.stdout : '';
+  const stderr = typeof result.stderr === 'string' ? result.stderr : '';
+  const prefix = stdout.match(/^GSTACK_DIA_DOMAIN_PROBE_PID=([1-9]\d*)\n/);
+  const pid = prefix ? Number(prefix[1]) : undefined;
+  return classifyUserDomain(uid, { ...result, stdout: prefix ? stdout.slice(prefix[0].length) : stdout, stderr,
+    error: result.error || (!Number.isSafeInteger(pid) ? new Error('domain_probe_pid_unavailable') : undefined) }, pid);
 }
 
 export const ARCHIVE_CHECK = `import json, posixpath, sys, tarfile, unicodedata
@@ -420,13 +479,17 @@ export async function runFreshAccountQualification() {
     launcherCleanup: { serviceStopped: false, userDomainStopped: false, userProcessesStopped: false, accountRemoved: false, groupRemoved: false, stagingRemoved: false } };
   let workerExit: number | undefined;
   let pythonExecutable: string | undefined;
-  const probeUserDomain = (uid: number) => {
-    const timeout = Math.floor(Math.min(3_000, (cleanupDeadline || deadline) - performance.now()));
-    if (timeout < 1) throw new Error('fresh_launcher_deadline');
-    const result = spawnSync('/usr/bin/sudo', ['-n', '/bin/launchctl', 'print', 'user/' + uid], {
-      env: hostEnv, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
-    });
-    return classifyUserDomain(uid, result);
+  const probeUserDomain = (uid: number) => inspectUserDomain(uid, cleanupDeadline || deadline, hostEnv);
+  const snapshotProcesses = (phase: string, uid: number) => {
+    try {
+      const timeout = Math.floor(Math.min(2_000, (cleanupDeadline || deadline) - performance.now()));
+      if (timeout < 1) throw new Error('cleanup_deadline_exhausted');
+      const snapshot = spawnSync('/bin/ps', ['-x', '-u', String(uid), '-o', 'uid=,pid=,ppid=,state=,ucomm='], {
+        env: hostEnv, encoding: 'utf8', timeout, maxBuffer: 128 * 1024,
+      });
+      if (snapshot.error || (snapshot.status !== 0 && !(snapshot.status === 1 && !snapshot.stdout.trim() && !snapshot.stderr.trim()))) throw new Error('uid_process_snapshot_failed');
+      (receipt.uidProcessSnapshots ??= {})[phase] = uidProcessFacts(snapshot.stdout, uid);
+    } catch { (receipt.uidProcessSnapshots ??= {})[phase] = { available: false }; }
   };
   try {
     rootCommand('/usr/bin/true', []);
@@ -469,8 +532,11 @@ export async function runFreshAccountQualification() {
     while (used.has(uid) && uid < 60_000) uid++;
     if (uid >= 60_000) throw new Error('fresh_uid_unavailable');
     stage = 'fresh_user_domain_preflight';
+    snapshotProcesses('candidate_before_domain_probe', uid);
     domainBeforeCreation = probeUserDomain(uid);
     receipt.userDomain = { beforeCreation: domainBeforeCreation };
+    if (domainBeforeCreation.state === 'present') receipt.userDomain.repeatedPrecreationQuery = probeUserDomain(uid);
+    snapshotProcesses('candidate_after_domain_probe', uid);
     if (domainBeforeCreation.state !== 'absent') throw new Error('fresh_user_domain_not_absent');
     const configFile = path.join(work, 'account.json');
     const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'GITHUB_RUN_ID',
@@ -546,20 +612,9 @@ export async function runFreshAccountQualification() {
         }
         (receipt.diagnosticCollection ??= {})[phase] = results;
       };
-      const snapshotProcesses = (phase: string) => {
-        try {
-          const timeout = Math.floor(Math.min(2_000, cleanupDeadline - performance.now()));
-          if (timeout < 1) throw new Error('cleanup_deadline_exhausted');
-          const snapshot = spawnSync('/bin/ps', ['-x', '-u', String(account!.uid), '-o', 'uid=,pid=,ppid=,state=,ucomm='], {
-            env: hostEnv, encoding: 'utf8', timeout, maxBuffer: 128 * 1024,
-          });
-          if (snapshot.error || (snapshot.status !== 0 && !(snapshot.status === 1 && !snapshot.stdout.trim() && !snapshot.stderr.trim()))) throw new Error('uid_process_snapshot_failed');
-          (receipt.uidProcessSnapshots ??= {})[phase] = uidProcessFacts(snapshot.stdout, account!.uid);
-        } catch { (receipt.uidProcessSnapshots ??= {})[phase] = { available: false }; }
-      };
       const active = () => run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).some(value => value === String(account!.uid));
       collect('before_signal');
-      snapshotProcesses('before_signal');
+      snapshotProcesses('before_signal', account.uid);
       let domainOwnershipConfirmed = false;
       try {
         if (!receipt.launcherCleanup.serviceStopped) throw new Error('service_still_loaded');
@@ -577,18 +632,18 @@ export async function runFreshAccountQualification() {
         receipt.userDomain.afterTeardown = probeUserDomain(account.uid);
         receipt.launcherCleanup.userDomainStopped = receipt.userDomain.afterTeardown.state === 'absent';
       } catch { (receipt.userDomain ??= {}).teardownRefusedOrUnconfirmed = true; }
-      snapshotProcesses('after_domain_teardown');
+      snapshotProcesses('after_domain_teardown', account.uid);
       try {
         if (!domainOwnershipConfirmed) throw new Error('user_domain_ownership_unconfirmed');
         if (active()) {
           try { rootCommand('/usr/bin/pkill', ['-KILL', '-u', String(account.uid)]); } catch {}
           const until = Math.min(cleanupDeadline, performance.now() + 10_000);
-          snapshotProcesses('after_signal');
+          snapshotProcesses('after_signal', account.uid);
           while (active() && performance.now() < until) await Bun.sleep(100);
         }
         receipt.launcherCleanup.userProcessesStopped = !active();
       } catch {}
-      snapshotProcesses('after_wait');
+      snapshotProcesses('after_wait', account.uid);
       if (domainOwnershipConfirmed) {
         try {
           receipt.userDomain.afterWait = probeUserDomain(account.uid);
