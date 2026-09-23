@@ -16,6 +16,7 @@ import { decodeNativeCommandLine } from './fixtures/native-cookie-process-observ
 
 const root = mkdtempSync(path.join(tmpdir(), 'cookie-job-'));
 const resolvedRoot = realpathSync(root);
+const initialRootState = lstatSync(root, { bigint: true });
 const fixtureChildren = new Set<ChildProcess>();
 
 function ownFixtureChild<T extends ChildProcess>(child: T): T {
@@ -48,31 +49,37 @@ function fixtureFileOwners(file: string, timeout = 5_000): object {
   catch { return { available: false, reason: 'owner_probe_no_receipt', exitCode: result.status }; }
 }
 
-function clearOwnedFixtureContents(fixture: string, identity: { path: string; dev: bigint; ino: bigint }): void {
+function clearOwnedFixtureContents(fixture: string, identity: { path: string; dev: bigint; ino: bigint }, listEntries: (directory: string) => string[] = readdirSync): void {
   const before = lstatSync(fixture, { bigint: true });
   if (before.isSymbolicLink() || realpathSync(fixture) !== identity.path || before.dev !== identity.dev || before.ino !== identity.ino) {
     throw new Error('Native fixture root identity changed');
   }
   const ownerProbeDeadline = Date.now() + 5_000;
-  for (const entry of readdirSync(fixture)) {
+  for (const entry of listEntries(fixture)) {
     const child = path.join(fixture, entry);
-    const state = lstatSync(child);
-    if (state.isSymbolicLink()) {
-      unlinkSync(child);
-      continue;
-    }
-    const relative = path.relative(identity.path, realpathSync(child));
-    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native fixture entry is outside its owned root');
-    const ownersBeforeDelete = state.isFile() && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/i.test(entry)
-      ? Date.now() < ownerProbeDeadline ? fixtureFileOwners(child, Math.max(1, ownerProbeDeadline - Date.now())) : { available: false, reason: 'owner_probe_budget_exhausted' }
-      : undefined;
-    if (ownersBeforeDelete) console.log(JSON.stringify({ nativeFixtureBeforeDelete: { file: path.relative(resolvedRoot, child), owners: ownersBeforeDelete } }));
-    try { rmSync(child, { recursive: true, force: true }); }
-    catch (error) {
-      console.error(JSON.stringify({ nativeFixtureFileLock: {
-        file: path.relative(resolvedRoot, child), code: (error as NodeJS.ErrnoException).code, ownersBeforeDelete,
-        ownersAfterFailure: state.isFile() ? fixtureFileOwners(child) : undefined,
-      } }));
+    try {
+      const state = lstatSync(child);
+      if (state.isSymbolicLink()) {
+        unlinkSync(child);
+        continue;
+      }
+      const relative = path.relative(identity.path, realpathSync(child));
+      if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native fixture entry is outside its owned root');
+      const ownersBeforeDelete = state.isFile() && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\.tmp$/i.test(entry)
+        ? Date.now() < ownerProbeDeadline ? fixtureFileOwners(child, Math.max(1, ownerProbeDeadline - Date.now())) : { available: false, reason: 'owner_probe_budget_exhausted' }
+        : undefined;
+      if (ownersBeforeDelete) console.log(JSON.stringify({ nativeFixtureBeforeDelete: { file: path.relative(resolvedRoot, child), owners: ownersBeforeDelete } }));
+      try { rmSync(child, { recursive: true, force: true }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        console.error(JSON.stringify({ nativeFixtureFileLock: {
+          file: path.relative(resolvedRoot, child), code: (error as NodeJS.ErrnoException).code, ownersBeforeDelete,
+          ownersAfterFailure: state.isFile() ? fixtureFileOwners(child) : undefined,
+        } }));
+        throw error;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
       throw error;
     }
   }
@@ -110,9 +117,19 @@ afterAll(() => {
     console.error(JSON.stringify({ nativeFixtureCleanup: { code: (error as NodeJS.ErrnoException).code, pendingChildCloses: fixtureChildren.size, rootVerified, rootMode, remaining: entries,
       fileOwners: lockedFile ? { file: lockedFile.path, owners: fixtureFileOwners(path.join(root, lockedFile.path)) } : undefined,
     } }));
+    const node = Bun.which('node');
+    if (rootVerified && node) {
+      const comparison = spawnSync(node, [path.resolve(import.meta.dir, 'fixtures/native-cookie-remove-fixture.cjs'), Buffer.from(JSON.stringify({
+        root, realpath: resolvedRoot, dev: initialRootState.dev.toString(), ino: initialRootState.ino.toString(),
+      })).toString('base64')], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout: 5_000, windowsHide: true, maxBuffer: 65536 });
+      let evidence: object;
+      try { evidence = JSON.parse(comparison.stdout); }
+      catch { evidence = { removed: false, reason: 'node_cleanup_no_receipt', exitCode: comparison.status }; }
+      console.error(JSON.stringify({ nativeFixtureNodeCleanupComparison: evidence }));
+    }
     throw error;
   }
-});
+}, 15_000);
 
 const request: NativeCookieRequest = {
   nodeExecutable: 'C:\\fixture\\node.exe',
@@ -304,6 +321,56 @@ describe('owned native-cookie lifecycle', () => {
     expect(() => clearOwnedFixtureContents(fixture, { path: realpathSync(fixture), dev: state.dev, ino: state.ino + 1n })).toThrow('identity changed');
     expect(readFileSync(marker, 'utf8')).toBe('fixture-only');
   });
+
+  test('a contents reset accepts an entry that disappears after enumeration without retrying it', () => {
+    const fixture = mkdtempSync(path.join(root, 'disappearing-entry-'));
+    const state = lstatSync(fixture, { bigint: true });
+    const identity = { path: realpathSync(fixture), dev: state.dev, ino: state.ino };
+    const disappearing = path.join(fixture, '00000000-0000-0000-0000-000000000000.tmp');
+    writeFileSync(disappearing, 'fixture-only');
+    writeFileSync(path.join(fixture, 'remaining'), 'fixture-only');
+    let listings = 0;
+    clearOwnedFixtureContents(fixture, identity, directory => {
+      listings++;
+      const entries = readdirSync(directory);
+      unlinkSync(disappearing);
+      return entries;
+    });
+    expect(listings).toBe(1);
+    expect(readdirSync(fixture)).toEqual([]);
+    const after = lstatSync(fixture, { bigint: true });
+    expect(after.dev).toBe(identity.dev);
+    expect(after.ino).toBe(identity.ino);
+  });
+
+  test('a contents reset still rejects a nonempty postcondition', () => {
+    const fixture = mkdtempSync(path.join(root, 'nonempty-reset-'));
+    const state = lstatSync(fixture, { bigint: true });
+    writeFileSync(path.join(fixture, 'preserved'), 'fixture-only');
+    expect(() => clearOwnedFixtureContents(fixture, { path: realpathSync(fixture), dev: state.dev, ino: state.ino }, () => [])).toThrow('empty root');
+    expect(readFileSync(path.join(fixture, 'preserved'), 'utf8')).toBe('fixture-only');
+  });
+
+  test('the Node cleanup comparison refuses changed identity and removes only its owned fixture', () => {
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for cleanup comparison');
+    const fixture = mkdtempSync(path.join(root, 'node-cleanup-'));
+    const state = lstatSync(fixture, { bigint: true });
+    const marker = path.join(fixture, 'preserved');
+    writeFileSync(marker, 'fixture-only');
+    const invoke = (ino: bigint) => spawnSync(node, [path.resolve(import.meta.dir, 'fixtures/native-cookie-remove-fixture.cjs'), Buffer.from(JSON.stringify({
+      root: fixture, realpath: realpathSync(fixture), dev: state.dev.toString(), ino: ino.toString(),
+    })).toString('base64')], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout: 5_000, windowsHide: true });
+    const refused = invoke(state.ino + 1n);
+    expect(refused.status).toBe(1);
+    expect(JSON.parse(refused.stdout).reason).toBe('identity_mismatch');
+    expect(readFileSync(marker, 'utf8')).toBe('fixture-only');
+    const removed = invoke(state.ino);
+    expect(removed.status).toBe(0);
+    expect(JSON.parse(removed.stdout).removed).toBe(true);
+    expect(existsSync(fixture)).toBe(false);
+    expect(existsSync(root)).toBe(true);
+  }, 15_000);
 
   test('success is withheld until the entire job is empty and member exits', async () => {
     const run = simulation({ reply: { cookies: [] }, exitAt: 200 });
