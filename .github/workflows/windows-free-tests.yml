@@ -137,3 +137,32 @@ jobs:
           name: windows-free-test-shard-logs
           path: ${{ runner.temp }}/gstack-free-test-*.log
           if-no-files-found: ignore
+
+  cookie-native-qualification:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.18.0
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: Build the qualified Node server inputs
+        run: bash browse/scripts/build-node-server.sh
+        shell: bash
+      - name: Qualify owned native cookie extraction
+        run: bun --no-env-file --no-install --no-macros --config=NUL browse/test/cookie-import-native-qualification.ts "$env:RUNNER_TEMP"
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cookie-native-qualification
+          path: ${{ runner.temp }}/cookie-native-qualification-*/
+          if-no-files-found: error

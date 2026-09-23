@@ -21,22 +21,14 @@ allowed-tools:
 
 # Setup Browser Cookies
 
-Import logged-in sessions from your real Chromium browser into the headless browse session.
-
-## CDP mode check
-
-First, check if browse is already connected to the user's real browser:
-```bash
-$B status 2>/dev/null | grep -q "Mode: cdp" && echo "CDP_MODE=true" || echo "CDP_MODE=false"
-```
-If `CDP_MODE=true`: tell the user "Not needed — you're connected to your real browser via CDP. Your cookies and sessions are already available." and stop. No cookie import needed.
+Copy selected cookies into gstack's fallback browser. Aside stays first: when it is ready, use its existing sessions instead. Importing cookies alone does not prove sign-in.
 
 ## How it works
 
 1. Find the browse binary
 2. Run `cookie-import-browser` to detect installed browsers and open the picker UI
-3. User selects which cookie domains to import in their browser
-4. Cookies are decrypted and loaded into the Playwright session
+3. User selects the source browser, account/profile, and cookie domains
+4. Report copying separately from any requested authentication check
 
 ## Steps
 
@@ -44,45 +36,47 @@ If `CDP_MODE=true`: tell the user "Not needed — you're connected to your real 
 
 {{BROWSE_SETUP}}
 
+Check whether the fallback is already connected to the user's real browser:
+```bash
+$B status 2>/dev/null | grep -q "Mode: cdp" && echo "CDP_MODE=true" || echo "CDP_MODE=false"
+```
+If `CDP_MODE=true`, stop: the real browser's sessions are already available.
+
 ### 2. Open the cookie picker
+
+If a target site is known, navigate there first. Keep that target tab open and unchanged during import, storage reset, or verification.
 
 ```bash
 $B cookie-import-browser
 ```
 
-This auto-detects installed Chromium browsers and opens
-an interactive picker UI in your default browser where you can:
-- Switch between installed browsers
-- Search domains
-- Click "+" to import a domain's cookies
-- Click trash to remove imported cookies
+The picker detects supported browsers: Chrome, Chromium, Brave, Edge, and macOS-only Comet, Arc, and Dia. Ask the user to confirm the source browser and account/profile, then select domains. Profile labels prefer the current `Local State` name; directory labels such as `Default` or `Profile 2` distinguish duplicate names. An unreadable profile is unknown, not empty. Never silently choose between plausible accounts or treat the legacy Comet default as the user's choice.
 
-Tell the user: **"Cookie picker opened — select the domains you want to import in your browser, then tell me when you're done."**
+Tell the user: **"Cookie picker opened. Select your browser, profile, and domains, then tell me when you're done."** The opening link is one-use and expires after five minutes; rerun the command if it expires.
 
 ### 3. Direct import (alternative)
 
-If the user specifies a domain directly (e.g., `/setup-browser-cookies github.com`), skip the UI:
+Skip the picker only when the source browser and profile are settled. Navigate to a matching target first. Example, after the user selects Chrome's `Profile 2`:
 
 ```bash
-$B cookie-import-browser comet --domain github.com
+$B goto https://example.com
+$B cookie-import-browser chrome --domain example.com --profile "Profile 2"
 ```
 
-Replace `comet` with the appropriate browser if specified.
+Substitute the actual selected browser, profile directory, and site. `--profile` takes a directory, not the display name. If omitted, only an unambiguous relevant profile is selected; otherwise use the picker. `--all` imports all non-expired cookies from the selected profile only with explicit user consent; it cannot accompany `--domain` or `--clear-storage`.
 
-### 4. Verify
+### 4. Report import and authentication separately
 
-After the user confirms they're done:
+Read the import receipt or picker status, not raw `$B cookies` output. Report imported/failed counts, partial/zero/error outcomes, and reset status. **Imported, not checked** means cookies were copied but sign-in is unknown. **Not verified** means a requested check failed. Never call the session ready based on cookie counts or HTTP 200.
 
-```bash
-$B cookies
-```
+`--verify-auth` (or the picker's explicit checkbox) reloads the captured target and requires one visible element whose whitespace-normalized text exactly matches the expected identity on the same origin with a successful response. Have the user configure `GSTACK_COOKIE_AUTH_SELECTOR` and `GSTACK_COOKIE_AUTH_EXPECTED_IDENTITY` privately in the daemon environment **before startup**. Do not invent values or assume setting them on a CLI call changes a running daemon. Missing configuration errors before cookie or storage mutation. Without configuration, leave verification off and report **not checked**; only report **verified** with positive target evidence.
 
-Show the user a summary of imported cookies (domain counts).
+Storage is preserved by default. Offer `--clear-storage` only for suspected stale storage on a Chromium target and obtain explicit approval: it clears the captured origin's localStorage (shared by that origin across tabs in the context) and the target tab's sessionStorage. It runs in an isolated world with a native deadline; other target engines reject reset without affecting ordinary imports or auth checks. It does not reset sibling origins, other tabs' sessionStorage, IndexedDB, or service workers. Never auto-approve it; report partial reset failures without claiming rollback.
 
 ## Notes
 
-- On macOS, the first import per browser may trigger a Keychain dialog — click "Allow" / "Always Allow"
+- On macOS, the first import per browser may prompt for Keychain permission; the user decides whether to allow it. Dia is macOS-only.
 - On Linux, `v11` cookies may require `secret-tool`/libsecret access; `v10` cookies use Chromium's standard fallback key
-- Cookie picker is served on the same port as the browse server (no extra process)
-- Only domain names and cookie counts are shown in the UI — no cookie values are exposed
-- The browse session persists cookies between commands, so imported cookies work immediately
+- Windows supports DPAPI-compatible cookies, not every App-Bound Encryption cookie. Native extraction remains disabled pending qualification. Closing Chrome does not defeat Chrome 136+ default-user-data-directory protection, including numbered profiles. No TCP fallback or copying real profiles; use manual sign-in in gstack's headed browser when a display is available.
+- Treat source/profile labels and session information as sensitive. Never ask for cookie values, passwords, or identity text in public logs; report sanitized outcomes, not raw errors or account text.
+- Imports affect the browser context, not only one tab. The picker shows source/profile, domains, counts, and status, never cookie values. Transient database reads have bounded retries; permission denial requires user action, not repeated prompts.
