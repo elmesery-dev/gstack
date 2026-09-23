@@ -196,7 +196,25 @@ async function main(): Promise<void> {
   if (process.argv[2] === '--member' || process.argv[2] === '--member-smoke') {
     mainStage = 'member_input';
     nativeProgress({ stage: mainStage });
-    const input = JSON.parse(await Bun.stdin.text());
+    const serialized = await new Promise<string>((resolve, reject) => {
+      let payload = '';
+      let bytes = 0;
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', chunk => {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > 1024 * 1024) {
+          reject(new Error('native_supervision_failed'));
+          process.stdin.destroy();
+          return;
+        }
+        payload += chunk;
+      });
+      process.stdin.once('end', () => resolve(payload));
+      process.stdin.once('error', () => reject(new Error('native_supervision_failed')));
+      process.stdin.once('close', () => reject(new Error('native_supervision_failed')));
+      process.stdin.resume();
+    });
+    const input = JSON.parse(serialized);
     nativeProgress({ stage: 'member_decoded' });
     await joinNativeCookieJob(input.jobName, stage => nativeProgress({ stage }));
     nativeProgress({ stage: 'job_joined' });

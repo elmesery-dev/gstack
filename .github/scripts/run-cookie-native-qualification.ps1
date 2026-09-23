@@ -19,6 +19,15 @@ if ($Child) {
   $registered = [Environment]::ExpandEnvironmentVariables($registered)
   $env:USERPROFILE = $registered
   $env:HOME = $registered
+  $folders = [Microsoft.Win32.Registry]::Users.OpenSubKey("$ExpectedSid\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+  if (-not $folders) { throw 'The new account known-folder registry is unavailable.' }
+  try {
+    $rawLocal = $folders.GetValue('Local AppData', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $rawRoaming = $folders.GetValue('AppData', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    if (-not $rawLocal -or -not $rawRoaming) { throw 'The new account app-data folders are undefined.' }
+    $env:LOCALAPPDATA = [Environment]::ExpandEnvironmentVariables($rawLocal)
+    $env:APPDATA = [Environment]::ExpandEnvironmentVariables($rawRoaming)
+  } finally { $folders.Dispose() }
   $profile = [Environment]::GetFolderPath('UserProfile')
   $local = [Environment]::GetFolderPath('LocalApplicationData', 'DoNotVerify')
   $roaming = [Environment]::GetFolderPath('ApplicationData', 'DoNotVerify')

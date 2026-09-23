@@ -78,6 +78,18 @@ describe('native-cookie production admission', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ error: 'native_supervision_failed', diagnostic: { stage: 'job_open' } });
   });
 
+  test.each([['malformed', '{'], ['oversized', 'x'.repeat(1024 * 1024 + 1)]])('the real member rejects %s input before opening a job', (_name, input) => {
+    const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts'), '--member-smoke'], {
+      env: isolatedEnv(), input, encoding: 'utf8', timeout: 10_000,
+    });
+    const progress = expectNativeProgress(result.stderr);
+    expect(progress).toContainEqual({ stage: 'member_input' });
+    expect(progress).not.toContainEqual({ stage: 'member_decoded' });
+    expect(progress).not.toContainEqual({ stage: 'job_open' });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toEqual({ error: 'native_supervision_failed', diagnostic: { stage: 'member_input' } });
+  });
+
   test.skipIf(process.platform === 'win32')('qualification refuses non-Windows without issuing a receipt', () => {
     const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--config=/dev/null', path.resolve(import.meta.dir, 'cookie-import-native-qualification.ts'), root], {
       env: isolatedEnv(), encoding: 'utf8', timeout: 10_000,
