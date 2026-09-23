@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
-  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, prepareKeychainHome, validateQualificationHost,
+  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost,
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord } from '../../.github/scripts/run-dia-native-qualification';
 
@@ -82,6 +82,44 @@ describe('Dia macOS CI qualification safety', () => {
     expect(JSON.parse(result.stdout)).toEqual({ homeAtStartup: true, profiles: ['Default'], domains: [{ domain: '.fixture.test', count: 1 }] });
   });
 
+  for (const precreate of [false, true]) {
+    test(`late-installed real Playwright loads only with its dependency directory present at startup (${precreate})`, () => {
+      const fixture = realpathSync(mkdtempSync(path.join(root, 'late-playwright-')));
+      const home = path.join(fixture, 'home');
+      const scripts = path.join(fixture, '.github/scripts');
+      const modules = path.join(fixture, 'node_modules');
+      mkdirSync(home);
+      mkdirSync(scripts, { recursive: true });
+      if (precreate) mkdirSync(modules, { mode: 0o700 });
+      writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({ type: 'module', dependencies: { playwright: '1.62.1' } }));
+      const sourceModules = path.resolve(import.meta.dir, '../../node_modules');
+      const worker = path.join(scripts, 'worker.ts');
+      writeFileSync(worker, `
+        import { cpSync, mkdirSync } from 'node:fs';
+        import { createRequire } from 'node:module';
+        const require = createRequire(import.meta.url);
+        mkdirSync(${JSON.stringify(modules)}, { recursive: true });
+        for (const name of ['playwright', 'playwright-core']) cpSync(${JSON.stringify(sourceModules)} + '/' + name, ${JSON.stringify(modules)} + '/' + name, { recursive: true });
+        const version = require(${JSON.stringify(path.join(modules, 'playwright/package.json'))}).version;
+        try {
+          const loaded = await import('playwright');
+          console.log(JSON.stringify({ version, loaded: !!loaded.chromium }));
+        } catch (error) {
+          console.log(JSON.stringify({ version, type: error.name, code: error.code }));
+          process.exitCode = 2;
+        }
+      `);
+      const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros',
+        `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, worker], {
+        cwd: fixture, env: { HOME: home, PATH: path.dirname(process.execPath) }, encoding: 'utf8', timeout: 30_000,
+      });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(precreate ? 0 : 2);
+      expect(JSON.parse(result.stdout)).toEqual(precreate ? { version: '1.62.1', loaded: true }
+        : { version: '1.62.1', type: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND' });
+    });
+  }
+
   test('the download is the published HTTPS Dia release endpoint', () => {
     expect(DIA_DOWNLOAD).toBe('https://releases.diabrowser.com/release/Dia-latest.dmg');
   });
@@ -137,6 +175,10 @@ describe('Dia macOS CI qualification safety', () => {
     [new Error('native_operation_timed_out'), 'operation_timeout'],
     [Object.assign(new Error('synthetic-private-value'), { code: 'ENOENT' }), 'executable_unavailable'],
     [Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' }), 'permission_denied'],
+    [{ name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND', message: 'synthetic-private-value' }, 'module_unavailable'],
+    [Object.assign(new Error('synthetic-private-value'), { code: 'MODULE_NOT_FOUND' }), 'module_unavailable'],
+    [Object.assign(new Error('synthetic-private-value'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' }), 'module_export_unavailable'],
+    [Object.assign(new Error('synthetic-private-value'), { code: 'ERR_REQUIRE_ESM' }), 'module_format_error'],
     [new RangeError('synthetic-private-value'), 'invalid_runtime_range'],
     [new TypeError('synthetic-private-value'), 'runtime_type_error'],
     [new Error('dyld[123]: Library not loaded: synthetic-private-value'), 'dynamic_library_error'],
@@ -153,6 +195,27 @@ describe('Dia macOS CI qualification safety', () => {
       expect(browserPreflightError(error)).not.toContain('synthetic-private-value');
     });
   }
+
+  test('module-load facts retain only known error identifiers and known dependency filenames', () => {
+    const snapshot = realpathSync(mkdtempSync(path.join(root, 'module-facts-')));
+    const packageDirectory = path.join(snapshot, 'node_modules/playwright');
+    mkdirSync(packageDirectory, { recursive: true });
+    writeFileSync(path.join(packageDirectory, 'package.json'), '{}', { mode: 0o600 });
+    const facts = playwrightModuleLoadFacts(snapshot, { name: 'ResolveMessage', code: 'ERR_MODULE_NOT_FOUND',
+      message: "Cannot find package 'playwright' imported from /synthetic-private-value/worker.ts" });
+    expect(facts.errorType).toBe('ResolveMessage');
+    expect(facts.errorCode).toBe('ERR_MODULE_NOT_FOUND');
+    expect(facts.requestedModule).toBe('playwright');
+    expect(facts.files['playwright/package.json']).toEqual({ exists: true, readable: true, ownedByCurrentUid: true, insideSnapshot: true });
+    expect(facts.files['playwright-core/lib/coreBundle.js'].exists).toBe(false);
+    expect(JSON.stringify(facts)).not.toContain('synthetic-private-value');
+    expect(JSON.stringify(facts)).not.toContain(snapshot);
+    const unknown = playwrightModuleLoadFacts(snapshot, { name: 'synthetic-private-value', code: 'synthetic-private-value', message: "Cannot find package 'synthetic-private-value'" });
+    expect(unknown.errorType).toBe('unclassified');
+    expect(unknown.errorCode).toBe('unclassified');
+    expect(unknown.requestedModule).toBe('unclassified');
+    expect(JSON.stringify(unknown)).not.toContain('synthetic-private-value');
+  });
 
   test('Keychain snapshots preserve exact quoted paths without shell parsing', () => {
     expect(parseKeychainPaths('    "/Users/runner/Library/Keychains/login.keychain-db"\n    "/tmp/fixture keychain.keychain-db"\n'))

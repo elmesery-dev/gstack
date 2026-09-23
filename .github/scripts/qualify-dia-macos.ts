@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync, type ChildProcess } from 'node:child_process';
-import { chmodSync, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, constants, createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, release } from 'node:os';
 import path from 'node:path';
@@ -55,6 +55,9 @@ export function browserStartupCategory(value: string): string {
 export function browserPreflightError(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
   const code = (error as { code?: string } | null)?.code;
+  if (['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND'].includes(code ?? '')) return 'module_unavailable';
+  if (code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') return 'module_export_unavailable';
+  if (['ERR_REQUIRE_ESM', 'ERR_UNKNOWN_FILE_EXTENSION', 'ERR_INVALID_PACKAGE_CONFIG'].includes(code ?? '')) return 'module_format_error';
   if (/\bbrowser_launch_policy_rejected\b/.test(message)) return 'launch_policy_rejected';
   if (message === 'background_browser_ownership_failed') return 'ownership_unconfirmed';
   if (message === 'background_browser_startup_page_rejected') return 'startup_page_rejected';
@@ -71,6 +74,32 @@ export function browserPreflightError(error: unknown): string {
   if (/Target page, context or browser has been closed|Browser closed|Target closed/.test(message)) return 'target_closed';
   if (/Protocol error/.test(message)) return 'protocol_error';
   return 'unclassified_browser_error';
+}
+
+export function playwrightModuleLoadFacts(snapshot: string, error: unknown) {
+  const detail = error as { name?: unknown; code?: unknown; message?: unknown } | null;
+  const names = ['Error', 'ResolveMessage', 'BuildMessage', 'SyntaxError', 'TypeError', 'RangeError', 'TimeoutError'];
+  const codes = ['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_PACKAGE_PATH_NOT_EXPORTED', 'ERR_REQUIRE_ESM', 'ERR_UNKNOWN_FILE_EXTENSION',
+    'ERR_INVALID_PACKAGE_CONFIG', 'ENOENT', 'EACCES', 'EPERM', 'ERR_OUT_OF_RANGE'];
+  const message = typeof detail?.message === 'string' ? detail.message : '';
+  const module = ['playwright', 'playwright-core', './lib/bootstrap', './lib/coreBundle']
+    .find(name => message.includes("'" + name + "'") || message.includes('"' + name + '"')) ?? 'unclassified';
+  const files = Object.fromEntries(['playwright/package.json', 'playwright/index.mjs', 'playwright/index.js', 'playwright-core/package.json',
+    'playwright-core/index.mjs', 'playwright-core/index.js', 'playwright-core/lib/bootstrap.js', 'playwright-core/lib/coreBundle.js'].map(name => {
+    const file = path.join(snapshot, 'node_modules', name);
+    const facts = { exists: false, readable: false, ownedByCurrentUid: false, insideSnapshot: false };
+    try {
+      const info = lstatSync(file);
+      facts.exists = true;
+      facts.ownedByCurrentUid = info.uid === process.getuid?.();
+      facts.insideSnapshot = realpathSync(file).startsWith(realpathSync(snapshot) + path.sep);
+      accessSync(file, constants.R_OK);
+      facts.readable = true;
+    } catch {}
+    return [name, facts];
+  }));
+  return { errorType: typeof detail?.name === 'string' && names.includes(detail.name) ? detail.name : 'unclassified',
+    errorCode: typeof detail?.code === 'string' && codes.includes(detail.code) ? detail.code : 'unclassified', requestedModule: module, files };
 }
 
 export function parseKeychainPaths(output: string, allowEmpty = false): string[] {

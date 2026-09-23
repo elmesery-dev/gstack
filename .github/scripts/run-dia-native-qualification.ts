@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
-  prepareKeychainHome, validateQualificationHost } from './qualify-dia-macos';
+  playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
@@ -174,7 +174,7 @@ async function freshWorker(configFile: string) {
   try {
     if (!/^[a-z][a-z0-9]{8,24}$/.test(account.account) || process.getuid?.() !== account.uid || process.geteuid?.() !== account.uid
       || process.getgid?.() !== account.gid || realpathSync(homedir()) !== account.home || realpathSync(account.work) !== account.work) throw new Error('fresh_identity_mismatch');
-    for (const directory of [account.home, account.temporary, account.snapshot, path.dirname(account.bun)]) {
+    for (const directory of [account.home, account.temporary, account.snapshot, path.dirname(account.bun), path.join(account.snapshot, 'node_modules')]) {
       if (!directory.startsWith(account.work + path.sep) || realpathSync(directory) !== directory || lstatSync(directory).uid !== account.uid) throw new Error('fresh_directory_ownership_mismatch');
     }
     const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + account.account, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
@@ -184,6 +184,7 @@ async function freshWorker(configFile: string) {
     if (realpathSync(foundationHome) !== account.home) throw new Error('foundation_home_mismatch');
     receipt.preflight.foundationHome = true;
     receipt.keychainHome = prepareKeychainHome(account.home, account.uid);
+    receipt.dependencyDirectoryPresentBeforeInstall = true;
     for (const executable of [account.bun, account.destinationExecutable]) {
       accessSync(executable, constants.X_OK);
       if (!path.isAbsolute(executable) || realpathSync(executable) !== executable || !executable.startsWith(account.work + path.sep)) throw new Error('staged_executable_escape');
@@ -257,6 +258,7 @@ async function freshWorker(configFile: string) {
     if (receipt.browserPreflight) {
       receipt.blocker = browserPreflightError(error);
       receipt.browserPreflight.error = receipt.blocker;
+      if (receipt.browserPreflight.stage === 'runtime_import') receipt.browserPreflight.moduleLoad = playwrightModuleLoadFacts(account.snapshot, error);
       receipt.browserPreflight.ownedRootCount = observer?.children.length ?? 0;
       receipt.browserPreflight.launchAttempts = observer?.attempts ?? [];
       receipt.browserPreflight.rootStatesBeforeCleanup = (observer?.children ?? []).map(child => ({
@@ -360,6 +362,7 @@ export async function runFreshAccountQualification() {
     const archiveResult = JSON.parse(run(pythonExecutable, ['-I', '-c', ARCHIVE_CHECK, archive], 30_000));
     if (archiveResult.valid !== true) throw new Error('unsafe_source_archive');
     run('/usr/bin/tar', ['--no-same-owner', '--no-same-permissions', '-xf', archive, '-C', snapshot], 30_000);
+    mkdirSync(path.join(snapshot, 'node_modules'), { mode: 0o700 });
     const sourceBun = realpathSync(process.execPath);
     const bun = path.join(bin, 'bun');
     copyFileSync(sourceBun, bun);
