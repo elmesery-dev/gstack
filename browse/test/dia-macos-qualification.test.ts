@@ -7,7 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
+  allowedFixturePage, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, prepareKeychainHome, validateQualificationHost,
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord } from '../../.github/scripts/run-dia-native-qualification';
@@ -109,6 +109,50 @@ describe('Dia macOS CI qualification safety', () => {
     authenticated.password = 'fixture';
     expect(allowedFixturePage(authenticated.href, origin)).toBe(false);
   });
+
+  test('startup diagnostics classify pages without exposing URLs or broadening admission', () => {
+    const pages = [
+      ['about:blank', 'blank'], ['about:blank#synthetic-private-value', 'other_about'],
+      ['chrome://newtab/?token=synthetic-private-value', 'chromium_new_tab'],
+      ['chrome://new-tab-page/', 'chromium_new_tab'], ['chrome://intro/', 'chromium_onboarding'],
+      ['chrome://welcome/', 'chromium_onboarding'], ['chrome://settings/', 'chromium_internal'],
+      ['dia://onboarding', 'dia_internal'], ['chrome-extension://fixture/path', 'extension'],
+      ['https://fixture.invalid/login?token=synthetic-private-value', 'external_web'],
+      ['http://127.0.0.1:8123' + '/fixture', 'loopback_web'], ['file:///synthetic-private-value', 'file'],
+      ['data:text/html,synthetic-private-value', 'data'], ['invalid synthetic-private-value', 'invalid'],
+    ];
+    const categories = pages.map(([url]) => browserStartupCategory(url));
+    expect(categories).toEqual(pages.map(([, category]) => category));
+    expect(JSON.stringify(categories)).not.toContain('synthetic-private-value');
+    expect(JSON.stringify(categories)).not.toContain('fixture.invalid');
+    for (const [url] of pages.slice(1, 10)) expect(allowedFixturePage(url, 'http://127.0.0.1:8123')).toBe(false);
+  });
+
+  for (const [error, category] of [
+    [new Error('browserType.launchPersistentContext: browser_launch_policy_rejected synthetic-private-value'), 'launch_policy_rejected'],
+    [new Error('background_browser_ownership_failed'), 'ownership_unconfirmed'],
+    [new Error('background_browser_startup_page_rejected'), 'startup_page_rejected'],
+    [new Error('background_browser_render_failed'), 'render_mismatch'],
+    [Object.assign(new Error('synthetic-private-value'), { name: 'TimeoutError' }), 'operation_timeout'],
+    [new Error('native_operation_timed_out'), 'operation_timeout'],
+    [Object.assign(new Error('synthetic-private-value'), { code: 'ENOENT' }), 'executable_unavailable'],
+    [Object.assign(new Error('synthetic-private-value'), { code: 'EACCES' }), 'permission_denied'],
+    [new RangeError('synthetic-private-value'), 'invalid_runtime_range'],
+    [new TypeError('synthetic-private-value'), 'runtime_type_error'],
+    [new Error('dyld[123]: Library not loaded: synthetic-private-value'), 'dynamic_library_error'],
+    [new Error('code signature invalid: synthetic-private-value'), 'code_signing_error'],
+    [new Error('ProcessSingleton synthetic-private-value'), 'browser_profile_unavailable'],
+    [new Error('bootstrap_check_in failed synthetic-private-value'), 'graphics_or_bootstrap_error'],
+    [new Error('Target page, context or browser has been closed synthetic-private-value'), 'target_closed'],
+    [new Error('Protocol error: synthetic-private-value'), 'protocol_error'],
+    [new Error('synthetic-private-value'), 'unclassified_browser_error'],
+    [{ code: 'synthetic-private-value', message: 'synthetic-private-value' }, 'unclassified_browser_error'],
+  ] as const) {
+    test(`browser diagnostics return only the allowlisted ${category} category`, () => {
+      expect(browserPreflightError(error)).toBe(category);
+      expect(browserPreflightError(error)).not.toContain('synthetic-private-value');
+    });
+  }
 
   test('Keychain snapshots preserve exact quoted paths without shell parsing', () => {
     expect(parseKeychainPaths('    "/Users/runner/Library/Keychains/login.keychain-db"\n    "/tmp/fixture keychain.keychain-db"\n'))
@@ -420,6 +464,13 @@ with tarfile.open(file, 'w') as out:
       expect(observer.children).toHaveLength(1);
       expect(observer.children[0].executable).toBe(executable);
       expect(observer.children[0].pid).toBeGreaterThan(1);
+      expect(observer.attempts).toHaveLength(1);
+      expect(observer.attempts[0]).toEqual({ admissionOpen: true, argumentsArray: true, pipeFlag: true, profileArgumentCount: 1,
+        expectedProfile: true, detached: true, shellDisabled: true, stdioCount: 5, extraPipeDescriptors: true,
+        headlessFlag: true, blankStartupArgument: true, tcpDebuggingFlag: false, mockKeychainFlag: false,
+        passwordStoreFlag: false, firstRunSuppressed: false });
+      expect(JSON.stringify(observer.attempts)).not.toContain(executable);
+      expect(JSON.stringify(observer.attempts)).not.toContain(profile);
       const page = context.pages()[0] ?? await context.newPage();
       await page.setContent('<div id="fixture">isolated browser smoke</div>');
       expect(await page.locator('#fixture').innerText()).toBe('isolated browser smoke');

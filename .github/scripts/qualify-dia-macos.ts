@@ -33,6 +33,46 @@ export function allowedFixturePage(url: string, origin: string): boolean {
   catch { return false; }
 }
 
+export function browserStartupCategory(value: string): string {
+  if (value === 'about:blank') return 'blank';
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'about:') return 'other_about';
+    if (url.protocol === 'chrome:' || url.protocol === 'chrome-untrusted:') {
+      if (['newtab', 'new-tab-page'].includes(url.hostname)) return 'chromium_new_tab';
+      if (['intro', 'welcome', 'first-run', 'signin', 'sync-confirmation', 'profile-picker'].includes(url.hostname)) return 'chromium_onboarding';
+      return 'chromium_internal';
+    }
+    if (url.protocol === 'dia:') return 'dia_internal';
+    if (url.protocol === 'chrome-extension:') return 'extension';
+    if (['http:', 'https:'].includes(url.protocol)) return ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ? 'loopback_web' : 'external_web';
+    if (url.protocol === 'file:') return 'file';
+    if (url.protocol === 'data:') return 'data';
+    return 'other_scheme';
+  } catch { return 'invalid'; }
+}
+
+export function browserPreflightError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  const code = (error as { code?: string } | null)?.code;
+  if (/\bbrowser_launch_policy_rejected\b/.test(message)) return 'launch_policy_rejected';
+  if (message === 'background_browser_ownership_failed') return 'ownership_unconfirmed';
+  if (message === 'background_browser_startup_page_rejected') return 'startup_page_rejected';
+  if (message === 'background_browser_render_failed') return 'render_mismatch';
+  if ((error instanceof Error && error.name === 'TimeoutError') || message === 'native_operation_timed_out') return 'operation_timeout';
+  if (code === 'ENOENT' || /Executable doesn't exist|spawn .* ENOENT/.test(message)) return 'executable_unavailable';
+  if (['EACCES', 'EPERM'].includes(code ?? '') || /spawn .* EACCES/.test(message)) return 'permission_denied';
+  if (code === 'ERR_OUT_OF_RANGE' || (error instanceof Error && error.name === 'RangeError')) return 'invalid_runtime_range';
+  if (error instanceof Error && error.name === 'TypeError') return 'runtime_type_error';
+  if (/Library not loaded:|dyld(?:\[\d+\])?:|no suitable image found/i.test(message)) return 'dynamic_library_error';
+  if (/code signature (?:invalid|not valid)|mapped file has no cdhash|library load disallowed by system policy|CODESIGNING/i.test(message)) return 'code_signing_error';
+  if (/ProcessSingleton|SingletonLock|profile.*in use/i.test(message)) return 'browser_profile_unavailable';
+  if (/WindowServer|CGSConnection|audit session|bootstrap_check_in/i.test(message)) return 'graphics_or_bootstrap_error';
+  if (/Target page, context or browser has been closed|Browser closed|Target closed/.test(message)) return 'target_closed';
+  if (/Protocol error/.test(message)) return 'protocol_error';
+  return 'unclassified_browser_error';
+}
+
 export function parseKeychainPaths(output: string, allowEmpty = false): string[] {
   const paths = output.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
     const value = JSON.parse(line);
@@ -140,9 +180,23 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
   const childProcess = require('node:child_process');
   const original = childProcess.spawn;
   const children: Array<{ process: ChildProcess; executable: string; pid: number }> = [];
+  const attempts: Array<Record<string, number | boolean | null>> = [];
   let accepting = true;
   childProcess.spawn = function(command: string, args: string[], options: any) {
     if (!expected.has(command)) return original.call(this, command, args, options);
+    const argumentsArray = Array.isArray(args);
+    attempts.push({ admissionOpen: accepting, argumentsArray, pipeFlag: argumentsArray && args.includes('--remote-debugging-pipe'),
+      profileArgumentCount: argumentsArray ? args.filter(arg => arg.startsWith('--user-data-dir')).length : null,
+      expectedProfile: argumentsArray && args.includes('--user-data-dir=' + expected.get(command)),
+      detached: options?.detached === true, shellDisabled: options?.shell === undefined || options.shell === false,
+      stdioCount: Array.isArray(options?.stdio) ? options.stdio.length : null,
+      extraPipeDescriptors: Array.isArray(options?.stdio) && options.stdio[3] === 'pipe' && options.stdio[4] === 'pipe',
+      headlessFlag: argumentsArray && args.some(arg => /^--headless(?:=|$)/.test(arg)),
+      blankStartupArgument: argumentsArray && args.includes('about:blank'),
+      tcpDebuggingFlag: argumentsArray && args.some(arg => /^--remote-debugging-port(?:=|$)/.test(arg)),
+      mockKeychainFlag: argumentsArray && args.some(arg => /^--use-mock-keychain(?:=|$)/.test(arg)),
+      passwordStoreFlag: argumentsArray && args.some(arg => /^--password-store(?:=|$)/.test(arg)),
+      firstRunSuppressed: argumentsArray && args.some(arg => /^--no-first-run(?:=|$)/.test(arg)) });
     if (!accepting || !Array.isArray(args) || !args.includes('--remote-debugging-pipe')
       || args.filter(arg => arg.startsWith('--user-data-dir')).length !== 1 || !args.includes('--user-data-dir=' + expected.get(command))
       || options?.detached !== true || (options.shell !== undefined && options.shell !== false) || !Array.isArray(options?.stdio)
@@ -154,7 +208,7 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
     if (child.pid) children.push({ process: child, executable: command, pid: child.pid });
     return child;
   };
-  return { children, stop() { accepting = false; }, restore() { childProcess.spawn = original; } };
+  return { children, attempts, stop() { accepting = false; }, restore() { childProcess.spawn = original; } };
 }
 
 async function sha256(file: string): Promise<string> {

@@ -4,7 +4,7 @@ import { accessSync, chmodSync, constants, copyFileSync, createReadStream, exist
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
+import { browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
   prepareKeychainHome, validateQualificationHost } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
@@ -210,16 +210,41 @@ async function freshWorker(configFile: string) {
     receipt.keychainObservations = { ...observed, preferencesFileExists: existsSync(path.join(account.home, 'Library/Preferences/com.apple.security.plist')) };
     if (!observed.searchPathMatches || !observed.defaultPathMatches || !observed.explicitReadMatches) throw new Error('native_keychain_probe_failed');
     receipt.preflight.keychain = true;
-    receipt.reason = 'background_headless_chromium_preflight';
+    receipt.browserPreflight = { stage: 'runtime_import', launchReturned: false, ownedRootCount: 0,
+      startupPageCount: null, startupPageCategories: [], pageSelected: false, contentSet: false, readbackMatched: false };
+    receipt.reason = 'background_browser_runtime_import';
     const { chromium } = await import('playwright');
     const profile = path.join(probe, 'chromium');
     observer = observeBrowserLaunches(new Map([[account.destinationExecutable, profile]]));
     launchAttempted = true;
+    receipt.browserPreflight.stage = 'launch';
+    receipt.reason = 'background_browser_launch';
     context = await limit(chromium.launchPersistentContext(profile, nativeDiaLaunchOptions(account.destinationExecutable, env)), 40_000);
-    if (observer.children.length !== 1 || context.pages().some((page: any) => page.url() !== 'about:blank')) throw new Error('background_browser_ownership_or_startup_failed');
-    const page = context.pages()[0] ?? await limit(context.newPage(), 5_000);
+    receipt.browserPreflight.launchReturned = true;
+    receipt.browserPreflight.stage = 'ownership';
+    receipt.reason = 'background_browser_ownership';
+    receipt.browserPreflight.ownedRootCount = observer.children.length;
+    if (observer.children.length !== 1) throw new Error('background_browser_ownership_failed');
+    receipt.browserPreflight.stage = 'startup_pages';
+    receipt.reason = 'background_browser_startup_pages';
+    const pages = context.pages();
+    const startupUrls = pages.map((page: any) => page.url());
+    receipt.browserPreflight.startupPageCount = pages.length;
+    receipt.browserPreflight.startupPageCategories = startupUrls.map(browserStartupCategory);
+    if (startupUrls.some((url: string) => url !== 'about:blank')) throw new Error('background_browser_startup_page_rejected');
+    receipt.browserPreflight.stage = 'page_selection';
+    receipt.reason = 'background_browser_page_selection';
+    const page = pages[0] ?? await limit(context.newPage(), 5_000);
+    receipt.browserPreflight.pageSelected = true;
+    receipt.browserPreflight.stage = 'content_set';
+    receipt.reason = 'background_browser_content_set';
     await limit(page.setContent('<div id="fixture">background browser ready</div>'), 5_000);
-    if (await limit(page.locator('#fixture').innerText(), 5_000) !== 'background browser ready') throw new Error('background_browser_render_failed');
+    receipt.browserPreflight.contentSet = true;
+    receipt.browserPreflight.stage = 'readback';
+    receipt.reason = 'background_browser_readback';
+    receipt.browserPreflight.readbackMatched = await limit(page.locator('#fixture').innerText(), 5_000) === 'background browser ready';
+    if (!receipt.browserPreflight.readbackMatched) throw new Error('background_browser_render_failed');
+    receipt.browserPreflight.stage = 'completed';
     receipt.preflight.headlessChromium = true;
     receipt.status = 'passed';
     receipt.reason = 'background_session_ready';
@@ -229,13 +254,21 @@ async function freshWorker(configFile: string) {
       'foundation_home_mismatch', 'staged_executable_escape', 'staged_executable_changed', 'pinned_runtime_mismatch',
       'user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'keychain_outside_owned_home_refused',
       'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed'].includes(error.message)) receipt.blocker = error.message;
-    if (receipt.reason === 'background_headless_chromium_preflight') {
-      receipt.blocker = 'background_headless_unavailable_gui_session_may_be_required';
-      receipt.graphicsSessionError = /WindowServer|CGSConnection|audit session|bootstrap_check_in/i.test(error instanceof Error ? error.message : '');
+    if (receipt.browserPreflight) {
+      receipt.blocker = browserPreflightError(error);
+      receipt.browserPreflight.error = receipt.blocker;
+      receipt.browserPreflight.ownedRootCount = observer?.children.length ?? 0;
+      receipt.browserPreflight.launchAttempts = observer?.attempts ?? [];
+      receipt.browserPreflight.rootStatesBeforeCleanup = (observer?.children ?? []).map(child => ({
+        exitCode: Number.isInteger(child.process.exitCode) ? child.process.exitCode : null,
+        signal: child.process.signalCode == null ? null
+          : ['SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL'].includes(child.process.signalCode) ? child.process.signalCode : 'other',
+      }));
     }
     receipt.initialFailure = { stage: receipt.reason, blocker: receipt.blocker ?? 'native_preflight_failed' };
   } finally {
     cleaning = true;
+    if (receipt.browserPreflight && !receipt.browserPreflight.launchAttempts) receipt.browserPreflight.launchAttempts = observer?.attempts ?? [];
     observer?.stop();
     if (context) await limit(context.close().catch(() => {}), 5_000).catch(() => {});
     let stopped = !launchAttempted || observer?.children.length === 1;
