@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { spawnSync, type ChildProcess } from 'node:child_process';
-import { accessSync, chmodSync, constants, createReadStream, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { accessSync, chmodSync, closeSync, constants, createReadStream, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir, release } from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,105 @@ import type { BrowserContext } from 'playwright';
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
 export const DIA_DOWNLOAD = 'https://releases.diabrowser.com/release/Dia-latest.dmg';
+export const FRESH_WORK_PREFIX = '/private/tmp/dn-';
+
+export interface FreshAccount {
+  work: string; home: string; temporary: string; snapshot: string; bun: string; destinationExecutable: string;
+  uid: number; gid: number; account: string; guid: string; groupGuid: string; label: string;
+  sourceRevision: string; archiveSha256: string; bunSha256: string; destinationSha256: string;
+  configFile: string; environment: Record<string, string>;
+}
+
+export function parseDirectoryRecord(output: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const line of output.trim().split('\n')) {
+    const match = line.match(/^([A-Za-z]+):\s+(.+)$/);
+    if (!match || Object.hasOwn(result, match[1])) throw new Error('invalid_directory_record');
+    result[match[1]] = match[2].trim();
+  }
+  return result;
+}
+
+export function ownsFreshAccount(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>): boolean {
+  return record.GeneratedUID?.toUpperCase() === account.guid.toUpperCase() && record.UniqueID === String(account.uid)
+    && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
+}
+
+export function readFreshAccountConfiguration(configFile: string): FreshAccount {
+  const work = path.dirname(configFile);
+  if (!path.isAbsolute(configFile) || path.basename(configFile) !== 'account.json' || path.dirname(work) !== '/private/tmp'
+    || !path.basename(work).startsWith(path.basename(FRESH_WORK_PREFIX)) || realpathSync(work) !== work) throw new Error('unsafe_fresh_account_configuration');
+  const parent = lstatSync(work);
+  const info = lstatSync(configFile);
+  if (!parent.isDirectory() || parent.uid !== 0 || (parent.mode & 0o022) !== 0 || !info.isFile() || info.uid !== 0
+    || info.nlink !== 1 || (info.mode & 0o022) !== 0 || info.size > 64 * 1024 || realpathSync(configFile) !== configFile) throw new Error('unsafe_fresh_account_configuration');
+  const account: FreshAccount = JSON.parse(readFileSync(configFile, 'utf8'));
+  if (account.work !== work || account.configFile !== configFile || account.home !== path.join(work, 'home')
+    || account.temporary !== path.join(work, 'tmp') || account.snapshot !== repository || account.snapshot !== path.join(work, 'repo')
+    || account.bun !== path.join(work, 'bin/bun') || realpathSync(process.execPath) !== account.bun
+    || !Number.isSafeInteger(account.uid) || account.uid < 20_000 || account.uid >= 60_000 || account.gid !== account.uid
+    || process.getuid?.() !== account.uid || process.geteuid?.() !== account.uid || process.getgid?.() !== account.gid
+    || !/^[a-z][a-z0-9]{8,24}$/.test(account.account) || !/^[A-F0-9-]{36}$/.test(account.guid)
+    || process.env.GSTACK_DIA_EXPECT_UID !== String(account.uid) || process.env.GSTACK_DIA_SOURCE_REVISION !== account.sourceRevision
+    || realpathSync(homedir()) !== account.home || realpathSync(process.env.HOME!) !== account.home
+    || realpathSync(process.env.RUNNER_TEMP!) !== account.temporary) throw new Error('fresh_identity_mismatch');
+  for (const directory of [account.home, account.temporary, account.snapshot]) {
+    const entry = lstatSync(directory);
+    if (!entry.isDirectory() || entry.uid !== account.uid || (entry.mode & 0o022) !== 0 || realpathSync(directory) !== directory) throw new Error('fresh_directory_ownership_mismatch');
+  }
+  if (!account.destinationExecutable.startsWith(path.join(work, 'browser') + path.sep)
+    || realpathSync(account.destinationExecutable) !== account.destinationExecutable) throw new Error('staged_executable_escape');
+  return account;
+}
+
+export function createOwnedDiaProfile(home: string) {
+  const uid = process.getuid?.();
+  for (const directory of [home, path.join(home, 'Library'), path.join(home, 'Library/Application Support')]) {
+    try { lstatSync(directory); } catch (error: any) {
+      if (error.code !== 'ENOENT' || directory === home) throw error;
+      mkdirSync(directory, { mode: 0o700 });
+    }
+    const info = lstatSync(directory);
+    if (!info.isDirectory() || info.uid !== uid || (info.mode & 0o022) !== 0 || realpathSync(directory) !== directory) throw new Error('unsafe_profile_ancestor');
+  }
+  const browserRoot = path.join(home, 'Library/Application Support/Dia');
+  mkdirSync(browserRoot, { mode: 0o700 });
+  const profile = path.join(browserRoot, 'User Data');
+  mkdirSync(profile, { mode: 0o700 });
+  const info = lstatSync(profile, { bigint: true });
+  const nonce = randomBytes(32).toString('hex');
+  writeFileSync(path.join(profile, '.gstack-dia-owner'), nonce, { mode: 0o600, flag: 'wx' });
+  return { home, profile, uid, dev: info.dev, ino: info.ino, nonce };
+}
+
+export function assertOwnedDiaProfile(ownership: ReturnType<typeof createOwnedDiaProfile>) {
+  const { home, profile, uid, dev, ino, nonce } = ownership;
+  if (uid === undefined || uid !== process.getuid?.() || profile !== path.join(home, 'Library/Application Support/Dia/User Data')
+    || !/^[a-f0-9]{64}$/.test(nonce)) throw new Error('profile_ownership_unconfirmed');
+  for (const directory of [home, path.join(home, 'Library'), path.join(home, 'Library/Application Support'), path.dirname(profile), profile]) {
+    const info = lstatSync(directory);
+    if (!info.isDirectory() || info.uid !== uid || (info.mode & 0o022) !== 0 || realpathSync(directory) !== directory) throw new Error('profile_ownership_unconfirmed');
+  }
+  const info = lstatSync(profile, { bigint: true });
+  if (info.dev !== dev || info.ino !== ino) throw new Error('profile_ownership_unconfirmed');
+  const fd = openSync(path.join(profile, '.gstack-dia-owner'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const marker = fstatSync(fd);
+    if (!marker.isFile() || marker.uid !== uid || marker.nlink !== 1 || (marker.mode & 0o077) !== 0 || marker.size !== 64) throw new Error('profile_ownership_unconfirmed');
+    const buffer = Buffer.alloc(65);
+    if (readSync(fd, buffer, 0, 65, 0) !== 64 || buffer.subarray(0, 64).toString() !== nonce) throw new Error('profile_ownership_unconfirmed');
+    const after = fstatSync(fd);
+    if (after.size !== marker.size || after.mtimeMs !== marker.mtimeMs || after.ctimeMs !== marker.ctimeMs) throw new Error('profile_ownership_unconfirmed');
+  } finally { closeSync(fd); }
+}
+
+export function removeOwnedDiaProfile(ownership: ReturnType<typeof createOwnedDiaProfile>, browsersStopped: boolean) {
+  if (!browsersStopped) throw new Error('owned_browsers_not_stopped');
+  assertOwnedDiaProfile(ownership);
+  rmSync(ownership.profile, { recursive: true });
+  try { lstatSync(ownership.profile); } catch (error: any) { if (error.code === 'ENOENT') return; throw error; }
+  throw new Error('owned_profile_still_present');
+}
 
 export function assertDiaSocketPath(sourceProfile: string): void {
   if (Buffer.byteLength(path.join(sourceProfile, 'SingletonSocket')) >= 100) throw new Error('fixture_socket_path_too_long');
@@ -314,17 +413,16 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
   } finally { clearTimeout(timer!); }
 }
 
-export async function qualifyDia(isolation: { root: string; originalHome: string; destinationExecutable: string }): Promise<Record<string, any>> {
+export async function qualifyDia(isolation: { root: string; configFile: string }): Promise<Record<string, any>> {
   validateQualificationHost(process.env);
-  if (process.env.GSTACK_DIA_EXPECT_UID && process.getuid?.() !== Number(process.env.GSTACK_DIA_EXPECT_UID)) throw new Error('fresh_account_uid_mismatch');
+  const account = readFreshAccountConfiguration(isolation.configFile);
   if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
   const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(runnerTemp, 'dia-native-qualification.json');
   if (existsSync(output)) throw new Error('fresh_receipt_path_required');
   const root = realpathSync(isolation.root);
   if (path.dirname(root) !== runnerTemp || !path.basename(root).startsWith('dia-')) throw new Error('fixture_root_unowned');
-  const home = path.join(root, 'h');
-  if (realpathSync(homedir()) !== home || realpathSync(process.env.HOME!) !== home) throw new Error('fixture_home_not_effective_at_startup');
+  const home = account.home;
   const temporary = path.join(root, 't');
   const sourceProfile = path.join(home, 'Library/Application Support/Dia/User Data');
   const destinationProfile = path.join(root, 'd');
@@ -332,9 +430,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
   const mount = path.join(root, 'm');
   const image = path.join(root, 'Dia.dmg');
   const app = path.join(root, 'Dia.app');
-  const systemEnvironment = { HOME: realpathSync(isolation.originalHome), PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8', TMPDIR: temporary };
-  if (systemEnvironment.HOME === home || systemEnvironment.HOME.startsWith(root + path.sep)) throw new Error('original_home_not_preserved');
-  const fixtureEnvironment = { ...systemEnvironment, HOME: home };
+  const environment = { HOME: home, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8', TMPDIR: temporary };
   const deadline = performance.now() + 9 * 60_000;
   let cleaning = false;
   let cleanupDeadline = 0;
@@ -348,19 +444,22 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
   let destination: BrowserContext | undefined;
   let observer: ReturnType<typeof observeBrowserLaunches> | undefined;
   let launchAttempts = 0;
+  let profileCreationAttempted = false;
+  let profileOwnership: ReturnType<typeof createOwnedDiaProfile> | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   const receipt: Record<string, any> = {
     status: 'incomplete', reason: 'not_run', runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
     platform: { os: 'darwin', architecture: 'arm64', release: release(), bun: Bun.version, playwright: '1.62.1' },
-    isolation: { fixtureHomeAtStartup: true, productionLookupMocked: false, keychainCommandHome: 'original_runner_home' },
+    isolation: { registeredHomeAtStartup: true, sharedRegisteredHome: true, registeredIdentity: false,
+      productionLookupMocked: false, keychainCommandHome: 'fresh_registered_home' },
     artifact: { url: DIA_DOWNLOAD }, expectedCases: 8,
     cases: Object.fromEntries(['headless_without_account_interaction', 'synthetic_session_created', 'native_encrypted_cookie_persisted',
       'dia_profile_and_domain_discovered', 'native_keychain_decryption_and_verified_import', 'default_storage_preserved',
       'wrong_identity_not_verified', 'explicit_storage_reset'].map(name => [name, 'not_run'])), counts: { pass: 0, fail: 0, skip: 0 },
     coverage: { mockKeychain: false, nativeKeychainRead: false, nativePermissionPrompts: false, accountLogin: false, sync: false, browserProfileImport: false },
-    cleanup: { ownedBrowsersStopped: false, keychainRestored: false, mountDetached: false, fixtureRemoved: false },
+    cleanup: { ownedBrowsersStopped: false, sourceProfileRemoved: false, keychainRestored: false, mountDetached: false, fixtureRemoved: false },
   };
-  const run = (command: string, args: string[], milliseconds = 10_000, env = systemEnvironment) => {
+  const run = (command: string, args: string[], milliseconds = 10_000, env = environment) => {
     const remaining = (cleaning ? cleanupDeadline : deadline) - performance.now();
     const timeout = Math.floor(Math.min(milliseconds, remaining));
     if (!Number.isFinite(timeout) || timeout < 1) throw new Error('qualification_budget_exhausted');
@@ -382,7 +481,10 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     return bounded(operation(), Math.min(milliseconds, remaining));
   };
   try {
-    for (const directory of [home, temporary, mount]) {
+    const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + account.account, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']).stdout);
+    if (!ownsFreshAccount(record, account)) throw new Error('fresh_registered_identity_mismatch');
+    receipt.isolation.registeredIdentity = true;
+    for (const directory of [temporary, mount]) {
       if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
       else if (realpathSync(directory) !== directory || !lstatSync(directory).isDirectory()) throw new Error('fixture_directory_escape');
     }
@@ -393,12 +495,12 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       'Library/Application Support/Arc', 'Library/Application Support/Dia', 'Library/Application Support/Comet',
       'Library/Application Support/BraveSoftware/Brave-Browser', 'Library/Application Support/Microsoft Edge',
       'Library/Safari', 'Library/Cookies']) {
-      if (existsSync(path.join(systemEnvironment.HOME, relative))) {
+      if (existsSync(path.join(home, relative))) {
         receipt.preexistingState = relative;
         throw new Error('preexisting_browser_state_refused');
       }
     }
-    receipt.keychainHome = prepareKeychainHome(systemEnvironment.HOME);
+    receipt.keychainHome = prepareKeychainHome(home);
     const revision = process.env.GSTACK_DIA_SOURCE_REVISION;
     if (revision && !/^[0-9a-f]{40}$/.test(revision)) throw new Error('invalid_source_revision');
     receipt.sourceRevision = revision ?? run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']).stdout;
@@ -437,7 +539,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       architectures, executableSha256: await within(() => sha256(executable), 10_000), signatureVerified: true, gatekeeperNotarized: true };
     stage = 'temporary_keychain';
     receipt.keychainStage = 'capture_original';
-    const originalKeychains = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root]);
+    const originalKeychains = captureUserKeychains(environment, [home, root]);
     originalSearch = originalKeychains.search;
     originalDefault = originalKeychains.default;
     const keychainPassword = randomBytes(24).toString('hex');
@@ -461,8 +563,8 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       receipt.keychainStage = 'validate_environments';
     } catch (error) { setupFailure = error; }
     if (keychainCreated) {
-      receipt.keychainObservations = observeDiaKeychainEnvironments({ keychainHome: systemEnvironment, profileHome: fixtureEnvironment },
-        [systemEnvironment.HOME, root], keychain, fixtureKey, Math.min(20_000, deadline - performance.now()));
+      receipt.keychainObservations = observeDiaKeychainEnvironments({ keychainHome: environment, profileHome: environment },
+        [home, root], keychain, fixtureKey, Math.min(20_000, deadline - performance.now()));
     }
     if (setupFailure !== undefined) throw setupFailure;
     const keychainFailure = receipt.keychainObservations.firstFailure;
@@ -471,7 +573,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     delete process.env.DEBUG;
     delete process.env.PWDEBUG;
     const { chromium } = await import('playwright');
-    const destinationExecutable = realpathSync(isolation.destinationExecutable);
+    const destinationExecutable = realpathSync(account.destinationExecutable);
     observer = observeBrowserLaunches(new Map([[executable, sourceProfile], [destinationExecutable, destinationProfile]]));
     const token = randomBytes(24).toString('hex');
     const identity = 'Synthetic Dia qualification account';
@@ -482,9 +584,14 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       return new Response(authenticated ? `<div id="fixture-identity">${identity}</div>` : '<form>Not signed in</form>', { status: authenticated ? 200 : 401, headers: { 'Content-Type': 'text/html' } });
     } });
     const origin = `http://127.0.0.1:${server.port}`;
+    stage = 'owned_source_profile_creation';
+    profileCreationAttempted = true;
+    profileOwnership = createOwnedDiaProfile(home);
+    assertOwnedDiaProfile(profileOwnership);
+    receipt.isolation.sourceProfileOwnershipConfirmed = true;
     stage = 'dia_headless_startup_or_onboarding';
     launchAttempts++;
-    source = await within(() => chromium.launchPersistentContext(sourceProfile, nativeDiaLaunchOptions(executable, fixtureEnvironment)), 40_000);
+    source = await within(() => chromium.launchPersistentContext(sourceProfile, nativeDiaLaunchOptions(executable, environment)), 40_000);
     if (observer.children.filter(child => child.executable === executable).length !== 1) throw new Error('source_process_ownership_unconfirmed');
     if (source.pages().some(page => !allowedFixturePage(page.url(), origin))) throw new Error('onboarding_or_external_page');
     await within(() => source!.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort()), 10_000);
@@ -498,11 +605,12 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     await within(() => source!.close(), 10_000);
     source = undefined;
     stage = 'native_profile_persistence';
+    assertOwnedDiaProfile(profileOwnership);
     const cookieFile = path.join(sourceProfile, 'Default/Cookies');
-    if (!existsSync(cookieFile) || !realpathSync(cookieFile).startsWith(root + path.sep)) throw new Error('expected_profile_layout_missing');
+    if (!existsSync(cookieFile) || !realpathSync(cookieFile).startsWith(sourceProfile + path.sep)) throw new Error('expected_profile_layout_missing');
     for (const metadata of ['Local State', 'Default/Preferences']) {
       const file = path.join(sourceProfile, metadata);
-      if (existsSync(file) && !realpathSync(file).startsWith(root + path.sep)) throw new Error('profile_metadata_escape');
+      if (existsSync(file) && !realpathSync(file).startsWith(sourceProfile + path.sep)) throw new Error('profile_metadata_escape');
     }
     const { openCookieDatabase } = await import('../../browse/src/cookie-database');
     const database = openCookieDatabase(cookieFile);
@@ -515,7 +623,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     check('dia_profile_and_domain_discovered', listProfiles('Dia').some(profile => profile.name === 'Default')
       && listDomains('Dia', 'Default').domains.some(entry => entry.domain === '127.0.0.1' && entry.count >= 1));
     launchAttempts++;
-    destination = await within(() => chromium.launchPersistentContext(destinationProfile, nativeDiaLaunchOptions(destinationExecutable, fixtureEnvironment)), 40_000);
+    destination = await within(() => chromium.launchPersistentContext(destinationProfile, nativeDiaLaunchOptions(destinationExecutable, environment)), 40_000);
     if (observer.children.filter(child => child.executable === destinationExecutable).length !== 1) throw new Error('destination_process_ownership_unconfirmed');
     const target = destination.pages()[0] ?? await within(() => destination!.newPage(), 10_000);
     await within(() => target.goto(origin + '/protected', { waitUntil: 'domcontentloaded', timeout: 10_000 }), 10_000);
@@ -545,7 +653,8 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     if (error instanceof Error && error.message === 'preexisting_browser_state_refused') receipt.blocker = 'preexisting_browser_state_refused';
     if (error instanceof Error && ['user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'invalid_keychain_snapshot',
       'empty_keychain_snapshot', 'invalid_default_keychain_snapshot', 'keychain_outside_owned_home_refused',
-      'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned'].includes(error.message)) receipt.blocker = error.message;
+      'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned',
+      'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed'].includes(error.message)) receipt.blocker = error.message;
     const code = (error as { code?: string } | null)?.code;
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
     receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',
@@ -573,6 +682,10 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     receipt.cleanup.ownedBrowsersStopped = stopped;
     receipt.observedBrowserRoots = observer?.children.length ?? 0;
     server?.stop(true);
+    if (!profileCreationAttempted) receipt.cleanup.sourceProfileRemoved = true;
+    else if (stopped && profileOwnership) {
+      try { removeOwnedDiaProfile(profileOwnership, stopped); receipt.cleanup.sourceProfileRemoved = true; } catch {}
+    }
     if (stopped) {
       try {
         if (keychainChanged) {
@@ -581,7 +694,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
             try { run('/usr/bin/security', args); } catch { restored = false; }
           }
           if (!restored) throw new Error('keychain_restore_failed');
-          const restoredSnapshot = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root], cleanupDeadline - performance.now());
+          const restoredSnapshot = captureUserKeychains(environment, [home, root], cleanupDeadline - performance.now());
           if (JSON.stringify(restoredSnapshot.search) !== JSON.stringify(originalSearch)
             || JSON.stringify(restoredSnapshot.default) !== JSON.stringify(originalDefault)) throw new Error('keychain_restore_failed');
         }
@@ -592,7 +705,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       if (mounted) run('/usr/bin/hdiutil', ['detach', mount], 10_000);
       receipt.cleanup.mountDetached = true;
     } catch {}
-    if (stopped && receipt.cleanup.keychainRestored && receipt.cleanup.mountDetached) {
+    if (stopped && receipt.cleanup.sourceProfileRemoved && receipt.cleanup.keychainRestored && receipt.cleanup.mountDetached) {
       try {
         if (realpathSync(root) !== root || path.dirname(root) !== runnerTemp) throw new Error('fixture_root_changed');
         rmSync(root, { recursive: true, force: true });
@@ -610,31 +723,29 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
 if (import.meta.main) {
   try {
     if (process.argv[2] === '--isolated-worker') {
-      const receipt = await qualifyDia({ root: process.argv[3], originalHome: process.argv[4], destinationExecutable: process.argv[5] });
+      const receipt = await qualifyDia({ root: process.argv[3], configFile: process.argv[4] });
       console.log(JSON.stringify({ status: receipt.status, reason: receipt.reason, counts: receipt.counts, artifact: 'dia-native-qualification.json' }));
       process.exitCode = receipt.status === 'passed' ? 0 : 2;
     } else {
       validateQualificationHost(process.env);
       if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
-      const originalHome = realpathSync(homedir());
+      if (process.argv[2] !== '--fresh-account' || !process.argv[3]) throw new Error('fresh_account_configuration_required');
+      const account = readFreshAccountConfiguration(process.argv[3]);
+      const originalHome = account.home;
       const originalHomeEnvironment = process.env.HOME;
-      const { chromium } = await import('playwright');
-      const destinationExecutable = realpathSync(process.env.GSTACK_DIA_DESTINATION_EXECUTABLE || chromium.executablePath());
       const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
       const output = path.join(runnerTemp, 'dia-native-qualification.json');
       if (existsSync(output)) throw new Error('fresh_receipt_path_required');
       const root = realpathSync(mkdtempSync(path.join(runnerTemp, 'dia-')));
       chmodSync(root, 0o700);
-      const home = path.join(root, 'h');
       const temporary = path.join(root, 't');
-      mkdirSync(home, { mode: 0o700 });
       mkdirSync(temporary, { mode: 0o700 });
       const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'RUNNER_TEMP',
         'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY', 'GSTACK_DIA_EXPECT_UID', 'GSTACK_DIA_SOURCE_REVISION']
         .filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]!]));
       const child = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=/dev/null', import.meta.path,
-        '--isolated-worker', root, originalHome, destinationExecutable], {
-        cwd: repository, env: { ...metadata, HOME: home, TMPDIR: temporary, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8' },
+        '--isolated-worker', root, account.configFile], {
+        cwd: repository, env: { ...metadata, HOME: account.home, TMPDIR: temporary, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8' },
         encoding: 'utf8', timeout: 630_000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024,
       });
       if (realpathSync(homedir()) !== originalHome || process.env.HOME !== originalHomeEnvironment

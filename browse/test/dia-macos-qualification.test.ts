@@ -1,14 +1,15 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
-  observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
+  allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserPreflightError, browserStartupCategory, captureUserKeychains, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
+  observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
+  qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyParentDomain, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
   inspectParentDomain, inspectUidProcesses, inspectUserDomain,
@@ -63,7 +64,8 @@ describe('Dia macOS CI qualification safety', () => {
 
   test('a fresh fixture-HOME child uses unmodified production Dia profile and domain discovery', () => {
     const home = realpathSync(mkdtempSync(path.join(root, 'fixture-home-')));
-    const profile = path.join(home, 'Library/Application Support/Dia/User Data/Default');
+    const ownership = createOwnedDiaProfile(home);
+    const profile = path.join(ownership.profile, 'Default');
     mkdirSync(profile, { recursive: true });
     const database = new Database(path.join(profile, 'Cookies'));
     database.run('CREATE TABLE cookies (host_key TEXT, has_expires INTEGER, expires_utc INTEGER)');
@@ -83,6 +85,9 @@ describe('Dia macOS CI qualification safety', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
     expect(JSON.parse(result.stdout)).toEqual({ homeAtStartup: true, profiles: ['Default'], domains: [{ domain: '.fixture.test', count: 1 }] });
+    expect(() => assertOwnedDiaProfile(ownership)).not.toThrow();
+    removeOwnedDiaProfile(ownership, true);
+    expect(existsSync(home)).toBe(true);
   });
 
   for (const precreate of [false, true]) {
@@ -137,6 +142,81 @@ describe('Dia macOS CI qualification safety', () => {
     const atLimit = '/' + 'x'.repeat(100 - Buffer.byteLength('//SingletonSocket'));
     expect(Buffer.byteLength(atLimit + '/SingletonSocket')).toBe(100);
     expect(() => assertDiaSocketPath(atLimit)).toThrow('fixture_socket_path_too_long');
+  });
+
+  test('the registered-home source profile fits the socket bound without a shadow HOME', () => {
+    const profile = path.posix.join(FRESH_WORK_PREFIX + 'XXXXXX', 'home', 'Library/Application Support/Dia/User Data');
+    expect(Buffer.byteLength(profile + '/SingletonSocket')).toBe(85);
+    expect(() => assertDiaSocketPath(profile)).not.toThrow();
+    const implementation = qualifyDia.toString();
+    expect(implementation).toContain('readFreshAccountConfiguration');
+    expect(implementation).toContain('const home = account.home');
+    expect(implementation).not.toMatch(/fixtureEnvironment|systemEnvironment|isolation\.originalHome/);
+    expect(implementation).toContain('removeOwnedDiaProfile');
+  });
+
+  test('profile ownership is exclusive and cleanup preserves the account home and sibling state', () => {
+    const home = realpathSync(mkdtempSync(path.join(root, 'owned-profile-home-')));
+    prepareKeychainHome(home);
+    const preserved = path.join(home, 'Library/Keychains/fixture-state');
+    writeFileSync(preserved, 'preserved fixture state');
+    const ownership = createOwnedDiaProfile(home);
+    const sibling = path.join(path.dirname(ownership.profile), 'sibling-state');
+    writeFileSync(sibling, 'preserved sibling state');
+    expect(() => assertOwnedDiaProfile(ownership)).not.toThrow();
+    expect(() => createOwnedDiaProfile(home)).toThrow();
+    expect(() => removeOwnedDiaProfile(ownership, false)).toThrow('owned_browsers_not_stopped');
+    expect(existsSync(ownership.profile)).toBe(true);
+    removeOwnedDiaProfile(ownership, true);
+    expect(existsSync(ownership.profile)).toBe(false);
+    expect(existsSync(home)).toBe(true);
+    expect(readFileSync(preserved, 'utf8')).toBe('preserved fixture state');
+    expect(readFileSync(sibling, 'utf8')).toBe('preserved sibling state');
+  });
+
+  for (const change of ['nonce', 'inode', 'marker_symlink', 'profile_symlink', 'uid', 'home_escape', 'marker_permissions', 'marker_hardlink']) {
+    test(`profile cleanup refuses changed ${change} ownership without deleting the directory`, () => {
+      const home = realpathSync(mkdtempSync(path.join(root, 'profile-refusal-')));
+      const ownership = createOwnedDiaProfile(home);
+      const profile = ownership.profile;
+      const marker = path.join(profile, '.gstack-dia-owner');
+      if (change === 'nonce') writeFileSync(marker, (ownership.nonce[0] === '0' ? '1' : '0') + ownership.nonce.slice(1));
+      if (change === 'inode') {
+        renameSync(profile, profile + '.original');
+        mkdirSync(profile, { mode: 0o700 });
+        writeFileSync(marker, ownership.nonce, { mode: 0o600 });
+      }
+      if (change === 'marker_symlink') { renameSync(marker, marker + '.original'); symlinkSync(marker + '.original', marker); }
+      if (change === 'profile_symlink') { renameSync(profile, profile + '.original'); symlinkSync(profile + '.original', profile, 'dir'); }
+      if (change === 'uid') ownership.uid = process.getuid!() + 1;
+      if (change === 'home_escape') ownership.profile = home;
+      if (change === 'marker_permissions') chmodSync(marker, 0o644);
+      if (change === 'marker_hardlink') linkSync(marker, path.join(home, 'marker-link'));
+      expect(() => removeOwnedDiaProfile(ownership, true)).toThrow();
+      expect(existsSync(profile)).toBe(true);
+      expect(existsSync(home)).toBe(true);
+    });
+  }
+
+  test('source profile creation refuses existing profiles and linked ancestors without writing through them', () => {
+    const home = realpathSync(mkdtempSync(path.join(root, 'existing-profile-')));
+    const profile = path.join(home, 'Library/Application Support/Dia/User Data');
+    mkdirSync(profile, { recursive: true });
+    writeFileSync(path.join(profile, 'existing-state'), 'untouched');
+    expect(() => createOwnedDiaProfile(home)).toThrow();
+    expect(readdirSync(profile)).toEqual(['existing-state']);
+    const linkedHome = realpathSync(mkdtempSync(path.join(root, 'linked-profile-home-')));
+    const elsewhere = realpathSync(mkdtempSync(path.join(root, 'linked-profile-target-')));
+    symlinkSync(elsewhere, path.join(linkedHome, 'Library'), 'dir');
+    expect(() => createOwnedDiaProfile(linkedHome)).toThrow('unsafe_profile_ancestor');
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  test('the qualifier rejects an arbitrary caller-supplied home as fresh account authority', () => {
+    const fake = path.join(root, 'account.json');
+    writeFileSync(fake, JSON.stringify({ home: root, uid: process.getuid?.() }));
+    expect(() => readFreshAccountConfiguration(fake)).toThrow('unsafe_fresh_account_configuration');
+    expect(() => readFreshAccountConfiguration('account.json')).toThrow('unsafe_fresh_account_configuration');
   });
 
   test('headless source launch removes mock Keychain and first-run suppression defaults', () => {

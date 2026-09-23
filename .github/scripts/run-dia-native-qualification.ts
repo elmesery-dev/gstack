@@ -4,12 +4,13 @@ import { accessSync, chmodSync, constants, copyFileSync, createReadStream, exist
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
-  playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
+import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, FRESH_WORK_PREFIX, type FreshAccount,
+  nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord,
+  playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
+export { FRESH_WORK_PREFIX, ownsFreshAccount, parseDirectoryRecord } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
-export const FRESH_WORK_PREFIX = '/private/tmp/dn-';
 
 interface UserDomainObservation {
   uid: number;
@@ -271,23 +272,6 @@ export function freshQualificationPassed(workerExit: number | undefined, backgro
     && Object.values(cleanup).every(value => value === true);
 }
 
-interface FreshAccount {
-  work: string; home: string; temporary: string; snapshot: string; bun: string; destinationExecutable: string;
-  uid: number; gid: number; account: string; guid: string; groupGuid: string; label: string;
-  sourceRevision: string; archiveSha256: string; bunSha256: string; destinationSha256: string;
-  configFile: string; environment: Record<string, string>;
-}
-
-export function parseDirectoryRecord(output: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const line of output.trim().split('\n')) {
-    const match = line.match(/^([A-Za-z]+):\s+(.+)$/);
-    if (!match || Object.hasOwn(result, match[1])) throw new Error('invalid_directory_record');
-    result[match[1]] = match[2].trim();
-  }
-  return result;
-}
-
 export function parseDirectoryIds(output: string): Set<number> {
   const ids = new Set<number>();
   for (const line of output.split('\n').filter(line => line.trim())) {
@@ -297,11 +281,6 @@ export function parseDirectoryIds(output: string): Set<number> {
   }
   if (!ids.size) throw new Error('empty_directory_id_list');
   return ids;
-}
-
-export function ownsFreshAccount(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>): boolean {
-  return record.GeneratedUID?.toUpperCase() === account.guid.toUpperCase() && record.UniqueID === String(account.uid)
-    && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
 }
 
 export function ownedUserDomainTarget(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>,
@@ -367,13 +346,7 @@ async function limit<T>(promise: Promise<T>, timeout: number): Promise<T> {
 
 async function freshWorker(configFile: string) {
   validateQualificationHost(process.env);
-  const info = lstatSync(configFile);
-  if (!info.isFile() || info.uid !== 0 || (info.mode & 0o022) !== 0 || info.size > 64 * 1024 || realpathSync(configFile) !== configFile) throw new Error('unsafe_fresh_account_configuration');
-  const account: FreshAccount = JSON.parse(readFileSync(configFile, 'utf8'));
-  if (realpathSync(account.work) !== account.work || path.dirname(account.work) !== '/private/tmp'
-    || !path.basename(account.work).startsWith(path.basename(FRESH_WORK_PREFIX)) || configFile !== path.join(account.work, 'account.json')
-    || account.temporary !== path.join(account.work, 'tmp') || realpathSync(account.temporary) !== account.temporary
-    || lstatSync(account.temporary).uid !== process.getuid?.()) throw new Error('unsafe_fresh_account_output');
+  const account = readFreshAccountConfiguration(configFile);
   const preflightFile = path.join(account.temporary, 'dia-background-preflight.json');
   const seed = lstatSync(preflightFile);
   if (!seed.isFile() || seed.uid !== process.getuid?.() || realpathSync(preflightFile) !== preflightFile) throw new Error('unsafe_preflight_receipt');
@@ -534,7 +507,7 @@ async function freshWorker(configFile: string) {
   }
   if (receipt.status !== 'passed') return 2;
   const result = spawnSync(account.bun, ['--no-env-file', '--no-install', '--no-macros', '--config=/dev/null',
-    path.join(account.snapshot, '.github/scripts/qualify-dia-macos.ts')], {
+    path.join(account.snapshot, '.github/scripts/qualify-dia-macos.ts'), '--fresh-account', account.configFile], {
     cwd: account.snapshot, env, stdio: 'ignore', timeout: 660_000, killSignal: 'SIGKILL',
   });
   return !result.error && result.status === 0 ? 0 : 2;
@@ -585,7 +558,7 @@ export async function runFreshAccountQualification() {
   try {
     rootCommand('/usr/bin/true', []);
     for (const directory of [home, temporary, snapshot, bin, browserDirectory]) mkdirSync(directory, { mode: 0o700 });
-    assertDiaSocketPath(path.join(temporary, 'dia-XXXXXX', 'h', 'Library/Application Support/Dia/User Data'));
+    assertDiaSocketPath(path.join(home, 'Library/Application Support/Dia/User Data'));
     writeFileSync(path.join(temporary, 'dia-background-preflight.json'), JSON.stringify({ status: 'incomplete', reason: 'fresh_worker_not_started',
       nativeCasesRun: false, preflight: { registeredIdentity: false, foundationHome: false, keychain: false, headlessChromium: false } }) + '\n', { mode: 0o600, flag: 'wx' });
     const sourceRevision = run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']);
