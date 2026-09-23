@@ -112,6 +112,8 @@ async function digest(file: string) {
 }
 
 function safeCommand(command: string, args: string[], timeout: number, env: NodeJS.ProcessEnv, cwd?: string) {
+  timeout = Math.floor(timeout);
+  if (!Number.isFinite(timeout) || timeout < 1) throw new Error('native_operation_timed_out');
   const result = spawnSync(command, args, { env, cwd, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
   if (result.error || result.status !== 0) {
     const elevated = command === '/usr/bin/sudo';

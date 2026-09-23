@@ -55,9 +55,13 @@ export function parseDefaultKeychain(result: { status: number | null; stdout: st
 export function captureUserKeychains(env: Record<string, string>, allowedRoots: string[], milliseconds = 10_000,
   execute?: (args: string[], timeout: number) => { status: number | null; stdout: string; stderr: string; error?: unknown }) {
   const deadline = performance.now() + milliseconds;
-  const probe = (args: string[]) => execute ? execute(args, Math.max(1, deadline - performance.now())) : spawnSync('/usr/bin/security', args, {
-    env, encoding: 'utf8', timeout: Math.max(1, deadline - performance.now()), maxBuffer: 1024 * 1024,
-  });
+  const probe = (args: string[]) => {
+    const timeout = Math.floor(deadline - performance.now());
+    if (!Number.isFinite(timeout) || timeout < 1) throw new Error('user_keychain_probe_timeout');
+    return execute ? execute(args, timeout) : spawnSync('/usr/bin/security', args, {
+      env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
+    });
+  };
   const search = probe(['list-keychains', '-d', 'user']);
   if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('user_keychain_search_unavailable');
   const snapshot = { search: parseKeychainPaths(search.stdout, true), default: parseDefaultKeychain(probe(['default-keychain', '-d', 'user'])) };
@@ -152,8 +156,9 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
   };
   const run = (command: string, args: string[], milliseconds = 10_000, env = systemEnvironment) => {
     const remaining = (cleaning ? cleanupDeadline : deadline) - performance.now();
-    if (remaining <= 0) throw new Error('qualification_budget_exhausted');
-    const result = spawnSync(command, args, { env, encoding: 'utf8', timeout: Math.min(milliseconds, remaining), maxBuffer: 1024 * 1024 });
+    const timeout = Math.floor(Math.min(milliseconds, remaining));
+    if (!Number.isFinite(timeout) || timeout < 1) throw new Error('qualification_budget_exhausted');
+    const result = spawnSync(command, args, { env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
     if (result.error || result.status !== 0) {
       receipt[cleaning ? 'cleanupCommandFailure' : 'commandFailure'] = { command: path.basename(command), operation: args[0], exitCode: result.status,
         timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' };
@@ -349,7 +354,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
             try { run('/usr/bin/security', args); } catch { restored = false; }
           }
           if (!restored) throw new Error('keychain_restore_failed');
-          const restoredSnapshot = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root], Math.max(1, cleanupDeadline - performance.now()));
+          const restoredSnapshot = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root], cleanupDeadline - performance.now());
           if (JSON.stringify(restoredSnapshot.search) !== JSON.stringify(originalSearch)
             || JSON.stringify(restoredSnapshot.default) !== JSON.stringify(originalDefault)) throw new Error('keychain_restore_failed');
         }

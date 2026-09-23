@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from 'bun:test';
+import { afterAll, describe, expect, spyOn, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -129,6 +129,48 @@ describe('Dia macOS CI qualification safety', () => {
     });
     expect(snapshot).toEqual({ search: [], default: [] });
     expect(calls).toEqual([['list-keychains', '-d', 'user'], ['default-keychain', '-d', 'user']]);
+  });
+
+  test('computed Keychain timeouts reach real spawnSync as bounded integer milliseconds', () => {
+    let reads = 0;
+    const times = [0.125, 0.5, 5.75];
+    const clock = spyOn(performance, 'now').mockImplementation(() => times[Math.min(reads++, times.length - 1)]);
+    const timeouts: number[] = [];
+    const calls: string[][] = [];
+    try {
+      const snapshot = captureUserKeychains({ HOME: root }, [root], 10_000, (args, timeout) => {
+        const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros',
+          `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-e', 'process.exit(0)'], {
+          cwd: root, env: { HOME: root, PATH: path.dirname(process.execPath) }, encoding: 'utf8', timeout,
+        });
+        expect(result.status).toBe(0);
+        expect(result.error).toBeUndefined();
+        timeouts.push(timeout);
+        calls.push(args);
+        return result;
+      });
+      expect(snapshot).toEqual({ search: [], default: [] });
+      expect(timeouts).toEqual([9999, 9994]);
+      expect(calls).toEqual([['list-keychains', '-d', 'user'], ['default-keychain', '-d', 'user']]);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  test('an expired or sub-millisecond Keychain budget never becomes an unbounded subprocess', () => {
+    const clock = spyOn(performance, 'now').mockReturnValue(100);
+    let commands = 0;
+    try {
+      for (const budget of [0.75, 0, -1, NaN, Infinity]) {
+        expect(() => captureUserKeychains({ HOME: root }, [root], budget, () => {
+          commands++;
+          return { status: 0, stdout: '', stderr: '' };
+        })).toThrow('user_keychain_probe_timeout');
+      }
+      expect(commands).toBe(0);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test('permission, securityd, and transport errors are never mistaken for no default Keychain', () => {
