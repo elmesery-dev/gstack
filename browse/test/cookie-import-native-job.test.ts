@@ -650,6 +650,27 @@ describe('native Windows process qualification', () => {
 });
 
 describe('native Windows launch diagnostics', () => {
+  test.each(['resolve_root', 'resolve_file'])('file-owner diagnostics preserve the %s filesystem failure without exposing its path', stage => {
+    const fixture = mkdtempSync(path.join(root, 'owner-stage-'));
+    const missing = path.join(fixture, 'sensitive-sentinel');
+    const input = { root: stage === 'resolve_root' ? missing : fixture, file: missing, testPid: process.pid };
+    const script = `
+      await import('node:fs');
+      await import('node:path');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      process.argv = [process.execPath, 'fixture', ${JSON.stringify(Buffer.from(JSON.stringify(input)).toString('base64'))}];
+      await import(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-file-owners.ts'))});
+    `;
+    const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-e', script], {
+      env: { TEMP: fixture, TMP: fixture, HOME: fixture, USERPROFILE: fixture, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toEqual({ available: false, reason: 'owner_query_failed', stage, errorCode: 'ENOENT' });
+    expect(result.stdout).not.toContain('sensitive-sentinel');
+  });
+
   test.skipIf(process.platform !== 'win32')('Restart Manager identifies the exact fixture file holder without stopping it', () => {
     const fixture = mkdtempSync(path.join(root, 'file-owner-'));
     const file = path.join(fixture, 'held.tmp');
@@ -771,7 +792,7 @@ describe('native Windows launch diagnostics', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout.trim()).toMatch(/^\d+(?:\.\d+){2,3}$/);
-  });
+  }, 25_000);
 
   test('the synthetic launch observer records safe reasons without raw stderr or environment values', () => {
     const node = Bun.which('node');
