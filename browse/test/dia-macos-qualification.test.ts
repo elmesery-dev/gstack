@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
-  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
+  observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyParentDomain, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
   inspectParentDomain, inspectUidProcesses, inspectUserDomain,
@@ -379,6 +379,115 @@ describe('Dia macOS CI qualification safety', () => {
       expect(JSON.stringify(facts)).not.toContain(keychain);
     });
   }
+
+  test('Dia Keychain diagnostics distinguish both HOME environments without configuring the shadow home', () => {
+    const directory = realpathSync(mkdtempSync(path.join(root, 'dual-keychain-')));
+    const registered = path.join(directory, 'registered');
+    const shadow = path.join(directory, 'shadow');
+    mkdirSync(registered);
+    mkdirSync(shadow);
+    prepareKeychainHome(registered);
+    writeFileSync(path.join(registered, 'Library/Preferences/com.apple.security.plist'), 'opaque private fixture preference');
+    const keychain = path.join(directory, 'fixture.keychain-db');
+    writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+    const expected = 'synthetic-private-dual-home-value';
+    const environments = { keychainHome: { HOME: registered }, profileHome: { HOME: shadow } };
+    const calls: Array<{ home: string; args: string[] }> = [];
+    const observed = observeDiaKeychainEnvironments(environments, [directory], keychain, expected, 20_000, (env, args, timeout) => {
+      expect(Number.isInteger(timeout)).toBe(true);
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThanOrEqual(10_000);
+      calls.push({ home: env.HOME, args });
+      if (args[0] === 'list-keychains') return { status: 0, stdout: env.HOME === registered ? JSON.stringify(keychain) : '', stderr: '' };
+      if (args[0] === 'default-keychain') return env.HOME === registered
+        ? { status: 0, stdout: JSON.stringify(keychain), stderr: '' }
+        : { status: 1, stdout: '', stderr: 'security: SecKeychainCopyDomainDefault user: A default keychain could not be found.' };
+      expect(args.slice(0, 4)).toEqual(['find-generic-password', '-s', 'Dia Safe Storage', '-w']);
+      return { status: 0, stdout: expected, stderr: '' };
+    });
+    expect(observed.firstFailure).toEqual({ environment: 'profileHome', check: 'search_path' });
+    expect(observed.environments.keychainHome).toMatchObject({ searchCount: 1, searchPathMatches: true, defaultCount: 1, defaultPathMatches: true,
+      explicitReadMatches: true, lookupReadAttempted: true, lookupReadMatches: true, preferencesDirectoryExists: true, preferencesFileExists: true });
+    expect(observed.environments.profileHome).toMatchObject({ searchCount: 0, searchPathMatches: false, defaultCount: 0, defaultPathMatches: false,
+      explicitReadMatches: true, lookupReadAttempted: false, preferencesDirectoryExists: false, preferencesFileExists: false });
+    expect(calls).toHaveLength(7);
+    expect(calls.filter(call => call.home === shadow)).toHaveLength(3);
+    expect(calls.some(call => call.args[0] === 'default-keychain' && call.args.includes('-s'))).toBe(false);
+    expect(existsSync(path.join(shadow, 'Library'))).toBe(false);
+    const serialized = JSON.stringify(observed);
+    for (const privateValue of [expected, registered, shadow, keychain, 'opaque private']) expect(serialized).not.toContain(privateValue);
+  });
+
+  for (const failure of ['search', 'default', 'explicit_read']) {
+    test(`Dia diagnostic refuses unqualified lookup when the owned ${failure} proof fails`, () => {
+      const directory = realpathSync(mkdtempSync(path.join(root, 'guarded-keychain-')));
+      const keychain = path.join(directory, 'fixture.keychain-db');
+      writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+      let implicitCalls = 0;
+      const result = observeFixtureKeychain({ HOME: directory }, [directory], keychain, 'expected-private-value', 1000, args => {
+        if (args[0] === 'list-keychains') return { status: 0, stdout: failure === 'search' ? '' : JSON.stringify(keychain), stderr: '' };
+        if (args[0] === 'default-keychain') return { status: 0, stdout: failure === 'default' ? '' : JSON.stringify(keychain), stderr: '' };
+        if (args.length === 4) implicitCalls++;
+        return { status: 0, stdout: failure === 'explicit_read' ? 'wrong-private-value' : 'expected-private-value', stderr: '' };
+      }, 'Dia Safe Storage');
+      expect(result.explicitReadAttempted).toBe(true);
+      expect(result.lookupReadAttempted).toBe(false);
+      expect(implicitCalls).toBe(0);
+    });
+  }
+
+  test('both Keychain environments remain observable while the first original validation failure is retained', () => {
+    const directory = realpathSync(mkdtempSync(path.join(root, 'keychain-failures-')));
+    const keychain = path.join(directory, 'fixture.keychain-db');
+    writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+    const environments = { keychainHome: { HOME: directory }, profileHome: { HOME: directory, MARKER: 'shadow' } };
+    for (const keychainSearchFails of [true, false]) {
+      const homesObserved = new Set<Record<string, string>>();
+      const observed = observeDiaKeychainEnvironments(environments, [directory], keychain, 'expected-private-value', 20_000, (env, args) => {
+        homesObserved.add(env);
+        if (args[0] === 'list-keychains') return { status: 0,
+          stdout: env === environments.profileHome || keychainSearchFails ? '' : JSON.stringify(keychain), stderr: '' };
+        if (args[0] === 'default-keychain') return { status: 1, stdout: '', stderr: 'private-default-error' };
+        return { status: 0, stdout: 'wrong-private-value', stderr: '' };
+      });
+      expect(homesObserved.size).toBe(2);
+      expect(observed.firstFailure).toEqual({ environment: keychainSearchFails ? 'keychainHome' : 'profileHome', check: 'search_path' });
+      expect(observed.environments.keychainHome).toMatchObject({ defaultCount: null, explicitReadAttempted: true, explicitReadMatches: false });
+      expect(observed.environments.profileHome).toMatchObject({ defaultCount: null, explicitReadAttempted: true, explicitReadMatches: false });
+      expect(JSON.stringify(observed)).not.toContain('private-default-error');
+      expect(JSON.stringify(observed)).not.toContain('wrong-private-value');
+    }
+  });
+
+  test('Dia environment validation preserves successful and explicit-read-only outcomes', () => {
+    const directory = realpathSync(mkdtempSync(path.join(root, 'keychain-outcomes-')));
+    const keychain = path.join(directory, 'fixture.keychain-db');
+    writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+    const environments = { keychainHome: { HOME: directory }, profileHome: { HOME: directory } };
+    for (const readMismatch of [false, true]) {
+      const observed = observeDiaKeychainEnvironments(environments, [directory], keychain, 'expected-private-value', 20_000, (env, args) => {
+        if (args[0] === 'list-keychains' || args[0] === 'default-keychain') return { status: 0, stdout: JSON.stringify(keychain), stderr: '' };
+        return { status: 0, stdout: readMismatch && env === environments.keychainHome ? 'wrong-private-value' : 'expected-private-value', stderr: '' };
+      });
+      if (readMismatch) expect(observed.firstFailure).toEqual({ environment: 'keychainHome', check: 'explicit_read' });
+      else expect(observed.firstFailure).toBeUndefined();
+      expect(observed.environments.profileHome).toMatchObject({ searchPathMatches: true, defaultPathMatches: true, explicitReadMatches: true,
+        lookupReadAttempted: true, lookupReadMatches: true });
+    }
+  });
+
+  test('an exhausted dual-environment diagnostic budget launches no Keychain commands', () => {
+    const directory = realpathSync(mkdtempSync(path.join(root, 'keychain-budget-')));
+    const keychain = path.join(directory, 'fixture.keychain-db');
+    writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+    let calls = 0;
+    const observed = observeDiaKeychainEnvironments({ keychainHome: { HOME: directory }, profileHome: { HOME: directory } },
+      [directory], keychain, 'expected-private-value', 0, () => { calls++; throw new Error('must_not_spawn'); });
+    expect(calls).toBe(0);
+    expect(observed.environments.keychainHome).toMatchObject({ searchCount: null, defaultCount: null, explicitReadAttempted: false, lookupReadAttempted: false });
+    expect(observed.environments.profileHome).toMatchObject({ searchCount: null, defaultCount: null, explicitReadAttempted: false, lookupReadAttempted: false });
+    expect(observed.firstFailure).toEqual({ environment: 'keychainHome', check: 'search_path' });
+  });
 
   test('an originally absent default is restored by deleting only the created fixture, never by a null default setter', () => {
     expect(fixtureKeychainRestoreCommands({ search: [], default: [] }, '/owned/fixture.keychain-db', true)).toEqual([

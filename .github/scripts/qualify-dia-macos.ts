@@ -191,14 +191,17 @@ export function captureUserKeychains(env: Record<string, string>, allowedRoots: 
 }
 
 export function observeFixtureKeychain(env: Record<string, string>, allowedRoots: string[], keychain: string, expected: string,
-  milliseconds = 10_000, execute?: KeychainExecutor) {
+  milliseconds = 10_000, execute?: KeychainExecutor, service: 'Gstack Native Probe' | 'Dia Safe Storage' = 'Gstack Native Probe') {
   requireOwnedKeychains([keychain], allowedRoots);
   const info = lstatSync(keychain);
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.()) throw new Error('fixture_keychain_not_owned');
   const expectedPath = realpathSync(keychain);
   const deadline = performance.now() + milliseconds;
   const result = { searchCount: null as number | null, searchPathMatches: false, defaultCount: null as number | null,
-    defaultPathMatches: false, explicitReadAttempted: false, explicitReadSucceeded: false, explicitReadMatches: false };
+    defaultPathMatches: false, explicitReadAttempted: false, explicitReadSucceeded: false, explicitReadMatches: false,
+    lookupReadAttempted: false, lookupReadSucceeded: false, lookupReadMatches: false,
+    preferencesDirectoryExists: existsSync(path.join(env.HOME, 'Library/Preferences')),
+    preferencesFileExists: existsSync(path.join(env.HOME, 'Library/Preferences/com.apple.security.plist')) };
   try {
     const search = keychainCommand(env, ['list-keychains', '-d', 'user'], deadline, execute);
     if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('search_unavailable');
@@ -214,12 +217,42 @@ export function observeFixtureKeychain(env: Record<string, string>, allowedRoots
     result.defaultPathMatches = paths.length === 1 && realpathSync(paths[0]) === expectedPath;
   } catch {}
   try {
-    const read = keychainCommand(env, ['find-generic-password', '-s', 'Gstack Native Probe', '-w', keychain], deadline, execute,
+    const read = keychainCommand(env, ['find-generic-password', '-s', service, '-w', keychain], deadline, execute,
       () => { result.explicitReadAttempted = true; });
     result.explicitReadSucceeded = !read.error && read.status === 0;
     result.explicitReadMatches = result.explicitReadSucceeded && read.stdout.trim() === expected;
   } catch {}
+  if (service === 'Dia Safe Storage' && result.searchPathMatches && result.defaultPathMatches && result.explicitReadMatches) {
+    try {
+      const read = keychainCommand(env, ['find-generic-password', '-s', service, '-w'], deadline, execute,
+        () => { result.lookupReadAttempted = true; });
+      result.lookupReadSucceeded = !read.error && read.status === 0;
+      result.lookupReadMatches = result.lookupReadSucceeded && read.stdout.trim() === expected;
+    } catch {}
+  }
   return result;
+}
+
+export function observeDiaKeychainEnvironments(environments: { keychainHome: Record<string, string>; profileHome: Record<string, string> },
+  allowedRoots: string[], keychain: string, expected: string, milliseconds = 20_000,
+  execute?: (env: Record<string, string>, args: string[], timeout: number) => KeychainResult) {
+  const deadline = performance.now() + milliseconds;
+  const environmentsObserved: Record<string, ReturnType<typeof observeFixtureKeychain> | { unavailable: true }> = {};
+  for (const label of ['keychainHome', 'profileHome'] as const) {
+    const env = environments[label];
+    try {
+      environmentsObserved[label] = observeFixtureKeychain(env, allowedRoots, keychain, expected, Math.min(10_000, deadline - performance.now()),
+        execute ? (args, timeout) => execute(env, args, timeout) : undefined, 'Dia Safe Storage');
+    } catch { environmentsObserved[label] = { unavailable: true }; }
+  }
+  let firstFailure: { environment: 'keychainHome' | 'profileHome'; check: 'search_path' | 'explicit_read' } | undefined;
+  for (const label of ['keychainHome', 'profileHome'] as const) {
+    const facts = environmentsObserved[label];
+    if (!('searchPathMatches' in facts) || !facts.searchPathMatches) firstFailure ??= { environment: label, check: 'search_path' };
+  }
+  const keychainFacts = environmentsObserved.keychainHome;
+  if (!('explicitReadMatches' in keychainFacts) || !keychainFacts.explicitReadMatches) firstFailure ??= { environment: 'keychainHome', check: 'explicit_read' };
+  return { environments: environmentsObserved, firstFailure };
 }
 
 export function fixtureKeychainRestoreCommands(snapshot: { search: string[]; default: string[] }, keychain: string, created: boolean): string[][] {
@@ -333,7 +366,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     if (!Number.isFinite(timeout) || timeout < 1) throw new Error('qualification_budget_exhausted');
     const result = spawnSync(command, args, { env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
     if (result.error || result.status !== 0) {
-      receipt[cleaning ? 'cleanupCommandFailure' : 'commandFailure'] = { command: path.basename(command), operation: args[0], exitCode: result.status,
+      receipt[cleaning ? 'cleanupCommandFailure' : 'commandFailure'] ??= { command: path.basename(command), operation: args[0], exitCode: result.status,
         timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' };
       throw new Error('command_failed');
     }
@@ -403,24 +436,38 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
       architectures, executableSha256: await within(() => sha256(executable), 10_000), signatureVerified: true, gatekeeperNotarized: true };
     stage = 'temporary_keychain';
+    receipt.keychainStage = 'capture_original';
     const originalKeychains = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root]);
     originalSearch = originalKeychains.search;
     originalDefault = originalKeychains.default;
     const keychainPassword = randomBytes(24).toString('hex');
     const fixtureKey = randomBytes(24).toString('hex');
-    keychainChanged = true;
-    run('/usr/bin/security', ['create-keychain', '-p', keychainPassword, keychain]);
-    keychainCreated = true;
-    run('/usr/bin/security', ['set-keychain-settings', '-lut', '600', keychain]);
-    run('/usr/bin/security', ['unlock-keychain', '-p', keychainPassword, keychain]);
-    run('/usr/bin/security', ['add-generic-password', '-a', 'Dia', '-s', 'Dia Safe Storage', '-w', fixtureKey, '-T', executable, '-T', '/usr/bin/security', keychain]);
-    run('/usr/bin/security', ['list-keychains', '-d', 'user', '-s', keychain]);
-    run('/usr/bin/security', ['default-keychain', '-d', 'user', '-s', keychain]);
-    for (const env of [systemEnvironment, fixtureEnvironment]) {
-      const active = parseKeychainPaths(run('/usr/bin/security', ['list-keychains', '-d', 'user'], 10_000, env).stdout);
-      if (active.length !== 1 || realpathSync(active[0]) !== realpathSync(keychain)) throw new Error('keychain_search_isolation_failed');
+    let setupFailure: unknown;
+    try {
+      receipt.keychainStage = 'create_fixture';
+      keychainChanged = true;
+      run('/usr/bin/security', ['create-keychain', '-p', keychainPassword, keychain]);
+      keychainCreated = true;
+      receipt.keychainStage = 'configure_settings';
+      run('/usr/bin/security', ['set-keychain-settings', '-lut', '600', keychain]);
+      receipt.keychainStage = 'unlock_fixture';
+      run('/usr/bin/security', ['unlock-keychain', '-p', keychainPassword, keychain]);
+      receipt.keychainStage = 'seed_fixture';
+      run('/usr/bin/security', ['add-generic-password', '-a', 'Dia', '-s', 'Dia Safe Storage', '-w', fixtureKey, '-T', executable, '-T', '/usr/bin/security', keychain]);
+      receipt.keychainStage = 'set_search';
+      run('/usr/bin/security', ['list-keychains', '-d', 'user', '-s', keychain]);
+      receipt.keychainStage = 'set_default';
+      run('/usr/bin/security', ['default-keychain', '-d', 'user', '-s', keychain]);
+      receipt.keychainStage = 'validate_environments';
+    } catch (error) { setupFailure = error; }
+    if (keychainCreated) {
+      receipt.keychainObservations = observeDiaKeychainEnvironments({ keychainHome: systemEnvironment, profileHome: fixtureEnvironment },
+        [systemEnvironment.HOME, root], keychain, fixtureKey, Math.min(20_000, deadline - performance.now()));
     }
-    if (run('/usr/bin/security', ['find-generic-password', '-s', 'Dia Safe Storage', '-w', keychain]).stdout !== fixtureKey) throw new Error('fixture_keychain_read_failed');
+    if (setupFailure !== undefined) throw setupFailure;
+    const keychainFailure = receipt.keychainObservations.firstFailure;
+    if (keychainFailure) throw new Error(keychainFailure.check === 'search_path' ? 'keychain_search_isolation_failed' : 'fixture_keychain_read_failed');
+    receipt.keychainStage = 'completed';
     delete process.env.DEBUG;
     delete process.env.PWDEBUG;
     const { chromium } = await import('playwright');
@@ -496,8 +543,13 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     receipt.failureStage = stage;
     if (error instanceof Error && error.message === 'onboarding_or_external_page') receipt.blocker = 'onboarding_or_unexpected_startup_page';
     if (error instanceof Error && error.message === 'preexisting_browser_state_refused') receipt.blocker = 'preexisting_browser_state_refused';
+    if (error instanceof Error && ['user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'invalid_keychain_snapshot',
+      'empty_keychain_snapshot', 'invalid_default_keychain_snapshot', 'keychain_outside_owned_home_refused',
+      'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned'].includes(error.message)) receipt.blocker = error.message;
     const code = (error as { code?: string } | null)?.code;
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
+    receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',
+      ...(stage === 'temporary_keychain' ? { keychainStage: receipt.keychainStage } : {}) };
     receipt.status = Object.values(receipt.cases).includes('failed') ? 'failed' : 'incomplete';
   } finally {
     cleaning = true;
