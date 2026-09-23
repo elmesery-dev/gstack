@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
 import { NATIVE_BROWSER_VERSION_COMMAND } from '../src/cookie-import-native-integrity';
@@ -12,7 +12,43 @@ import { createNativeCookieJob, joinNativeCookieJob, NativeCookieJobError, nativ
 import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
 
 const root = mkdtempSync(path.join(tmpdir(), 'cookie-job-'));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+const resolvedRoot = realpathSync(root);
+const fixtureChildren = new Set<ChildProcess>();
+
+function ownFixtureChild<T extends ChildProcess>(child: T): T {
+  fixtureChildren.add(child);
+  child.once('close', () => fixtureChildren.delete(child));
+  return child;
+}
+
+afterAll(() => {
+  try {
+    if (existsSync(root) && realpathSync(root) !== resolvedRoot) throw new Error('Native fixture root ownership changed');
+    rmSync(root, { recursive: true, force: true });
+  } catch (error) {
+    const entries: { path: string; type: string; mode?: number; code?: string }[] = [];
+    let rootVerified = false;
+    let rootMode: number | null = null;
+    try { rootVerified = realpathSync(root) === resolvedRoot; rootMode = lstatSync(root).mode; } catch {}
+    const pending = rootVerified ? [root] : [];
+    while (pending.length && entries.length < 128) {
+      const directory = pending.shift()!;
+      try {
+        for (const entry of readdirSync(directory, { withFileTypes: true })) {
+          if (entries.length >= 128) break;
+          const child = path.join(directory, entry.name);
+          const state = lstatSync(child);
+          entries.push({ path: path.relative(root, child), type: state.isSymbolicLink() ? 'link' : state.isDirectory() ? 'directory' : 'file', mode: state.mode });
+          if (state.isDirectory() && !state.isSymbolicLink() && realpathSync(child).startsWith(resolvedRoot + path.sep)) pending.push(child);
+        }
+      } catch (inspectionError) {
+        entries.push({ path: path.relative(root, directory), type: 'unreadable', code: (inspectionError as NodeJS.ErrnoException).code });
+      }
+    }
+    console.error(JSON.stringify({ nativeFixtureCleanup: { code: (error as NodeJS.ErrnoException).code, pendingChildCloses: fixtureChildren.size, rootVerified, rootMode, remaining: entries } }));
+    throw error;
+  }
+});
 
 const request: NativeCookieRequest = {
   nodeExecutable: 'C:\\fixture\\node.exe',
@@ -295,7 +331,7 @@ function safeLaunchEvidence(file: string): object {
 }
 
 function nativeSupervisor(input: NativeCookieRequest, env: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+  const child = ownFixtureChild(spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   const timer = setTimeout(() => child.kill(), 30_000);
@@ -426,7 +462,7 @@ describe('native Windows process qualification', () => {
       const require = createRequire(import.meta.url);
       writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), mode })});`);
       const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
-      const supervisor = spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      const supervisor = ownFixtureChild(spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
       const closed = new Promise<void>(resolve => supervisor.once('close', () => resolve()));
       let output = '';
       supervisor.stdout.on('data', chunk => { output += chunk; });
@@ -462,8 +498,9 @@ describe('native Windows process qualification', () => {
       const playwrightEntry = path.join(fixture, 'playwright.cjs');
       writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-process.cjs'))})(${JSON.stringify({ pidsFile: pids, mode })});`);
       const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
-      const sibling = spawn(node, ['-e', 'setInterval(() => {}, 1000)'], { env: environment, stdio: 'ignore', windowsHide: true });
-      const supervisor = spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+      const sibling = ownFixtureChild(spawn(node, ['-e', 'setInterval(() => {}, 1000)'], { env: environment, stdio: 'ignore', windowsHide: true }));
+      const siblingClosed = new Promise<void>(resolve => sibling.once('close', () => resolve()));
+      const supervisor = ownFixtureChild(spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
       const closed = new Promise<void>(resolve => supervisor.once('close', () => resolve()));
       let output = '';
       supervisor.stdout.on('data', chunk => { output += chunk; });
@@ -487,13 +524,43 @@ describe('native Windows process qualification', () => {
       } finally {
         supervisor.kill();
         sibling.kill();
-        await closed;
+        await Promise.all([closed, siblingClosed]);
       }
     }, 15_000);
   }
 });
 
 describe('native Windows launch diagnostics', () => {
+  test.skipIf(process.platform !== 'win32')('the native observer reads only the owned process and preserves Windows argument boundaries', async () => {
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for process metadata verification');
+    const environment = nativeCookieEnvironment(process.env);
+    const args = ['-e', 'setInterval(() => {}, 1000)', '--', 'argument with spaces', '--user-data-dir=C:\\synthetic sensitive-sentinel'];
+    const child = ownFixtureChild(spawn(node, args, { env: environment, stdio: 'ignore', windowsHide: true }));
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    const observe = (owner: number) => spawnSync(process.execPath, [
+      '--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, 'fixtures/native-cookie-process-observer.ts'),
+      Buffer.from(JSON.stringify({ pid: child.pid, owner, image: node })).toString('base64'),
+    ], { env: environment, encoding: 'utf8', timeout: 5_000, windowsHide: true });
+    try {
+      const denied = observe(process.pid + 1);
+      expect(denied.status).toBe(0);
+      expect(JSON.parse(denied.stdout)).toMatchObject({ available: false, reason: 'owned_process_unavailable', parentMatched: false });
+      const observed = observe(process.pid);
+      expect(observed.status).toBe(0);
+      expect(observed.stderr).toBe('');
+      expect(observed.stdout).not.toContain('sensitive-sentinel');
+      expect(JSON.parse(observed.stdout)).toMatchObject({
+        available: true, parentMatched: true, imageMatched: true,
+        argumentHashes: args.map(arg => createHash('sha256').update(arg).digest('hex')),
+        userDataDirCount: 1,
+      });
+    } finally {
+      child.kill();
+      await closed;
+    }
+  }, 15_000);
+
   test.skipIf(process.platform !== 'win32')('the qualification version command reads the explicit executable environment variable', () => {
     const node = Bun.which('node');
     if (!node) throw new Error('Node is required for version metadata verification');
@@ -560,7 +627,7 @@ describe('native Windows launch diagnostics', () => {
     const observation = path.join(fixture, 'launch.json');
     const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
     const require = createRequire(import.meta.url);
-    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true })});`);
+    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true, observerExecutable: process.execPath })});`);
     const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
     const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
     const supervisor = nativeSupervisor(input, environment);

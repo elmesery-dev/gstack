@@ -3,7 +3,8 @@ const cp = require('node:child_process');
 const { createHash } = require('node:crypto');
 const path = require('node:path');
 
-module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspectCommandLine = false }) => {
+module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspectCommandLine = false, observerExecutable }) => {
+  if (inspectCommandLine && process.platform === 'win32' && typeof observerExecutable !== 'string') throw new Error('Native observer executable is required');
   const originalSpawn = cp.spawn;
   let inspected = Promise.resolve();
   cp.spawn = function(command, args, options) {
@@ -45,11 +46,11 @@ module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspect
     });
     if (inspectCommandLine && process.platform === 'win32' && Number.isInteger(child.pid)) {
       inspected = new Promise(resolve => {
-        const script = fs.readFileSync(path.join(__dirname, 'native-cookie-command-line.ps1'), 'utf8');
-        const probe = originalSpawn(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
-          '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+        const probe = originalSpawn(observerExecutable, [
+          '--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.join(__dirname, 'native-cookie-process-observer.ts'),
+          Buffer.from(JSON.stringify({ pid: child.pid, owner: process.pid, image: command })).toString('base64'),
         ], {
-          env: { ...options.env, GSTACK_NATIVE_BROWSER_PID: String(child.pid), GSTACK_NATIVE_OWNER_PID: String(process.pid), GSTACK_NATIVE_BROWSER_IMAGE: command },
+          env: options.env,
           stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
         });
         let output = '';
@@ -68,12 +69,15 @@ module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspect
               available: measured.available === true,
               parentMatched: measured.parentMatched === true,
               imageMatched: measured.imageMatched === true,
-              reason: ['not_windows', 'owned_process_unavailable', 'command_line_probe_failed'].includes(measured.reason) ? measured.reason : undefined,
+              reason: ['not_windows', 'invalid_input', 'process_open', 'process_identity', 'owned_process_unavailable', 'command_line', 'command_line_length', 'command_line_bounds', 'argument_parse', 'argument_bounds', 'job_query', 'observer_initialize'].includes(measured.reason) ? measured.reason : undefined,
+              win32Error: Number.isInteger(measured.win32Error) ? measured.win32Error : undefined,
+              ntStatus: Number.isInteger(measured.ntStatus) ? measured.ntStatus : undefined,
               commandLineHash: /^[a-f0-9]{64}$/.test(measured.commandLineHash) ? measured.commandLineHash : undefined,
               argumentsMatchRequested: measured.available === true && JSON.stringify(measured.argumentHashes) === JSON.stringify(expectedHashes),
               userDataDirCount: Number.isInteger(measured.userDataDirCount) && measured.userDataDirCount >= 0 && measured.userDataDirCount <= 128 ? measured.userDataDirCount : undefined,
               userDataDirMatchesRequested: typeof dataDir === 'string' && measured.userDataDirHash === createHash('sha256').update(dataDir).digest('hex'),
               pipePresent: measured.pipePresent === true,
+              browserInJob: typeof measured.browserInJob === 'boolean' ? measured.browserInJob : undefined,
               observerJobLimitFlags: Number.isInteger(measured.observerJobLimitFlags) ? measured.observerJobLimitFlags : undefined,
               observerJobQueryError: Number.isInteger(measured.observerJobQueryError) ? measured.observerJobQueryError : undefined,
               exitCode: code, stderrBytes,

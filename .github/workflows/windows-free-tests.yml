@@ -31,6 +31,10 @@ on:
         description: Run disposable ARM64 macOS Dia qualification instead of Windows
         type: boolean
         default: false
+      native_diagnostics_only:
+        description: Run Windows launch diagnostics and credential regressions without qualification
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-free-${{ github.event.pull_request.number || github.run_id }}
@@ -54,6 +58,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        if: inputs.native_diagnostics_only
+        with:
+          node-version: 24.18.0
 
       # bun install was 35s of a 55s job, all network. Cache keyed on the
       # lockfile; bun's install cache lives under ~/.bun/install/cache on
@@ -88,6 +97,7 @@ jobs:
         shell: bash
 
       - name: Generate host SKILL.md outputs (.agents, .factory)
+        if: ${{ !inputs.native_diagnostics_only }}
         # The golden-file regression tests in test/gen-skill-docs.test.ts read
         # .agents/skills/gstack-ship/SKILL.md and .factory/skills/gstack-ship/
         # SKILL.md. Both are gitignored — generated on demand by gen:skill-docs.
@@ -119,6 +129,7 @@ jobs:
       #    (test/test-free-shards.test.ts)
 
       - name: Run curated Windows-safe suite
+        if: ${{ !inputs.native_diagnostics_only }}
         # Replaces the previous hand-listed 13-file subset, which drifted from
         # the curation registry it was supposed to sample. The runner's
         # --windows-only curation (scripts/test-free-shards.ts) is the single
@@ -134,6 +145,16 @@ jobs:
         run: bun run test:windows
         shell: bash
 
+      - name: Run focused native launch and credential diagnostics
+        if: inputs.native_diagnostics_only
+        shell: bash
+        run: |
+          set -o pipefail
+          status=0
+          bun test browse/test/cookie-import-native-job.test.ts --test-name-pattern 'native Windows launch diagnostics' 2>&1 | tee "$RUNNER_TEMP/gstack-free-test-native-diagnostics.log" || status=1
+          bun test browse/test/cookie-credential-deadline.test.ts browse/test/cookie-import-node.test.ts browse/test/bun-polyfill.test.ts 2>&1 | tee "$RUNNER_TEMP/gstack-free-test-credential-diagnostics.log" || status=1
+          exit "$status"
+
       # Same diagnosability contract as free-tests.yml: a red lane must
       # carry the WHY (the runner's quiet console names files, not causes).
       # (#2561 was written against the old hand-listed subset; its two new
@@ -148,7 +169,7 @@ jobs:
           if-no-files-found: ignore
 
   cookie-native-qualification:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dia_native_only
+    if: github.event_name == 'workflow_dispatch' && !inputs.dia_native_only && !inputs.native_diagnostics_only
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
