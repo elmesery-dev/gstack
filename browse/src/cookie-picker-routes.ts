@@ -210,6 +210,9 @@ export async function handleCookiePickerRoute(
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (req.method === 'POST' && !hasBearer && req.headers.get('origin') !== url.origin) {
+      return errorResponse('Cookie picker mutations require a same-origin request.', 'invalid_origin', { port, status: 403 });
+    }
     const pickerContext = hasSession ? validSessions.get(sessionId!)! : undefined;
 
     // GET /cookie-picker/browsers — list installed browsers

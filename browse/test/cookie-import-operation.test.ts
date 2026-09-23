@@ -35,7 +35,7 @@ function route(method: string, pathname: string, body?: unknown, cookie?: string
   const url = new URL('http://127.0.0.1:9470/cookie-picker' + pathname);
   return handleCookiePickerRoute(url, new Request(url, {
     method,
-    headers: cookie ? { Cookie: cookie, 'Content-Type': 'application/json' } : { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
+    headers: cookie ? { Cookie: cookie, Origin: url.origin, 'Content-Type': 'application/json' } : { Authorization: 'Bearer fixture', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), bm, 'fixture');
 }
@@ -79,9 +79,49 @@ beforeEach(() => {
 afterEach(() => {
   homeMock.mockRestore();
   const now = Date.now;
-  Date.now = () => now() + 3_700_000;
+  Date.now = () => now() + 300_000 + 3_600_000 + 1;
   try { hasActivePicker(); } finally { Date.now = now; }
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+describe('cookie picker mutation origin policy', () => {
+  for (const action of ['import', 'remove']) {
+    for (const origin of [undefined, 'null', 'http://127.0.0.1:9988', 'http://localhost:9470', 'https://attacker.test']) {
+      test(`${action} rejects session mutation from ${origin ?? 'missing origin'} before touching the target`, async () => {
+        installProfile();
+        const code = generatePickerCode({ target: { page, url: currentUrl } });
+        const exchanged = await route('GET', `?code=${code}`);
+        const cookie = exchanged.headers.get('set-cookie')!;
+        const url = new URL(`http://127.0.0.1:9470/cookie-picker/${action}`);
+        const response = await handleCookiePickerRoute(url, new Request(url, {
+          method: 'POST',
+          headers: { Cookie: cookie, 'Content-Type': 'text/plain', 'Sec-Fetch-Site': 'same-site', ...(origin === undefined ? {} : { Origin: origin }) },
+          body: JSON.stringify({ browser: 'Chromium', profile: 'Default', domains: ['example.test'], clearStorage: true }),
+        }), bm, 'fixture');
+        expect(response.status).toBe(403);
+        expect((await response.json()).code).toBe('invalid_origin');
+        expect(context.addCookies).not.toHaveBeenCalled();
+        expect(context.clearCookies).not.toHaveBeenCalled();
+        expect(cdp.send).not.toHaveBeenCalled();
+      });
+    }
+
+    test(`${action} accepts the real picker origin and preserves bearer authorization without browser headers`, async () => {
+      installProfile();
+      const code = generatePickerCode({ target: { page, url: currentUrl } });
+      const exchanged = await route('GET', `?code=${code}`);
+      const cookie = exchanged.headers.get('set-cookie')!;
+      const body = { browser: 'Chromium', profile: 'Default', domains: ['example.test'], clearStorage: true };
+      expect((await route('POST', `/${action}`, body, cookie)).status).toBe(200);
+      expect((await route('POST', `/${action}`, body)).status).toBe(200);
+      if (action === 'import') {
+        expect(context.addCookies).toHaveBeenCalledTimes(2);
+        expect(cdp.send.mock.calls.filter(([method]: [string]) => method === 'Runtime.callFunctionOn')).toHaveLength(2);
+      } else {
+        expect(context.clearCookies).toHaveBeenCalledTimes(2);
+      }
+    });
+  }
 });
 
 describe('cookie import argument and selection policy', () => {
