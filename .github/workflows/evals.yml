@@ -8,6 +8,11 @@ on:
         description: 'Run ALL gate tests in the sliced lane (bypass diff selection; also arms the hollow-shard guard)'
         type: boolean
         default: true
+      validation_phase:
+        description: 'Validation branch phase; run quality before behavior on unchanged inputs'
+        type: choice
+        options: [all, quality, behavior]
+        default: all
 
 concurrency:
   group: evals-${{ github.event.pull_request.number || github.run_id }}
@@ -133,9 +138,30 @@ jobs:
           bun-version: 1.4.0
 
       - name: Emit run manifest
+        if: github.event_name != 'workflow_dispatch' || inputs.validation_phase == 'all'
         env:
           EVALS_ALL: ${{ (github.event_name == 'workflow_dispatch' && inputs.evals_all) && '1' || '' }}
         run: EVALS_TIER=gate bun --no-install run scripts/test-paid-shards.ts --tier gate --emit-plan /tmp/paid-plan/manifest.json --slices 6
+
+      - name: Emit validation-phase manifest
+        if: github.event_name == 'workflow_dispatch' && inputs.validation_phase != 'all'
+        env:
+          VALIDATION_PHASE: ${{ inputs.validation_phase }}
+          EVALS_ALL: ${{ inputs.evals_all && '1' || '' }}
+          EVALS_TIER: gate
+        run: |
+          bun --no-install -e '
+          import { mkdirSync, writeFileSync } from "node:fs";
+          import { buildRunManifest, collectPaidTestFiles } from "./scripts/test-paid-shards.ts";
+          const phase = process.env.VALIDATION_PHASE;
+          if (!["quality", "behavior"].includes(phase)) throw new Error("Invalid validation phase");
+          const discovered = collectPaidTestFiles().filter(file => file.startsWith("test/skill-llm-eval") === (phase === "quality"));
+          const manifest = buildRunManifest({ tier: "gate", profile: "full", sliceCount: 6, evalsAll: process.env.EVALS_ALL === "1", discovered });
+          manifest.selectionReason = phase + " validation subset; " + manifest.selectionReason;
+          mkdirSync("/tmp/paid-plan", { recursive: true });
+          writeFileSync("/tmp/paid-plan/manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          console.log(phase + ": " + manifest.entries.filter(entry => entry.status === "planned").length + " planned shards");
+          '
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
