@@ -18,8 +18,10 @@ import * as path from 'path';
 import { callJudge, judge } from './helpers/llm-judge';
 import { ENG_REVIEW_EXCERPT } from './helpers/workflow-excerpt';
 import type { JudgeScore } from './helpers/llm-judge';
-import { readWorkflowJudgeInput, buildWorkflowJudgePrompt } from './helpers/workflow-judge-input';
+import { readWorkflowJudgeInput, buildWorkflowJudgePrompt, type WorkflowJudgeInput } from './helpers/workflow-judge-input';
 import { prepareWorkflowJudgeCache } from './helpers/workflow-judge-cache';
+import { buildCookieWorkflowJudgeInput, COOKIE_WORKFLOW_JUDGE } from './helpers/cookie-workflow-judge-input';
+import { resolveEvalModel } from '../lib/eval-model';
 import { LLM_JUDGE_TOUCHFILES } from './helpers/touchfiles';
 // Runs when EVALS=1 is set (requires ANTHROPIC_API_KEY in env) — the EVALS
 // gate lives in the shared describeIfSelected. Selection machinery is shared
@@ -593,6 +595,7 @@ async function runWorkflowJudge(opts: {
   judgeContext: string;
   judgeGoal: string;
   thresholds?: { clarity: number; completeness: number; actionability: number };
+  readInput?: () => WorkflowJudgeInput;
 }) {
   const started = performance.now();
   const previous = workflowJudgeAttempts.get(opts.testName);
@@ -603,6 +606,7 @@ async function runWorkflowJudge(opts: {
   let stage: 'input' | 'judge' | 'validation' | 'recording' = 'input';
   let finalized = false;
   let scores: JudgeScore | undefined;
+  let customInputMetadata: { prompt: string; model: string } | undefined;
   let reused: ReturnType<ReturnType<typeof prepareWorkflowJudgeCache>['lookup']> = null;
   let timer: ReturnType<typeof setTimeout>;
   let rejectStopped: (error: Error) => void;
@@ -621,6 +625,7 @@ async function runWorkflowJudge(opts: {
       duration_ms: Math.max(0, performance.now() - started),
       cost_usd: reused || !scores ? 0 : 0.02,
       execution: reused ? 'reused' : 'executed',
+      ...customInputMetadata,
       ...(reused ? { reused_from: { input_key: reused.reuse.key, run_id: reused.reuse.source.runId,
         revision: reused.reuse.source.revision, completed_at: new Date(reused.reuse.source.completedAt).toISOString() } } : {}),
       ...(scores ? { judge_scores: { clarity: scores.clarity, completeness: scores.completeness, actionability: scores.actionability },
@@ -653,10 +658,11 @@ async function runWorkflowJudge(opts: {
   const work = async () => {
     checkActive();
     const thresholds = { clarity: 4, completeness: 3, actionability: 4, ...opts.thresholds };
-    const input = readWorkflowJudgeInput({ root: ROOT, skillPath: opts.skillPath,
+    const input = opts.readInput ? opts.readInput() : readWorkflowJudgeInput({ root: ROOT, skillPath: opts.skillPath,
       startMarker: opts.startMarker, endMarker: opts.endMarker });
     checkActive();
     const prompt = buildWorkflowJudgePrompt(opts, input);
+    if (opts.readInput) customInputMetadata = { prompt, model: resolveEvalModel('judge') };
     const cache = prepareWorkflowJudgeCache({ ...opts, root: ROOT, thresholds, prompt, attempt });
     checkActive();
     reused = cache.lookup();
@@ -938,6 +944,20 @@ ${voiceSection}`);
     expect(result.avoids_ai_vocabulary).toBeGreaterThanOrEqual(4);
     expect(result.connects_user_outcomes).toBeGreaterThanOrEqual(4);
   }, JUDGE_MS);
+});
+
+describeIfSelected('Cookie setup workflow quality', ['setup-browser-cookies/SKILL.md workflow'], () => {
+  testIfSelected('setup-browser-cookies/SKILL.md workflow', async () => {
+    await runWorkflowJudge({
+      testName: 'setup-browser-cookies/SKILL.md workflow',
+      suite: 'Cookie setup workflow quality',
+      skillPath: 'setup-browser-cookies/SKILL.md',
+      startMarker: '# Setup Browser Cookies',
+      endMarker: null,
+      ...COOKIE_WORKFLOW_JUDGE,
+      readInput: () => buildCookieWorkflowJudgeInput(ROOT),
+    });
+  }, WORKFLOW_JUDGE_TEST_MS);
 });
 
 // Module-level afterAll — finalize eval collector after all tests complete

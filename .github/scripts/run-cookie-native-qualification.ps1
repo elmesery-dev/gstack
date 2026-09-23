@@ -15,11 +15,15 @@ $repository = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ($Child) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   if ($identity.User.Value -ne $ExpectedSid) { throw 'Unexpected qualification account identity.' }
+  $registered = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedSid").ProfileImagePath
+  $registered = [Environment]::ExpandEnvironmentVariables($registered)
+  $env:USERPROFILE = $registered
+  $env:HOME = $registered
   $profile = [Environment]::GetFolderPath('UserProfile')
   $local = [Environment]::GetFolderPath('LocalApplicationData')
   $roaming = [Environment]::GetFolderPath('ApplicationData')
-  $registered = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedSid").ProfileImagePath
-  if ($profile -ne [Environment]::ExpandEnvironmentVariables($registered) -or -not $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase)) {
+  if ($profile -ne $registered -or -not $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Output (ConvertTo-Json -Compress @{ profileMatchesRegistered = ($profile -eq $registered); localInsideProfile = $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase) })
     throw 'Qualification must use the new account real Windows profile.'
   }
   $keep = @('SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'PATHEXT')

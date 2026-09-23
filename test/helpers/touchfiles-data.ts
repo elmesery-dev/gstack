@@ -1740,6 +1740,7 @@ export const E2E_TIERS: Record<string, 'gate' | 'periodic'> = {
  * LLM-judge test touchfiles — keyed by test description string.
  */
 export const LLM_JUDGE_TOUCHFILES: Record<string, string[]> = {
+  'setup-browser-cookies/SKILL.md workflow': ['setup-browser-cookies/SKILL.md.tmpl', 'setup-browser-cookies/SKILL.md', 'BROWSER.md', 'test/helpers/cookie-workflow-judge-input.ts', 'test/cookie-workflow-judge-input.test.ts', 'test/helpers/workflow-judge-input.ts', 'test/skill-llm-eval.test.ts'],
   'command reference table':          ['browse/sections/**', 'SKILL.md', 'SKILL.md.tmpl', 'browse/src/commands.ts', 'test/skill-llm-eval.test.ts'],
   'snapshot flags reference':         ['browse/sections/**', 'SKILL.md', 'SKILL.md.tmpl', 'browse/src/snapshot.ts', 'test/skill-llm-eval.test.ts'],
   'browse/SKILL.md reference':        ['browse/sections/**', 'browse/SKILL.md', 'browse/SKILL.md.tmpl', 'browse/src/**', 'test/skill-llm-eval.test.ts'],

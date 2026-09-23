@@ -150,7 +150,7 @@ test('workflow registration preserves model work and reserves only terminal-reco
   expect(body).toContain('const workDeadline = started + JUDGE_MS;');
   expect(source).toContain('const WORKFLOW_JUDGE_RECORD_MS = 5_000;');
   expect(source).toContain('const WORKFLOW_JUDGE_TEST_MS = JUDGE_MS + 10_000;');
-  expect(source.match(/\}, WORKFLOW_JUDGE_TEST_MS\);/g)).toHaveLength(14);
+  expect(source.match(/\}, WORKFLOW_JUDGE_TEST_MS\);/g)).toHaveLength(15);
   expect(source.match(/\}, JUDGE_MS\);/g)).toHaveLength(11);
 });
 
@@ -193,6 +193,8 @@ test('the actual workflow callback executes once, reuses with provenance, and pr
   await first.run(options);
   expect(first.prompts).toEqual([f.opts.prompt]); expect(f.entries()).toHaveLength(1);
   expect(first.records[0]).toMatchObject({ passed: true, execution: 'executed', cost_usd: 0.02 });
+  expect(first.records[0]).not.toHaveProperty('prompt');
+  expect(first.records[0]).not.toHaveProperty('model');
   const reused = actualCallback(f, { judge: async () => ({ ...scores, clarity: 1 }) });
   await reused.run(options);
   expect(reused.prompts).toHaveLength(0);

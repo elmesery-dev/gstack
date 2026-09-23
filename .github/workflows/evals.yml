@@ -11,7 +11,7 @@ on:
       validation_phase:
         description: 'Validation branch phase; run quality before behavior on unchanged inputs'
         type: choice
-        options: [all, quality, behavior]
+        options: [all, quality, cookie-quality, behavior]
         default: all
 
 concurrency:
@@ -154,9 +154,11 @@ jobs:
           import { mkdirSync, writeFileSync } from "node:fs";
           import { buildRunManifest, collectPaidTestFiles } from "./scripts/test-paid-shards.ts";
           const phase = process.env.VALIDATION_PHASE;
-          if (!["quality", "behavior"].includes(phase)) throw new Error("Invalid validation phase");
-          const discovered = collectPaidTestFiles().filter(file => file.startsWith("test/skill-llm-eval") === (phase === "quality"));
+          if (!["quality", "cookie-quality", "behavior"].includes(phase)) throw new Error("Invalid validation phase");
+          const discovered = phase === "cookie-quality" ? ["test/skill-llm-eval.test.ts"]
+            : collectPaidTestFiles().filter(file => file.startsWith("test/skill-llm-eval") === (phase === "quality"));
           const manifest = buildRunManifest({ tier: "gate", profile: "full", sliceCount: 6, evalsAll: process.env.EVALS_ALL === "1", discovered });
+          if (phase === "cookie-quality") manifest.selection = { e2e: [], judges: ["setup-browser-cookies/SKILL.md workflow"] };
           manifest.selectionReason = phase + " validation subset; " + manifest.selectionReason;
           mkdirSync("/tmp/paid-plan", { recursive: true });
           writeFileSync("/tmp/paid-plan/manifest.json", JSON.stringify(manifest, null, 2) + "\n");
@@ -178,9 +180,9 @@ jobs:
     # 40-way per row queued claude session STARTUP behind 39 siblings and ate
     # per-test budgets — the documented timeout-flake family). Tune with
     # parity data before raising.
-    # The complete gate census needs at most 197 minutes per slice; keep
+    # The complete gate census needs at most 201 minutes per slice; keep
     # 20 minutes for setup/upload without preempting configured retries.
-    timeout-minutes: 220
+    timeout-minutes: 221
     permissions:
       contents: read
       packages: read
