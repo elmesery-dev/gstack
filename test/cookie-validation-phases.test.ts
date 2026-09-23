@@ -85,3 +85,47 @@ test('Dia comparison uses separate pinned runtime jobs and retains diagnostic fa
   expect(windows.jobs['windows-free-tests'].if).toContain('!inputs.dia_launch_comparison');
   expect(windows.jobs['cookie-native-qualification'].if).toContain('!inputs.dia_launch_comparison');
 });
+
+test('Dia GUI readiness is an exclusive, single-job diagnostic without browser installation or launch', () => {
+  const windows = Bun.YAML.parse(readFileSync(path.join(root, '.github/workflows/windows-free-tests.yml'), 'utf8')) as any;
+  const job = windows.jobs['dia-native-qualification'];
+  const input = windows.on.workflow_dispatch.inputs.dia_gui_readiness;
+  expect(input).toMatchObject({ type: 'boolean', default: false });
+  expect(job.if).toContain('inputs.dia_gui_readiness');
+  expect(job.strategy.matrix.runtime).toContain('inputs.dia_launch_comparison && !inputs.dia_gui_readiness');
+  for (const name of ['windows-free-tests', 'cookie-native-qualification']) {
+    expect(windows.jobs[name].if).toContain('!inputs.dia_gui_readiness');
+  }
+  const probe = job.steps.find((step: any) => step.name === 'Inspect GUI readiness without browser or Keychain access');
+  expect(probe.if).toBe('inputs.dia_gui_readiness');
+  expect(probe.run).toEndWith('.github/scripts/run-dia-native-qualification.ts --gui-readiness-only');
+  expect(probe.env).toEqual({ GSTACK_DIA_NATIVE_QUALIFY: '1' });
+  const excluded = job.steps.filter((step: any) => step.uses?.startsWith('actions/setup-node@')
+    || ['Install pinned dependencies', 'Install the synthetic destination browser', 'Qualify native Dia discovery, decryption, and import',
+      'Compare protected native Dia launch without qualification credit'].includes(step.name));
+  expect(excluded).toHaveLength(5);
+  for (const step of excluded) expect(step.if).toContain('!inputs.dia_gui_readiness');
+  const upload = job.steps.find((step: any) => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(upload.if).toBe('always()');
+  expect(upload.with.name).toContain("inputs.dia_gui_readiness && 'dia-gui-readiness'");
+  expect(upload.with.path).toBe('${{ runner.temp }}/dia-native-qualification.json');
+});
+
+test('the actual GUI readiness selection guard refuses conflicting or malformed mode inputs', () => {
+  const windows = Bun.YAML.parse(readFileSync(path.join(root, '.github/workflows/windows-free-tests.yml'), 'utf8')) as any;
+  const steps = windows.jobs['dia-native-qualification'].steps;
+  const guard = steps.find((step: any) => step.name === 'Validate GUI readiness selection');
+  expect(guard.if).toBe('inputs.dia_gui_readiness');
+  expect(guard.env.OTHER_DIA_MODES).toBe('${{ inputs.dia_native_only || inputs.dia_launch_comparison || inputs.native_diagnostics_only }}');
+  expect(steps.indexOf(guard)).toBeLessThan(steps.findIndex((step: any) => step.name === 'Install pinned dependencies'));
+  const script = guard.run.match(/ -e '\n([\s\S]*)\n'\s*$/)?.[1];
+  expect(script).toBeDefined();
+  for (const input of ['false', 'true', '', 'unknown']) {
+    const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, '-e', script!], {
+      cwd: root, env: { ...process.env, OTHER_DIA_MODES: input }, encoding: 'utf8', timeout: 5000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(input === 'false' ? 0 : 1);
+    expect(result.stderr.includes('must be selected alone')).toBe(input !== 'false');
+  }
+});

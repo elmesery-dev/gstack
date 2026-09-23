@@ -6,7 +6,8 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, FRESH_WORK_PREFIX, type FreshAccount,
   nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord, stopOwnedBrowserGroup,
-  playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, runDiaLaunchComparison, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
+  inspectMachOArchitectures, playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, runDiaLaunchComparison, runGuiReadiness,
+  validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 export { FRESH_WORK_PREFIX, ownsFreshAccount, parseDirectoryRecord } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
@@ -376,12 +377,23 @@ async function freshWorker(configFile: string) {
   try {
     if (!/^[a-z][a-z0-9]{8,24}$/.test(account.account) || process.getuid?.() !== account.uid || process.geteuid?.() !== account.uid
       || process.getgid?.() !== account.gid || realpathSync(homedir()) !== account.home || realpathSync(account.work) !== account.work) throw new Error('fresh_identity_mismatch');
-    for (const directory of [account.home, account.temporary, account.snapshot, path.dirname(account.bun), path.join(account.snapshot, 'node_modules')]) {
+    for (const directory of [account.home, account.temporary, account.snapshot, path.dirname(account.bun),
+      ...(account.guiReadiness ? [] : [path.join(account.snapshot, 'node_modules')])]) {
       if (!directory.startsWith(account.work + path.sep) || realpathSync(directory) !== directory || lstatSync(directory).uid !== account.uid) throw new Error('fresh_directory_ownership_mismatch');
     }
     const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + account.account, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
     if (!ownsFreshAccount(record, account)) throw new Error('fresh_registered_identity_mismatch');
     receipt.preflight.registeredIdentity = true;
+    if (account.guiReadiness) {
+      if (await digest(account.bun) !== account.bunSha256) throw new Error('staged_executable_changed');
+      receipt.reason = 'gui_readiness_only';
+      receipt.operations = { dependencyInstall: false, browserLaunch: false, keychainAccess: false, diaDownload: false };
+      receipt.guiReadiness = await runGuiReadiness(account.guiReadiness.executable, account.guiReadiness.executableSha256,
+        path.join(account.snapshot, '.github/scripts/dia-gui-readiness.c'), account.guiReadiness.sourceSha256, false, env);
+      return receipt.guiReadiness.available && receipt.guiReadiness.observation.identity.effectiveUidMatches
+        && receipt.guiReadiness.observation.identity.homeMatchesRegistered ? 0 : 2;
+    }
+    if (!account.destinationExecutable || !account.destinationSha256) throw new Error('browser_qualification_authority_required');
     const foundationHome = run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', 'ObjC.import("Foundation"); $.NSHomeDirectory().js']);
     if (realpathSync(foundationHome) !== account.home) throw new Error('foundation_home_mismatch');
     receipt.preflight.foundationHome = true;
@@ -467,7 +479,8 @@ async function freshWorker(configFile: string) {
     if (error instanceof Error && ['fresh_identity_mismatch', 'fresh_directory_ownership_mismatch', 'fresh_registered_identity_mismatch',
       'foundation_home_mismatch', 'staged_executable_escape', 'staged_executable_changed', 'pinned_runtime_mismatch',
       'user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'keychain_outside_owned_home_refused',
-      'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed', 'comparison_control_failed'].includes(error.message)) receipt.blocker = error.message;
+      'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed', 'comparison_control_failed',
+      'gui_readiness_inputs_changed', 'gui_readiness_budget_exhausted'].includes(error.message)) receipt.blocker = error.message;
     if (receipt.browserPreflight) {
       receipt.blocker = browserPreflightError(error);
       receipt.browserPreflight.error = receipt.blocker;
@@ -520,9 +533,10 @@ async function freshWorker(configFile: string) {
   return !result.error && result.status === 0 ? 0 : 2;
 }
 
-export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | 'node') {
+export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | 'node', guiReadinessOnly = false) {
   validateQualificationHost(process.env);
   if (comparisonRuntime !== undefined && !['bun', 'node'].includes(comparisonRuntime)) throw new Error('invalid_comparison_runtime');
+  if (guiReadinessOnly && comparisonRuntime !== undefined) throw new Error('conflicting_diagnostic_modes');
   if (process.getuid?.() === 0 || Bun.version !== '1.4.0') throw new Error('run_as_unprivileged_pinned_ci_runner');
   const outputRoot = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(outputRoot, 'dia-native-qualification.json');
@@ -565,7 +579,7 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
   };
   try {
     rootCommand('/usr/bin/true', []);
-    for (const directory of [home, temporary, snapshot, bin, browserDirectory]) mkdirSync(directory, { mode: 0o700 });
+    for (const directory of [home, temporary, snapshot, bin, ...(guiReadinessOnly ? [] : [browserDirectory])]) mkdirSync(directory, { mode: 0o700 });
     assertDiaSocketPath(path.join(home, 'Library/Application Support/Dia/User Data'));
     writeFileSync(path.join(temporary, 'dia-background-preflight.json'), JSON.stringify({ status: 'incomplete', reason: 'fresh_worker_not_started',
       nativeCasesRun: false, preflight: { registeredIdentity: false, foundationHome: false, keychain: false, headlessChromium: false } }) + '\n', { mode: 0o600, flag: 'wx' });
@@ -579,11 +593,28 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
     const archiveResult = JSON.parse(run(pythonExecutable, ['-I', '-c', ARCHIVE_CHECK, archive], 30_000));
     if (archiveResult.valid !== true) throw new Error('unsafe_source_archive');
     run('/usr/bin/tar', ['--no-same-owner', '--no-same-permissions', '-xf', archive, '-C', snapshot], 30_000);
-    mkdirSync(path.join(snapshot, 'node_modules'), { mode: 0o700 });
+    if (!guiReadinessOnly) mkdirSync(path.join(snapshot, 'node_modules'), { mode: 0o700 });
     const sourceBun = realpathSync(process.execPath);
     const bun = path.join(bin, 'bun');
     copyFileSync(sourceBun, bun);
     chmodSync(bun, 0o755);
+    let guiReadiness: FreshAccount['guiReadiness'];
+    if (guiReadinessOnly) {
+      stage = 'gui_readiness_build';
+      const source = path.join(snapshot, '.github/scripts/dia-gui-readiness.c');
+      const executable = path.join(bin, 'gui-readiness');
+      const sourceSha256 = await digest(source);
+      run('/usr/bin/xcrun', ['clang', '-arch', 'arm64', '-std=c11', '-O2', '-Wall', '-Wextra', source,
+        '-framework', 'Security', '-framework', 'ApplicationServices', '-o', executable], 30_000);
+      if (await digest(source) !== sourceSha256 || !inspectMachOArchitectures(executable).architectures.includes('arm64')) throw new Error('gui_readiness_build_unconfirmed');
+      chmodSync(executable, 0o755);
+      guiReadiness = { mode: 'gui-readiness-only', executable, sourceSha256, executableSha256: await digest(executable) };
+      stage = 'gui_readiness_original_runner';
+      receipt.guiReadiness = { mode: 'gui-readiness-only', qualificationCredit: false,
+        helper: { sourceSha256, executableSha256: guiReadiness.executableSha256 },
+        originalRunner: await runGuiReadiness(executable, guiReadiness.executableSha256, source, sourceSha256, true, hostEnv,
+          Math.min(5000, deadline - performance.now())) };
+    }
     let launchComparison: FreshAccount['launchComparison'];
     if (comparisonRuntime) {
       let executable = bun;
@@ -601,19 +632,23 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
         driverSha256: await digest(path.join(snapshot, '.github/scripts/dia-launch-driver.mjs')),
         helpersSha256: await digest(path.join(snapshot, '.github/scripts/qualify-dia-macos.ts')) };
     }
-    const { chromium } = await import('playwright');
-    if (require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_playwright_required');
-    const originalExecutable = realpathSync(chromium.executablePath());
-    let bundle = path.dirname(originalExecutable);
-    while (!bundle.endsWith('.app')) {
-      const parent = path.dirname(bundle);
-      if (parent === bundle) throw new Error('destination_app_bundle_missing');
-      bundle = parent;
+    let destination: Pick<FreshAccount, 'destinationExecutable' | 'destinationSha256'> = {};
+    if (!guiReadinessOnly) {
+      const { chromium } = await import('playwright');
+      if (require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_playwright_required');
+      const originalExecutable = realpathSync(chromium.executablePath());
+      let bundle = path.dirname(originalExecutable);
+      while (!bundle.endsWith('.app')) {
+        const parent = path.dirname(bundle);
+        if (parent === bundle) throw new Error('destination_app_bundle_missing');
+        bundle = parent;
+      }
+      const copiedBundle = path.join(browserDirectory, path.basename(bundle));
+      run('/usr/bin/ditto', ['--rsrc', '--extattr', bundle, copiedBundle], 45_000);
+      const destinationExecutable = realpathSync(path.join(copiedBundle, path.relative(bundle, originalExecutable)));
+      if (!destinationExecutable.startsWith(browserDirectory + path.sep)) throw new Error('destination_bundle_escape');
+      destination = { destinationExecutable, destinationSha256: await digest(originalExecutable) };
     }
-    const copiedBundle = path.join(browserDirectory, path.basename(bundle));
-    run('/usr/bin/ditto', ['--rsrc', '--extattr', bundle, copiedBundle], 45_000);
-    const destinationExecutable = realpathSync(path.join(copiedBundle, path.relative(bundle, originalExecutable)));
-    if (!destinationExecutable.startsWith(browserDirectory + path.sep)) throw new Error('destination_bundle_escape');
     const userIds = parseDirectoryIds(run('/usr/bin/dscl', ['.', '-list', '/Users', 'UniqueID']));
     const groupIds = parseDirectoryIds(run('/usr/bin/dscl', ['.', '-list', '/Groups', 'PrimaryGroupID']));
     const used = new Set([...userIds, ...groupIds]);
@@ -633,11 +668,13 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
     const configFile = path.join(work, 'account.json');
     const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'GITHUB_RUN_ID',
       'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY'].map(name => [name, process.env[name]!]));
-    account = { work, home, temporary, snapshot, bun, destinationExecutable, uid, gid: uid, account: accountName, ...(launchComparison ? { launchComparison } : {}),
+    account = { work, home, temporary, snapshot, bun, ...destination, uid, gid: uid, account: accountName,
+      ...(launchComparison ? { launchComparison } : {}), ...(guiReadiness ? { guiReadiness } : {}),
       guid: randomUUID().toUpperCase(), groupGuid: randomUUID().toUpperCase(), label, sourceRevision,
-      archiveSha256: await digest(archive), bunSha256: await digest(bun), destinationSha256: await digest(originalExecutable), configFile,
+      archiveSha256: await digest(archive), bunSha256: await digest(bun), configFile,
       environment: { ...metadata, HOME: home, TMPDIR: temporary, RUNNER_TEMP: temporary, PATH: bin + ':/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8',
-        GSTACK_DIA_EXPECT_UID: String(uid), GSTACK_DIA_SOURCE_REVISION: sourceRevision, GSTACK_DIA_DESTINATION_EXECUTABLE: destinationExecutable } };
+        GSTACK_DIA_EXPECT_UID: String(uid), GSTACK_DIA_SOURCE_REVISION: sourceRevision,
+        ...(destination.destinationExecutable ? { GSTACK_DIA_DESTINATION_EXECUTABLE: destination.destinationExecutable } : {}) } };
     stage = 'fresh_account_creation';
     rootCommand('/usr/bin/dscl', ['.', '-create', '/Groups/' + accountName]);
     groupCreated = true;
@@ -651,7 +688,7 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
       rootCommand('/usr/bin/dscl', ['.', '-create', '/Users/' + accountName, name, value]);
     }
     if (!ownsFreshAccount(parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID'])), account)) throw new Error('fresh_account_not_registered');
-    for (const directory of [home, temporary, snapshot, bin, browserDirectory]) rootCommand('/usr/sbin/chown', ['-R', '-P', `${uid}:${uid}`, directory], 30_000);
+    for (const directory of [home, temporary, snapshot, bin, ...(guiReadinessOnly ? [] : [browserDirectory])]) rootCommand('/usr/sbin/chown', ['-R', '-P', `${uid}:${uid}`, directory], 30_000);
     writeFileSync(configFile, JSON.stringify(account), { mode: 0o644, flag: 'wx' });
     const json = path.join(work, 'service.json');
     const plist = path.join(work, label + '.plist');
@@ -795,7 +832,11 @@ export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | '
       helpersSha256: account.launchComparison.helpersSha256, qualificationCredit: false };
     const clean = Object.values(receipt.launcherCleanup).every(value => value === true);
     receipt.workerExitCode = workerExit ?? null;
-    receipt.status = !account?.launchComparison && freshQualificationPassed(workerExit, receipt.backgroundPreflight?.status, receipt.qualification?.status, receipt.launcherCleanup) ? 'passed' : 'incomplete';
+    receipt.status = !account?.launchComparison && !account?.guiReadiness && freshQualificationPassed(workerExit, receipt.backgroundPreflight?.status, receipt.qualification?.status, receipt.launcherCleanup) ? 'passed' : 'incomplete';
+    if (account?.guiReadiness) {
+      receipt.reason = 'gui_readiness_only';
+      receipt.guiReadiness.freshUser = receipt.backgroundPreflight?.guiReadiness ?? { available: false, reason: 'fresh_probe_receipt_unavailable' };
+    }
     if (account?.launchComparison && receipt.qualification?.reason === 'diagnostic_launch_comparison_only') receipt.reason = 'diagnostic_launch_comparison_only';
     if (!clean) receipt.recovery = 'Discard this disposable runner. Do not reuse its account, session, profile, or Keychain.';
     if (receipt.backgroundPreflight?.status !== 'passed' && receipt.backgroundPreflight) receipt.reason = receipt.backgroundPreflight.reason;
@@ -809,8 +850,9 @@ if (import.meta.main) {
     if (process.argv[2] === '--fresh-worker') process.exitCode = await freshWorker(process.argv[3]);
     else {
       const args = process.argv.slice(2);
-      if (args.length && (args.length !== 2 || args[0] !== '--launch-comparison' || !['bun', 'node'].includes(args[1]))) throw new Error('invalid_comparison_arguments');
-      const receipt = await runFreshAccountQualification(args[1] as 'bun' | 'node' | undefined);
+      const readinessOnly = args.length === 1 && args[0] === '--gui-readiness-only';
+      if (args.length && !readinessOnly && (args.length !== 2 || args[0] !== '--launch-comparison' || !['bun', 'node'].includes(args[1]))) throw new Error('invalid_comparison_arguments');
+      const receipt = await runFreshAccountQualification(args[1] as 'bun' | 'node' | undefined, readinessOnly);
       console.log(JSON.stringify({ status: receipt.status, reason: receipt.reason, counts: receipt.counts, artifact: 'dia-native-qualification.json' }));
       process.exitCode = receipt.status === 'passed' ? 0 : 2;
     }

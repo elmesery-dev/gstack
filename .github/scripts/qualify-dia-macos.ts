@@ -12,12 +12,13 @@ export const DIA_DOWNLOAD = 'https://releases.diabrowser.com/release/Dia-latest.
 export const FRESH_WORK_PREFIX = '/private/tmp/dn-';
 
 export interface FreshAccount {
-  work: string; home: string; temporary: string; snapshot: string; bun: string; destinationExecutable: string;
+  work: string; home: string; temporary: string; snapshot: string; bun: string; destinationExecutable?: string;
   uid: number; gid: number; account: string; guid: string; groupGuid: string; label: string;
-  sourceRevision: string; archiveSha256: string; bunSha256: string; destinationSha256: string;
+  sourceRevision: string; archiveSha256: string; bunSha256: string; destinationSha256?: string;
   configFile: string; environment: Record<string, string>;
   launchComparison?: { mode: 'launch-only'; runtime: 'bun' | 'node'; executable: string; executableSha256: string;
     driverSha256: string; helpersSha256: string };
+  guiReadiness?: { mode: 'gui-readiness-only'; executable: string; executableSha256: string; sourceSha256: string };
 }
 
 export function parseDirectoryRecord(output: string): Record<string, string> {
@@ -35,6 +36,16 @@ export function ownsFreshAccount(record: Record<string, string>, account: Pick<F
     && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
 }
 
+export function validateGuiReadinessAuthority(account: FreshAccount, role: 'coordinator' | 'comparison-driver') {
+  if (account.guiReadiness === undefined) return;
+  if (!account.guiReadiness || account.guiReadiness.mode !== 'gui-readiness-only' || account.launchComparison !== undefined
+    || account.destinationExecutable !== undefined || account.destinationSha256 !== undefined || role !== 'coordinator'
+    || account.guiReadiness.executable !== path.join(account.work, 'bin/gui-readiness')
+    || ![account.guiReadiness.executableSha256, account.guiReadiness.sourceSha256].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value))) {
+    throw new Error('gui_readiness_authority_invalid');
+  }
+}
+
 export function readFreshAccountConfiguration(configFile: string, role: 'coordinator' | 'comparison-driver' = 'coordinator'): FreshAccount {
   const work = path.dirname(configFile);
   if (!path.isAbsolute(configFile) || path.basename(configFile) !== 'account.json' || path.dirname(work) !== '/private/tmp'
@@ -44,6 +55,7 @@ export function readFreshAccountConfiguration(configFile: string, role: 'coordin
   if (!parent.isDirectory() || parent.uid !== 0 || (parent.mode & 0o022) !== 0 || !info.isFile() || info.uid !== 0
     || info.nlink !== 1 || (info.mode & 0o022) !== 0 || info.size > 64 * 1024 || realpathSync(configFile) !== configFile) throw new Error('unsafe_fresh_account_configuration');
   const account: FreshAccount = JSON.parse(readFileSync(configFile, 'utf8'));
+  validateGuiReadinessAuthority(account, role);
   if (role === 'comparison-driver' && (!account.launchComparison || account.launchComparison.mode !== 'launch-only'
     || !['bun', 'node'].includes(account.launchComparison.runtime)
     || account.launchComparison.executable !== path.join(work, 'bin', account.launchComparison.runtime)
@@ -63,9 +75,54 @@ export function readFreshAccountConfiguration(configFile: string, role: 'coordin
     const entry = lstatSync(directory);
     if (!entry.isDirectory() || entry.uid !== account.uid || (entry.mode & 0o022) !== 0 || realpathSync(directory) !== directory) throw new Error('fresh_directory_ownership_mismatch');
   }
-  if (!account.destinationExecutable.startsWith(path.join(work, 'browser') + path.sep)
-    || realpathSync(account.destinationExecutable) !== account.destinationExecutable) throw new Error('staged_executable_escape');
+  if (!account.guiReadiness && (typeof account.destinationExecutable !== 'string' || !/^[a-f0-9]{64}$/.test(account.destinationSha256 ?? '')
+    || !account.destinationExecutable.startsWith(path.join(work, 'browser') + path.sep)
+    || realpathSync(account.destinationExecutable) !== account.destinationExecutable)) throw new Error('staged_executable_escape');
   return account;
+}
+
+export function parseGuiReadiness(value: unknown, browserRootsExpected: boolean) {
+  const exact = (item: any, keys: string[]) => item !== null && typeof item === 'object' && !Array.isArray(item)
+    && Object.keys(item).length === keys.length && keys.every(key => Object.hasOwn(item, key));
+  const nullableBoolean = (item: unknown) => item === null || typeof item === 'boolean';
+  const result: any = value;
+  if (!exact(result, ['protocol', 'supported', 'identity', 'security', 'quartz', 'browserRoots']) || result.protocol !== 1 || result.supported !== true
+    || !exact(result.identity, ['effectiveUidMatches', 'homeMatchesRegistered']) || Object.values(result.identity).some(item => typeof item !== 'boolean')
+    || !exact(result.security, ['status', 'graphicAccess', 'rootSession', 'tty', 'remote']) || !Number.isInteger(result.security.status)
+    || result.security.status < -2_147_483_648 || result.security.status > 2_147_483_647
+    || ['graphicAccess', 'rootSession', 'tty', 'remote'].some(key => result.security.status === 0 ? typeof result.security[key] !== 'boolean' : result.security[key] !== null)
+    || !exact(result.quartz, ['present', 'sameUid', 'loginDone', 'onConsole']) || typeof result.quartz.present !== 'boolean'
+    || ['sameUid', 'loginDone', 'onConsole'].some(key => !nullableBoolean(result.quartz[key]))
+    || (!result.quartz.present && ['sameUid', 'loginDone', 'onConsole'].some(key => result.quartz[key] !== null))
+    || (result.quartz.sameUid !== true && (result.quartz.loginDone !== null || result.quartz.onConsole !== null))) throw new Error('invalid_gui_readiness_receipt');
+  if (browserRootsExpected && result.identity.homeMatchesRegistered) {
+    if (!exact(result.browserRoots, ['chrome', 'chromium', 'arc', 'dia', 'comet', 'brave', 'edge', 'safari', 'cookies'])) throw new Error('invalid_gui_readiness_receipt');
+    for (const fact of Object.values(result.browserRoots) as any[]) {
+      if (!exact(fact, ['state', 'kind', 'ownerMatches', 'ancestorBlocked']) || !['present', 'absent', 'unavailable'].includes(fact.state)
+        || ![null, 'directory', 'file', 'symlink', 'other'].includes(fact.kind) || !nullableBoolean(fact.ownerMatches) || typeof fact.ancestorBlocked !== 'boolean'
+        || (fact.state === 'absent' && (fact.kind !== null || fact.ownerMatches !== null || fact.ancestorBlocked))
+        || (fact.state === 'present' && (fact.kind === null || typeof fact.ownerMatches !== 'boolean' || fact.ancestorBlocked))
+        || (fact.kind === null && fact.ownerMatches !== null)) throw new Error('invalid_gui_readiness_receipt');
+    }
+  } else if (result.browserRoots !== null) throw new Error('invalid_gui_readiness_receipt');
+  return { ...result, usableGui: result.identity.effectiveUidMatches && result.identity.homeMatchesRegistered
+    && result.security.status === 0 && result.security.graphicAccess && result.quartz.present && result.quartz.sameUid === true && result.quartz.loginDone === true };
+}
+
+export async function runGuiReadiness(executable: string, executableSha256: string, source: string, sourceSha256: string,
+  browserRoots: boolean, env: Record<string, string>, milliseconds = 5000, execute: typeof spawnSync = spawnSync) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 1) throw new Error('gui_readiness_budget_exhausted');
+  const deadline = performance.now() + Math.min(5000, milliseconds);
+  if (await sha256(executable) !== executableSha256 || await sha256(source) !== sourceSha256) throw new Error('gui_readiness_inputs_changed');
+  const timeout = Math.floor(deadline - performance.now());
+  if (timeout < 1) throw new Error('gui_readiness_budget_exhausted');
+  const result = execute(executable, browserRoots ? ['--browser-roots'] : [], { env, encoding: 'utf8', timeout,
+    killSignal: 'SIGKILL', maxBuffer: 16 * 1024 });
+  const execution = { exitCode: result.status, timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT',
+    stdoutBytes: Buffer.byteLength(result.stdout || ''), stderrBytes: Buffer.byteLength(result.stderr || '') };
+  if (result.error || result.status !== 0) return { available: false, reason: 'gui_readiness_probe_failed', execution };
+  try { return { available: true, observation: parseGuiReadiness(JSON.parse(result.stdout), browserRoots), execution }; }
+  catch { return { available: false, reason: 'gui_readiness_receipt_rejected', execution }; }
 }
 
 export function safeDiaComparisonResponse(value: unknown): boolean {
@@ -873,6 +930,7 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
 export async function qualifyDia(isolation: { root: string; configFile: string }): Promise<Record<string, any>> {
   validateQualificationHost(process.env);
   const account = readFreshAccountConfiguration(isolation.configFile);
+  if (account.guiReadiness || !account.destinationExecutable || !account.destinationSha256) throw new Error('browser_qualification_authority_required');
   if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
   const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(runnerTemp, 'dia-native-qualification.json');
@@ -1321,9 +1379,10 @@ if (import.meta.main) {
       process.exitCode = receipt.status === 'passed' ? 0 : 2;
     } else {
       validateQualificationHost(process.env);
-      if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
       if (process.argv[2] !== '--fresh-account' || !process.argv[3]) throw new Error('fresh_account_configuration_required');
       const account = readFreshAccountConfiguration(process.argv[3]);
+      if (account.guiReadiness) throw new Error('browser_qualification_authority_required');
+      if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
       const originalHome = account.home;
       const originalHomeEnvironment = process.env.HOME;
       const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
