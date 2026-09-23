@@ -332,6 +332,7 @@ function runNodeWorker(mode: string, cookies: object[] = []) {
         if (${JSON.stringify(mode)} === 'locked') throw new Error('ProcessSingleton sensitive-sentinel');
         if (${JSON.stringify(mode)} === 'policy') throw new Error('Remote debugging requires a non-default data directory sensitive-sentinel');
         if (${JSON.stringify(mode)} === 'failure') throw new Error('sensitive-sentinel');
+        if (${JSON.stringify(mode)} === 'process-exit') throw new Error('<process did exit: exitCode=21, signal=null> sensitive-sentinel');
         return { cookies: async () => ${JSON.stringify(cookies)}, close: async () => {} };
       },
     };
@@ -417,6 +418,12 @@ describe('production Node Playwright worker', () => {
   test.each([['locked', 'browser_running'], ['policy', 'native_profile_unsupported'], ['failure', 'native_failed']])('classifies %s without leaking browser stderr or retrying', (mode, error) => {
     const { result } = runNodeWorker(mode);
     expect(result).toEqual({ error, diagnostic: { stage: 'browser_launch' } });
+    expect(JSON.stringify(result)).not.toContain('sensitive-sentinel');
+  });
+
+  test('reports only the managed browser exit code, not raw launch errors', () => {
+    const { result } = runNodeWorker('process-exit');
+    expect(result).toEqual({ error: 'native_failed', diagnostic: { stage: 'browser_launch', exitCode: 21 } });
     expect(JSON.stringify(result)).not.toContain('sensitive-sentinel');
   });
 });

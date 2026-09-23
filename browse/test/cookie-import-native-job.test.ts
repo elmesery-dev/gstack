@@ -38,6 +38,16 @@ function nativeFixtureEnvironment(fixture: string, node: string): Record<string,
   });
 }
 
+function fixtureFileOwners(file: string): object {
+  if (process.platform !== 'win32') return { available: false, reason: 'not_windows' };
+  const result = spawnSync(process.execPath, [
+    '--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, 'fixtures/native-cookie-file-owners.ts'),
+    Buffer.from(JSON.stringify({ root: resolvedRoot, file, testPid: process.pid })).toString('base64'),
+  ], { env: nativeCookieEnvironment(process.env), encoding: 'utf8', timeout: 5_000, maxBuffer: 65536, windowsHide: true });
+  try { return { ...JSON.parse(result.stdout), exitCode: result.status, stderrBytes: Buffer.byteLength(result.stderr || '') }; }
+  catch { return { available: false, reason: 'owner_probe_no_receipt', exitCode: result.status }; }
+}
+
 function clearOwnedFixtureContents(fixture: string, identity: { path: string; dev: bigint; ino: bigint }): void {
   const before = lstatSync(fixture, { bigint: true });
   if (before.isSymbolicLink() || realpathSync(fixture) !== identity.path || before.dev !== identity.dev || before.ino !== identity.ino) {
@@ -52,7 +62,11 @@ function clearOwnedFixtureContents(fixture: string, identity: { path: string; de
     }
     const relative = path.relative(identity.path, realpathSync(child));
     if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native fixture entry is outside its owned root');
-    rmSync(child, { recursive: true, force: true });
+    try { rmSync(child, { recursive: true, force: true }); }
+    catch (error) {
+      console.error(JSON.stringify({ nativeFixtureFileLock: { file: path.relative(resolvedRoot, child), code: (error as NodeJS.ErrnoException).code, owners: state.isFile() ? fixtureFileOwners(child) : undefined } }));
+      throw error;
+    }
   }
   const after = lstatSync(fixture, { bigint: true });
   if (readdirSync(fixture).length !== 0 || realpathSync(fixture) !== identity.path || after.dev !== identity.dev || after.ino !== identity.ino) {
@@ -84,7 +98,10 @@ afterAll(() => {
         entries.push({ path: path.relative(root, directory), type: 'unreadable', code: (inspectionError as NodeJS.ErrnoException).code });
       }
     }
-    console.error(JSON.stringify({ nativeFixtureCleanup: { code: (error as NodeJS.ErrnoException).code, pendingChildCloses: fixtureChildren.size, rootVerified, rootMode, remaining: entries } }));
+    const lockedFile = entries.find(entry => entry.type === 'file' && /^[0-9a-f-]{36}\.tmp$/i.test(path.basename(entry.path)));
+    console.error(JSON.stringify({ nativeFixtureCleanup: { code: (error as NodeJS.ErrnoException).code, pendingChildCloses: fixtureChildren.size, rootVerified, rootMode, remaining: entries,
+      fileOwners: lockedFile ? { file: lockedFile.path, owners: fixtureFileOwners(path.join(root, lockedFile.path)) } : undefined,
+    } }));
     throw error;
   }
 });
@@ -405,6 +422,13 @@ function safeNativeEnvelope(output: string): object {
   }
 }
 
+function assertCookieReceipt(receipt: NativeCookieReply, evidence: object = {}) {
+  if (!('cookies' in receipt) || !Array.isArray(receipt.cookies)) {
+    throw new Error(JSON.stringify({ nativeCookieReceipt: safeNativeEnvelope(JSON.stringify(receipt)), ...evidence }));
+  }
+  return receipt.cookies;
+}
+
 function safeLaunchEvidence(file: string): object {
   try {
     const observed = JSON.parse(readFileSync(file, 'utf8'));
@@ -475,8 +499,8 @@ describe('native Windows process qualification', () => {
       const env = nativeCookieEnvironment(process.env);
       supervisor = nativeSupervisor(input, env);
       const seeded = await supervisor.done;
-      expect({ result: seeded, realDefaultProfile: true, launch: safeLaunchEvidence(observation) }).toMatchObject({ result: { cookies: expect.any(Array) } });
-      expect((seeded as { cookies: unknown[] }).cookies).toHaveLength(1);
+      const seededCookies = assertCookieReceipt(seeded, { realDefaultProfile: true, launch: safeLaunchEvidence(observation) });
+      expect(seededCookies).toHaveLength(1);
       const database = new Database(path.join(mapping.userDataDir, 'Default', 'Network', 'Cookies'), { readonly: true });
       try {
         const row = database.query("SELECT hex(substr(encrypted_value, 1, 3)) AS prefix FROM cookies WHERE name = 'synthetic-native-qualification' AND host_key = 'example.test'").get() as { prefix: string } | null;
@@ -486,7 +510,11 @@ describe('native Windows process qualification', () => {
       }
       supervisor = nativeSupervisor({ ...input, playwrightEntry: require.resolve('playwright') }, env);
       const imported = await supervisor.done;
-      expect(imported).toMatchObject({ cookies: [{ name: 'synthetic-native-qualification', value: 'synthetic-only', domain: 'example.test' }] });
+      const importedCookies = assertCookieReceipt(imported);
+      expect(importedCookies).toHaveLength(1);
+      expect(importedCookies[0].name).toBe('synthetic-native-qualification');
+      expect(importedCookies[0].value).toBe('synthetic-only');
+      expect(importedCookies[0].domain).toBe('example.test');
     } finally {
       supervisor?.child.kill();
       await supervisor?.done.catch(() => {});
@@ -504,8 +532,11 @@ describe('native Windows process qualification', () => {
     if (!node || !edge) throw new Error('Native qualification requires Node and installed Microsoft Edge');
     const fixture = mkdtempSync(path.join(root, 'locked-edge-'));
     const marker = path.join(fixture, 'owner-ready.json');
+    const contenderObservation = path.join(fixture, 'contender-launch.json');
+    const contenderEntry = path.join(fixture, 'contender-playwright.cjs');
     const playwrightEntry = path.join(fixture, 'held-playwright.cjs');
     const require = createRequire(import.meta.url);
+    writeFileSync(contenderEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation: contenderObservation, playwrightEntry: require.resolve('playwright') })});`);
     writeFileSync(playwrightEntry, `
       const cp = require('node:child_process');
       const spawn = cp.spawn;
@@ -528,8 +559,8 @@ describe('native Windows process qualification', () => {
       while (!existsSync(marker) && Date.now() < readyBy) await Bun.sleep(20);
       expect({ ready: existsSync(marker), reply: owner.envelope() }).toMatchObject({ ready: true });
       const { pid } = JSON.parse(readFileSync(marker, 'utf8'));
-      contender = nativeSupervisor({ ...input, playwrightEntry: require.resolve('playwright') }, env);
-      expect(await contender.done).toMatchObject({ error: 'browser_running' });
+      contender = nativeSupervisor({ ...input, playwrightEntry: contenderEntry }, env);
+      expect({ result: await contender.done, launch: safeLaunchEvidence(contenderObservation) }).toMatchObject({ result: { error: 'browser_running' } });
       expect(alive(pid)).toBe(true);
     } finally {
       contender?.child.kill();
@@ -560,9 +591,9 @@ describe('native Windows process qualification', () => {
       try {
         await closed;
         const result = JSON.parse(output);
-        expect({ result, launch: safeLaunchEvidence(observation) }).toMatchObject({ result: { cookies: expect.any(Array) } });
-        expect(result.cookies).toHaveLength(1);
-        expect(result.cookies[0].domain).toBe('example.test');
+        const cookies = assertCookieReceipt(result, { launch: safeLaunchEvidence(observation) });
+        expect(cookies).toHaveLength(1);
+        expect(cookies[0].domain).toBe('example.test');
         const browser = JSON.parse(readFileSync(observation, 'utf8'));
         expect(browser.command).toBe(edge);
         expect(browser.args).toContain('--remote-debugging-pipe');
@@ -619,6 +650,43 @@ describe('native Windows process qualification', () => {
 });
 
 describe('native Windows launch diagnostics', () => {
+  test.skipIf(process.platform !== 'win32')('Restart Manager identifies the exact fixture file holder without stopping it', () => {
+    const fixture = mkdtempSync(path.join(root, 'file-owner-'));
+    const file = path.join(fixture, 'held.tmp');
+    writeFileSync(file, 'fixture-only');
+    const kernel = dlopen('kernel32.dll', {
+      CreateFileW: { args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u64], returns: FFIType.u64 },
+      CloseHandle: { args: [FFIType.u64], returns: FFIType.i32 },
+    });
+    const name = Buffer.from(file + '\0', 'utf16le');
+    const handle = kernel.symbols.CreateFileW(ptr(name), 0x80000000, 1, null, 3, 0x80, 0);
+    try {
+      expect(BigInt(handle)).not.toBe(0xffffffffffffffffn);
+      expect(() => unlinkSync(file)).toThrow();
+      const evidence = fixtureFileOwners(file) as { available: boolean; owners: { pid: number; image: string; creationMatched: boolean; isTestHost: boolean }[] };
+      expect(evidence.available).toBe(true);
+      expect(Array.isArray(evidence.owners)).toBe(true);
+      expect(evidence.owners.some(owner => owner.pid === process.pid && owner.image === 'bun.exe' && owner.creationMatched && owner.isTestHost)).toBe(true);
+      expect(readFileSync(file, 'utf8')).toBe('fixture-only');
+    } finally {
+      if (BigInt(handle) !== 0xffffffffffffffffn) kernel.symbols.CloseHandle(handle);
+      kernel.close();
+    }
+  }, 10_000);
+
+  test('receipt assertions preserve the cookie array and all cookie fields', () => {
+    const receipt: NativeCookieReply = { cookies: [{ name: 'synthetic', value: 'synthetic', domain: 'example.test', path: '/', expires: -1, httpOnly: true, secure: true, sameSite: 'Lax' }] };
+    const before = JSON.stringify(receipt);
+    const cookies = receipt.cookies;
+    Object.freeze(receipt);
+    Object.freeze(cookies);
+    Object.freeze(cookies[0]);
+    expect(assertCookieReceipt(receipt)).toBe(cookies);
+    expect(Array.isArray(receipt.cookies)).toBe(true);
+    expect(JSON.stringify(receipt)).toBe(before);
+    expect(() => assertCookieReceipt({ error: 'native_timeout' })).toThrow('native_timeout');
+  });
+
   test('native Unicode output retains the exact allocation address for short and long buffers', () => {
     const library = dlopen(process.platform === 'win32' ? 'msvcrt.dll' : process.platform === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
       memcpy: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.ptr },
@@ -790,7 +858,7 @@ describe('native Windows launch diagnostics', () => {
       }));
       expect(direct.error).toBeUndefined();
       expect(direct.status).toBe(0);
-      expect(JSON.parse(direct.stdout)).toMatchObject({ cookies: expect.any(Array) });
+      assertCookieReceipt(JSON.parse(direct.stdout));
       expect(directObservation).not.toBeNull();
       expect(alive(directObservation.pid)).toBe(false);
       expect(containedObservation?.argsHash).toBe(directObservation.argsHash);

@@ -76,7 +76,9 @@ progress();
       : /remote debugging requires a non-default data directory/i.test(message)
         ? 'native_profile_unsupported'
         : /Timeout|native_timeout/.test(message) ? 'native_timeout' : 'native_failed';
-    await new Promise(resolve => process.stdout.write(JSON.stringify({ error: code, diagnostic: { stage } }) + '\n', resolve));
+    const exited = message.match(/<process did exit: exitCode=(-?\d+), signal=(?:null|SIG[A-Z]+)>/);
+    const exitCode = exited ? Number(exited[1]) : undefined;
+    await new Promise(resolve => process.stdout.write(JSON.stringify({ error: code, diagnostic: { stage, ...(Number.isInteger(exitCode) ? { exitCode } : {}) } }) + '\n', resolve));
   } finally {
     stage = 'browser_close';
     progress();
