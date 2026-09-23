@@ -5,7 +5,7 @@ import { release, tmpdir } from 'node:os';
 import path from 'node:path';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
 import { nativeCookieEnvironment, probeNativeCookieMember } from '../src/cookie-import-native-worker';
-import { hashNativeFile, nativeCodeHashes, nativeCodeMatches, NATIVE_QUALIFICATION_DATA } from '../src/cookie-import-native-integrity';
+import { hashNativeFile, nativeCodeHashes, nativeCodeMatches, NATIVE_BROWSER_VERSION_COMMAND, NATIVE_QUALIFICATION_DATA } from '../src/cookie-import-native-integrity';
 import { createNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, type NativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 
 if (process.platform !== 'win32') {
@@ -68,9 +68,20 @@ const require = createRequire(import.meta.url);
 const playwrightVersion = require('playwright/package.json').version;
 if (playwrightVersion !== '1.62.1') incomplete('playwright_1_62_1_required');
 const versionProbe = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), [
-  '-NoProfile', '-NonInteractive', '-Command', '[Diagnostics.FileVersionInfo]::GetVersionInfo($env.GSTACK_QUALIFY_BROWSER_EXE).ProductVersion',
+  '-NoProfile', '-NonInteractive', '-Command', NATIVE_BROWSER_VERSION_COMMAND,
 ], { env: { ...environment, GSTACK_QUALIFY_BROWSER_EXE: executable }, encoding: 'utf8', timeout: 10_000, windowsHide: true });
-if (versionProbe.status !== 0 || !/^\d+(?:\.\d+){2,3}$/.test(versionProbe.stdout.trim())) incomplete('browser_version_preflight_failed');
+const versionErrorCode = (versionProbe.error as NodeJS.ErrnoException | undefined)?.code;
+const versionMetadata = {
+  exitCode: versionProbe.status,
+  signal: versionProbe.signal,
+  spawnError: versionProbe.error ? (['ENOENT', 'EACCES', 'EPERM', 'ETIMEDOUT'].includes(versionErrorCode || '') ? versionErrorCode : 'spawn_failed') : undefined,
+  stdoutBytes: Buffer.byteLength(versionProbe.stdout || ''),
+  stderrBytes: Buffer.byteLength(versionProbe.stderr || ''),
+  versionValid: /^\d+(?:\.\d+){2,3}$/.test((versionProbe.stdout || '').trim()),
+};
+writeFileSync(path.join(output, 'browser-version-preflight.json'), JSON.stringify(versionMetadata, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+console.log(JSON.stringify({ nativeBrowserVersionPreflight: versionMetadata }));
+if (versionProbe.status !== 0 || !versionMetadata.versionValid) incomplete('browser_version_preflight_failed');
 const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', 'test', 'browse/test/cookie-import-native-job.test.ts', '--test-name-pattern', '^native Windows process qualification'], {
   cwd: root,
   env: { ...environment, CI: 'true', GITHUB_ACTIONS: 'true', GSTACK_COOKIE_NATIVE_DEFAULT_FIXTURE: '1', NO_COLOR: '1' },

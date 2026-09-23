@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 
 export const NATIVE_QUALIFICATION_DATA = 'browse/src/cookie-import-native-qualification.json';
+export const NATIVE_BROWSER_VERSION_COMMAND = '$ErrorActionPreference = "Stop"; [Diagnostics.FileVersionInfo]::GetVersionInfo($env:GSTACK_QUALIFY_BROWSER_EXE).ProductVersion';
 
 export const NATIVE_CODE_INPUTS = Object.freeze([
   'browse/src/cookie-import-browser.ts',
@@ -21,6 +22,7 @@ export const NATIVE_CODE_INPUTS = Object.freeze([
   'browse/test/cookie-import-native-qualification.ts',
   'browse/test/fixtures/native-cookie-process.cjs',
   'browse/test/fixtures/native-cookie-launch.cjs',
+  'browse/test/fixtures/native-cookie-command-line.ps1',
   'node_modules/playwright/package.json',
   'node_modules/playwright/index.js',
   'node_modules/playwright-core/package.json',

@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
+import { NATIVE_BROWSER_VERSION_COMMAND } from '../src/cookie-import-native-integrity';
 import { createNativeCookieJob, joinNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, parseNativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT, superviseNativeCookieImport, type NativeCookieMember, type NativeCookieReply, type NativeCookieRequest } from '../src/cookie-import-native-worker';
 
@@ -286,6 +287,7 @@ function safeLaunchEvidence(file: string): object {
       argsHash: observed.argsHash, envHash: observed.envHash,
       reasons: observed.reasons, stderrBytes: observed.stderrBytes,
       exitCode: observed.exitCode, signal: observed.signal, spawnError: observed.spawnError,
+      runtime: observed.runtime, observedCommandLine: observed.observedCommandLine,
     };
   } catch {
     return { spawned: false };
@@ -492,6 +494,24 @@ describe('native Windows process qualification', () => {
 });
 
 describe('native Windows launch diagnostics', () => {
+  test.skipIf(process.platform !== 'win32')('the qualification version command reads the explicit executable environment variable', () => {
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for version metadata verification');
+    const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const env = { ...nativeCookieEnvironment(process.env), GSTACK_QUALIFY_BROWSER_EXE: node };
+    const old = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', NATIVE_BROWSER_VERSION_COMMAND.replace('$env:GSTACK_QUALIFY_BROWSER_EXE', '$env.GSTACK_QUALIFY_BROWSER_EXE')], {
+      env, encoding: 'utf8', timeout: 10_000, windowsHide: true,
+    });
+    expect(old.status).not.toBe(0);
+    expect(old.stdout.trim()).toBe('');
+    const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', NATIVE_BROWSER_VERSION_COMMAND], {
+      env, encoding: 'utf8', timeout: 10_000, windowsHide: true,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout.trim()).toMatch(/^\d+(?:\.\d+){2,3}$/);
+  });
+
   test('the synthetic launch observer records safe reasons without raw stderr or environment values', () => {
     const node = Bun.which('node');
     if (!node) throw new Error('Node is required for launch diagnostics');
@@ -526,6 +546,8 @@ describe('native Windows launch diagnostics', () => {
     expect(observed).toMatchObject({ exitCode: 5, reasons: ['job_assignment_failed', 'permission_denied'] });
     expect(observed.argsHash).toMatch(/^[a-f0-9]{64}$/);
     expect(observed.envHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(observed.runtime.node).toMatch(/^v\d+\.\d+\.\d+/);
+    expect(observed.runtime.bun).toBeNull();
     expect(JSON.stringify(observed)).not.toContain('sensitive-sentinel');
   });
 
@@ -538,7 +560,7 @@ describe('native Windows launch diagnostics', () => {
     const observation = path.join(fixture, 'launch.json');
     const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
     const require = createRequire(import.meta.url);
-    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright') })});`);
+    writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), inspectCommandLine: true })});`);
     const environment = nativeCookieEnvironment({ SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) });
     const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir, playwrightEntry };
     const supervisor = nativeSupervisor(input, environment);
@@ -563,6 +585,8 @@ describe('native Windows launch diagnostics', () => {
         directLaunch: safeLaunchEvidence(observation),
         argvEqual: containedObservation?.argsHash === directObservation?.argsHash,
         environmentEqual: containedObservation?.envHash === directObservation?.envHash,
+        observedCommandLinesEqual: containedObservation?.observedCommandLine?.available === true && directObservation?.observedCommandLine?.available === true
+          ? containedObservation.observedCommandLine.commandLineHash === directObservation.observedCommandLine.commandLineHash : null,
       },
     }));
     expect(direct.error).toBeUndefined();
@@ -572,5 +596,7 @@ describe('native Windows launch diagnostics', () => {
     expect(alive(directObservation.pid)).toBe(false);
     expect(containedObservation?.argsHash).toBe(directObservation.argsHash);
     expect(containedObservation?.envHash).toBe(directObservation.envHash);
+    expect(containedObservation?.observedCommandLine).toMatchObject({ available: true });
+    expect(directObservation.observedCommandLine).toMatchObject({ available: true });
   }, 65_000);
 });
