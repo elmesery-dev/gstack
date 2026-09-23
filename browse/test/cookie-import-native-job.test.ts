@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { once } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { Database } from 'bun:sqlite';
 import { dlopen, FFIType, ptr } from 'bun:ffi';
@@ -21,6 +22,42 @@ function ownFixtureChild<T extends ChildProcess>(child: T): T {
   fixtureChildren.add(child);
   child.once('close', () => fixtureChildren.delete(child));
   return child;
+}
+
+function nativeFixtureEnvironment(fixture: string, node: string): Record<string, string> {
+  const relative = path.relative(resolvedRoot, realpathSync(fixture));
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native environment fixture is outside its owned root');
+  const local = path.join(fixture, 'AppData', 'Local');
+  const roaming = path.join(fixture, 'AppData', 'Roaming');
+  const temporary = path.join(local, 'Temp');
+  for (const directory of [local, roaming, temporary]) mkdirSync(directory, { recursive: true });
+  return nativeCookieEnvironment({
+    SystemRoot: process.env.SystemRoot, USERPROFILE: fixture,
+    LOCALAPPDATA: local, APPDATA: roaming, TEMP: temporary, TMP: temporary,
+    PATH: path.dirname(node),
+  });
+}
+
+function clearOwnedFixtureContents(fixture: string, identity: { path: string; dev: bigint; ino: bigint }): void {
+  const before = lstatSync(fixture, { bigint: true });
+  if (before.isSymbolicLink() || realpathSync(fixture) !== identity.path || before.dev !== identity.dev || before.ino !== identity.ino) {
+    throw new Error('Native fixture root identity changed');
+  }
+  for (const entry of readdirSync(fixture)) {
+    const child = path.join(fixture, entry);
+    const state = lstatSync(child);
+    if (state.isSymbolicLink()) {
+      unlinkSync(child);
+      continue;
+    }
+    const relative = path.relative(identity.path, realpathSync(child));
+    if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Native fixture entry is outside its owned root');
+    rmSync(child, { recursive: true, force: true });
+  }
+  const after = lstatSync(fixture, { bigint: true });
+  if (readdirSync(fixture).length !== 0 || realpathSync(fixture) !== identity.path || after.dev !== identity.dev || after.ino !== identity.ino) {
+    throw new Error('Native fixture contents reset did not preserve its empty root');
+  }
 }
 
 afterAll(() => {
@@ -192,6 +229,57 @@ function simulation(options: { reply?: NativeCookieReply; replyAt?: number; exit
 }
 
 describe('owned native-cookie lifecycle', () => {
+  test('positive fixture environments create matching Windows known-folder directories', () => {
+    const fixture = mkdtempSync(path.join(root, 'environment-'));
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for fixture setup');
+    const environment = nativeFixtureEnvironment(fixture, node);
+    expect(environment.USERPROFILE).toBe(fixture);
+    expect(environment.LOCALAPPDATA).toBe(path.join(fixture, 'AppData', 'Local'));
+    expect(environment.APPDATA).toBe(path.join(fixture, 'AppData', 'Roaming'));
+    for (const name of ['LOCALAPPDATA', 'APPDATA', 'TEMP']) expect(lstatSync(environment[name]).isDirectory()).toBe(true);
+    expect(environment.TMP).toBe(environment.TEMP);
+  });
+
+  test('a contents reset preserves an existing root even while an owned process holds it', async () => {
+    const fixture = mkdtempSync(path.join(root, 'held-root-'));
+    const state = lstatSync(fixture, { bigint: true });
+    const identity = { path: realpathSync(fixture), dev: state.dev, ino: state.ino };
+    const node = Bun.which('node');
+    if (!node) throw new Error('Node is required for root ownership verification');
+    const child = ownFixtureChild(spawn(node, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'], {
+      cwd: fixture,
+      env: { PATH: path.dirname(node), ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+      stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true,
+    }));
+    const closed = new Promise<void>(resolve => child.once('close', () => resolve()));
+    try {
+      await once(child.stdout, 'data', { signal: AbortSignal.timeout(5_000) });
+      if (process.platform === 'win32') expect(() => rmdirSync(fixture)).toThrow();
+      mkdirSync(path.join(fixture, 'AppData', 'Local'), { recursive: true });
+      writeFileSync(path.join(fixture, 'AppData', 'Local', 'synthetic'), 'fixture-only');
+      writeFileSync(path.join(fixture, 'wrapper.cjs'), 'fixture-only');
+      clearOwnedFixtureContents(fixture, identity);
+      expect(readdirSync(fixture)).toEqual([]);
+      const after = lstatSync(fixture, { bigint: true });
+      expect(after.dev).toBe(identity.dev);
+      expect(after.ino).toBe(identity.ino);
+      expect(alive(child.pid!)).toBe(true);
+    } finally {
+      child.kill();
+      await closed;
+    }
+  }, 10_000);
+
+  test('a contents reset rejects a different root identity without removing entries', () => {
+    const fixture = mkdtempSync(path.join(root, 'identity-'));
+    const state = lstatSync(fixture, { bigint: true });
+    const marker = path.join(fixture, 'preserved');
+    writeFileSync(marker, 'fixture-only');
+    expect(() => clearOwnedFixtureContents(fixture, { path: realpathSync(fixture), dev: state.dev, ino: state.ino + 1n })).toThrow('identity changed');
+    expect(readFileSync(marker, 'utf8')).toBe('fixture-only');
+  });
+
   test('success is withheld until the entire job is empty and member exits', async () => {
     const run = simulation({ reply: { cookies: [] }, exitAt: 200 });
     expect(await run.run).toEqual({ cookies: [] });
@@ -359,6 +447,7 @@ describe('native Windows process qualification', () => {
     const edge = mapping.executables.find(existsSync);
     if (!node || !edge) throw new Error('Native qualification requires Node and installed Microsoft Edge');
     const fixture = mkdtempSync(path.join(root, 'default-edge-'));
+    const observation = path.join(fixture, 'default-launch.json');
     const playwrightEntry = path.join(fixture, 'seed-playwright.cjs');
     const require = createRequire(import.meta.url);
     const marker = path.join(mapping.userDataDir, '.gstack-owned-fixture');
@@ -378,19 +467,15 @@ describe('native Windows process qualification', () => {
       mkdirSync(mapping.userDataDir);
       owned = true;
       writeFileSync(marker, nonce, { flag: 'wx', mode: 0o600 });
-      writeFileSync(playwrightEntry, `
-        const { chromium } = require(${JSON.stringify(require.resolve('playwright'))});
-        exports.chromium = { async launchPersistentContext(root, options) {
-          const context = await chromium.launchPersistentContext(root, options);
-          await context.addCookies([{ name: 'synthetic-native-qualification', value: 'synthetic-only', domain: 'example.test', path: '/', secure: true, httpOnly: true, expires: Math.floor(Date.now() / 1000) + 3600 }]);
-          return context;
-        } };
-      `);
+      writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({
+        observation, playwrightEntry: require.resolve('playwright'),
+        seedCookie: { name: 'synthetic-native-qualification', value: 'synthetic-only', domain: 'example.test', path: '/', secure: true, httpOnly: true, expires: Math.floor(Date.now() / 1000) + 3600 },
+      })});`);
       const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir: mapping.userDataDir, playwrightEntry };
       const env = nativeCookieEnvironment(process.env);
       supervisor = nativeSupervisor(input, env);
       const seeded = await supervisor.done;
-      expect(seeded).toMatchObject({ cookies: expect.any(Array) });
+      expect({ result: seeded, realDefaultProfile: true, launch: safeLaunchEvidence(observation) }).toMatchObject({ result: { cookies: expect.any(Array) } });
       expect((seeded as { cookies: unknown[] }).cookies).toHaveLength(1);
       const database = new Database(path.join(mapping.userDataDir, 'Default', 'Network', 'Cookies'), { readonly: true });
       try {
@@ -434,7 +519,7 @@ describe('native Windows process qualification', () => {
         return context;
       } };
     `);
-    const env = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
+    const env = nativeFixtureEnvironment(fixture, node);
     const input = { ...request, nodeExecutable: node, executablePath: edge, userDataDir: path.join(fixture, 'User Data'), playwrightEntry };
     const owner = nativeSupervisor(input, env);
     let contender: ReturnType<typeof nativeSupervisor> | undefined;
@@ -464,7 +549,7 @@ describe('native Windows process qualification', () => {
       const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
       const require = createRequire(import.meta.url);
       writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry: require.resolve('playwright'), mode })});`);
-      const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
+      const environment = nativeFixtureEnvironment(fixture, node);
       const supervisor = ownFixtureChild(spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
       const closed = new Promise<void>(resolve => supervisor.once('close', () => resolve()));
       let output = '';
@@ -500,7 +585,7 @@ describe('native Windows process qualification', () => {
       const pids = path.join(fixture, 'owned.json');
       const playwrightEntry = path.join(fixture, 'playwright.cjs');
       writeFileSync(playwrightEntry, `module.exports = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-process.cjs'))})(${JSON.stringify({ pidsFile: pids, mode })});`);
-      const environment = { SystemRoot: process.env.SystemRoot!, TEMP: fixture, TMP: fixture, USERPROFILE: fixture, LOCALAPPDATA: fixture, APPDATA: fixture, PATH: path.dirname(node) };
+      const environment = nativeFixtureEnvironment(fixture, node);
       const sibling = ownFixtureChild(spawn(node, ['-e', 'setInterval(() => {}, 1000)'], { env: environment, stdio: 'ignore', windowsHide: true }));
       const siblingClosed = new Promise<void>(resolve => sibling.once('close', () => resolve()));
       const supervisor = ownFixtureChild(spawn(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=NUL', path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts')], { env: environment, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true }));
@@ -724,6 +809,8 @@ describe('native Windows launch diagnostics', () => {
       if (!node || !edge) throw new Error('Native initialization comparison requires Node and installed Microsoft Edge');
       const fixture = mkdtempSync(path.join(root, 'edge-initialization-'));
       const ownedRoot = realpathSync(fixture);
+      const rootState = lstatSync(fixture, { bigint: true });
+      const rootIdentity = { path: ownedRoot, dev: rootState.dev, ino: rootState.ino };
       const userDataDir = path.join(fixture, 'User Data');
       const observation = path.join(fixture, 'launch.json');
       const playwrightEntry = path.join(fixture, 'observed-playwright.cjs');
@@ -738,8 +825,7 @@ describe('native Windows launch diagnostics', () => {
       if ('error' in first && first.error === 'native_cleanup_failed') throw new Error('Initial containment cleanup was not confirmed');
       if (realpathSync(fixture) !== ownedRoot) throw new Error('Initialization fixture ownership changed');
       if (state === 'fresh') {
-        rmSync(fixture, { recursive: true, force: true });
-        mkdirSync(fixture);
+        clearOwnedFixtureContents(fixture, rootIdentity);
       } else {
         if (existsSync(userDataDir) && realpathSync(userDataDir) !== path.join(ownedRoot, 'User Data')) throw new Error('Synthetic profile ownership changed');
         rmSync(userDataDir, { recursive: true, force: true });

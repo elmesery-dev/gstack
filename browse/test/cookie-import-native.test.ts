@@ -18,14 +18,18 @@ if (!node) throw new Error('Node is required for native-cookie transport tests')
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function isolatedEnv(): NodeJS.ProcessEnv {
+  const local = path.join(root, 'AppData', 'Local');
+  const roaming = path.join(root, 'AppData', 'Roaming');
+  const temporary = path.join(local, 'Temp');
+  for (const directory of [local, roaming, temporary]) mkdirSync(directory, { recursive: true });
   return {
     PATH: path.dirname(node!),
     HOME: root,
     USERPROFILE: root,
-    LOCALAPPDATA: root,
-    APPDATA: root,
-    TEMP: root,
-    TMP: root,
+    LOCALAPPDATA: local,
+    APPDATA: roaming,
+    TEMP: temporary,
+    TMP: temporary,
     ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
   };
 }

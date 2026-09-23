@@ -3,7 +3,7 @@ const cp = require('node:child_process');
 const { createHash } = require('node:crypto');
 const path = require('node:path');
 
-module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspectCommandLine = false, observerExecutable }) => {
+module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspectCommandLine = false, observerExecutable, seedCookie = { name: 'synthetic', value: 'synthetic', domain: 'example.test', path: '/' } }) => {
   if (inspectCommandLine && process.platform === 'win32' && typeof observerExecutable !== 'string') throw new Error('Native observer executable is required');
   const originalSpawn = cp.spawn;
   let inspected = Promise.resolve();
@@ -122,7 +122,7 @@ module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspect
     const context = await chromium.launchPersistentContext(root, inspectCommandLine && process.platform === 'win32'
       ? { ...options, timeout: Math.max(1, options.timeout - (Date.now() - started)) } : options);
     await inspected;
-    await context.addCookies([{ name: 'synthetic', value: 'synthetic', domain: 'example.test', path: '/' }]);
+    await context.addCookies([seedCookie]);
     if (mode === 'stalled-close') context.close = () => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); };
     return context;
   } } };
