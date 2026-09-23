@@ -145,11 +145,16 @@ export function validateQualificationHost(env: NodeJS.ProcessEnv, platform = pro
 
 export function nativeDiaLaunchOptions(executablePath: string, env: Record<string, string>) {
   return {
-    executablePath, env, headless: true, timeout: 30_000, serviceWorkers: 'block' as const,
+    executablePath, env, headless: true, chromiumSandbox: true, timeout: 30_000, serviceWorkers: 'block' as const,
     ignoreDefaultArgs: ['--use-mock-keychain', '--password-store=basic', '--no-first-run'],
     args: ['--disable-sync', '--no-default-browser-check', '--profile-directory=Default'],
     handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
   };
+}
+
+export function hasSandboxDisablingArgument(args: string[]): boolean {
+  return args.some((arg, index) => /^--(?:no-sandbox|no-zygote-sandbox|disable-(?:[a-z0-9-]+-)?sandbox|single-process|in-process-gpu)(?:=|$)/i.test(arg)
+    || (/^--disable-features(?:=|$)/i.test(arg) && /sandbox/i.test(arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : args[index + 1] ?? '')));
 }
 
 export function allowedFixturePage(url: string, origin: string): boolean {
@@ -297,8 +302,9 @@ export function browserStartupFacts(urls: string[], origin: string) {
     allowed: urls.every(url => allowedFixturePage(url, origin)) };
 }
 
-export function browserRootFacts(children: Array<{ pid: number; process: { exitCode: number | null; signalCode: string | null } }>) {
+export function browserRootFacts(children: Array<{ pid: number; closeObserved?: boolean; process: { exitCode: number | null; signalCode: string | null } }>) {
   return children.slice(0, 64).map(child => ({ pid: child.pid, exitCode: Number.isInteger(child.process.exitCode) ? child.process.exitCode : null,
+    ...(child.closeObserved === undefined ? {} : { closeObserved: child.closeObserved }),
     signal: child.process.signalCode == null ? null
       : ['SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL'].includes(child.process.signalCode) ? child.process.signalCode : 'other' }));
 }
@@ -307,7 +313,9 @@ export function browserCleanupError(error: unknown) {
   const code = (error as { code?: unknown } | null)?.code;
   const errno = (error as { errno?: unknown } | null)?.errno;
   const reason = error instanceof Error && error.message === 'owned_process_group_still_live' ? 'group_still_live'
-    : error instanceof Error && error.message === 'cleanup_budget_exhausted' ? 'cleanup_deadline' : 'signal_or_probe_failed';
+    : error instanceof Error && error.message === 'cleanup_budget_exhausted' ? 'cleanup_deadline'
+      : error instanceof Error && error.message === 'operation_timeout' ? 'child_close_timeout'
+        : error instanceof Error && error.message === 'owned_child_close_unconfirmed' ? 'child_close_unconfirmed' : 'signal_or_probe_failed';
   return { reason, code: typeof code === 'string' && ['ESRCH', 'EPERM', 'EACCES', 'EINVAL', 'ENOSYS', 'ETIMEDOUT'].includes(code) ? code : 'unclassified',
     errno: typeof errno === 'number' && Number.isSafeInteger(errno) ? errno : null };
 }
@@ -495,13 +503,16 @@ export function fixtureKeychainRestoreCommands(snapshot: { search: string[]; def
 export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
   const childProcess = require('node:child_process');
   const original = childProcess.spawn;
-  const children: Array<{ process: ChildProcess; executable: string; pid: number; stderr?: ReturnType<typeof createBrowserStderrCapture> }> = [];
+  const children: Array<{ process: ChildProcess; executable: string; pid: number; closed: Promise<void>; closeObserved: boolean;
+    stderr?: ReturnType<typeof createBrowserStderrCapture> }> = [];
   const attempts: Array<Record<string, number | boolean | null>> = [];
   const detachStderr: Array<() => void> = [];
   let accepting = true;
   childProcess.spawn = function(command: string, args: string[], options: any) {
     if (!expected.has(command)) return original.call(this, command, args, options);
     const argumentsArray = Array.isArray(args);
+    const sandboxRequired = process.platform === 'darwin';
+    const sandboxDisablingFlag = argumentsArray && hasSandboxDisablingArgument(args);
     attempts.push({ admissionOpen: accepting, argumentsArray, pipeFlag: argumentsArray && args.includes('--remote-debugging-pipe'),
       profileArgumentCount: argumentsArray ? args.filter(arg => arg.startsWith('--user-data-dir')).length : null,
       expectedProfile: argumentsArray && args.includes('--user-data-dir=' + expected.get(command)),
@@ -513,8 +524,9 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
       tcpDebuggingFlag: argumentsArray && args.some(arg => /^--remote-debugging-port(?:=|$)/.test(arg)),
       mockKeychainFlag: argumentsArray && args.some(arg => /^--use-mock-keychain(?:=|$)/.test(arg)),
       passwordStoreFlag: argumentsArray && args.some(arg => /^--password-store(?:=|$)/.test(arg)),
-      firstRunSuppressed: argumentsArray && args.some(arg => /^--no-first-run(?:=|$)/.test(arg)) });
+      firstRunSuppressed: argumentsArray && args.some(arg => /^--no-first-run(?:=|$)/.test(arg)), sandboxRequired, sandboxDisablingFlag });
     if (!accepting || !Array.isArray(args) || !args.includes('--remote-debugging-pipe')
+      || (sandboxRequired && sandboxDisablingFlag)
       || args.filter(arg => arg.startsWith('--user-data-dir')).length !== 1 || !args.includes('--user-data-dir=' + expected.get(command))
       || options?.detached !== true || (options.shell !== undefined && options.shell !== false) || !Array.isArray(options?.stdio)
       || options.stdio.length !== 5 || options.stdio[3] !== 'pipe' || options.stdio[4] !== 'pipe'
@@ -523,14 +535,19 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
     }
     const child: ChildProcess = original.call(this, command, args, options);
     if (child.pid) {
-      const stderr = child.stderr ? createBrowserStderrCapture() : undefined;
+      let resolveClose!: () => void;
+      const closed = new Promise<void>(resolve => { resolveClose = resolve; });
+      const observed = { process: child, executable: command, pid: child.pid, closed, closeObserved: false,
+        stderr: child.stderr ? createBrowserStderrCapture() : undefined };
+      child.once('close', () => { observed.closeObserved = true; resolveClose(); });
+      const stderr = observed.stderr;
       if (stderr && child.stderr) {
         const stream = child.stderr;
         stream.on('data', stderr.consume);
         stream.once('end', stderr.end);
         detachStderr.push(() => { stream.off('data', stderr.consume); stream.off('end', stderr.end); stderr.clear(); });
       }
-      children.push({ process: child, executable: command, pid: child.pid, stderr });
+      children.push(observed);
     }
     return child;
   };
@@ -539,6 +556,89 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
 
 export function browserStderrFacts(children: ReturnType<typeof observeBrowserLaunches>['children']) {
   return children.slice(0, 64).map(child => ({ pid: child.pid, available: Boolean(child.stderr), ...child.stderr?.snapshot() }));
+}
+
+export async function joinOwnedBrowserClose(child: ReturnType<typeof observeBrowserLaunches>['children'][number], deadline: number) {
+  const remaining = deadline - performance.now();
+  if (!Number.isFinite(remaining) || remaining <= 0) throw new Error('cleanup_budget_exhausted');
+  await bounded(child.closed, remaining);
+  if (!child.closeObserved) throw new Error('owned_child_close_unconfirmed');
+}
+
+export function classifyNativeWaitSample(output: string) {
+  const families = {
+    security_keychain: /\b(?:SecKeychain\w*|SecItem\w*|securityd|Security)\b|libsecurity_keychain/,
+    appkit_bootstrap: /\b(?:AppKit|NSApplication\w*|SkyLight|HIToolbox|CGSConnection\w*|bootstrap_\w+)\b/,
+    network: /\b(?:CFNetwork|NSURLSession\w*|nw_connection_\w*)\b|Network\.framework/,
+    runloop: /\b(?:CFRunLoop\w*|__CFRunLoop\w*|NSRunLoop\w*|mach_msg\w*|__psynch_cvwait|__ulock_wait|kevent\w*)\b/,
+  };
+  const frameCounts = Object.fromEntries(Object.keys(families).map(name => [name, 0]));
+  const mainThreadFrameCounts = { ...frameCounts };
+  let callGraphSeen = false;
+  let mainThreadSeen = false;
+  let mainThread = false;
+  let frames = 0;
+  if (Buffer.byteLength(output) > 1024 * 1024) return { available: false, reason: 'sample_output_oversized' };
+  for (const line of output.split('\n')) {
+    if (/^Call graph:\s*$/.test(line)) { callGraphSeen = true; continue; }
+    if (!callGraphSeen) continue;
+    if (/^(?:Total number in stack|Sort by top of stack|Binary Images:)/.test(line)) break;
+    if (/^\s*\d+\s+Thread_/.test(line)) {
+      mainThread = /\bcom\.apple\.main-thread\b/.test(line);
+      mainThreadSeen ||= mainThread;
+      continue;
+    }
+    if (!/^\s*[+|:! ]*\d+\s+\S/.test(line)) continue;
+    frames++;
+    for (const [name, pattern] of Object.entries(families)) {
+      if (!pattern.test(line)) continue;
+      frameCounts[name]++;
+      if (mainThread) mainThreadFrameCounts[name]++;
+    }
+  }
+  return { available: callGraphSeen && frames > 0, callGraphSeen, mainThreadSeen, frames, frameCounts, mainThreadFrameCounts };
+}
+
+export function sampleOwnedDiaWait(child: ReturnType<typeof observeBrowserLaunches>['children'][number], uid: number, expectedExecutable: string,
+  deadline: number, env: Record<string, string>, spawn: typeof spawnSync = spawnSync) {
+  const result: Record<string, any> = { available: false, reason: 'target_not_live_owned_child', attempted: false };
+  if (child.executable !== expectedExecutable || path.basename(expectedExecutable) !== 'Dia' || !Number.isSafeInteger(child.pid) || child.pid < 1
+    || child.process.pid !== child.pid || child.closeObserved || child.process.exitCode !== null || child.process.signalCode !== null
+    || uid !== process.getuid?.() || uid !== process.geteuid?.() || !Number.isFinite(deadline)) return result;
+  const until = Math.min(deadline, performance.now() + 5_000);
+  const timeout = (limit: number) => {
+    const value = Math.floor(Math.min(limit, until - performance.now()));
+    if (value < 1) throw new Error('sample_budget_exhausted');
+    return value;
+  };
+  try {
+    const identity = spawn('/bin/ps', ['-p', String(child.pid), '-o', 'uid=,pid=,ppid=,state=,ucomm='], {
+      env, encoding: 'utf8', timeout: timeout(2_000), maxBuffer: 16 * 1024, killSignal: 'SIGKILL',
+    });
+    if (identity.error || identity.status !== 0 || typeof identity.stdout !== 'string') { result.reason = 'ownership_probe_unavailable'; return result; }
+    const row = identity.stdout.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+([IRSUTD][^\s]*)\s+Dia$/);
+    if (!row || Number(row[1]) !== uid || Number(row[2]) !== child.pid || Number(row[3]) !== process.pid) return result;
+    result.ownedLiveChildConfirmed = true;
+    result.attempted = true;
+    const sample = spawn('/usr/bin/sample', [String(child.pid), '1', '10', '-file', '/dev/stdout'], {
+      env, encoding: 'utf8', timeout: timeout(5_000), maxBuffer: 1024 * 1024, killSignal: 'SIGKILL',
+    });
+    const stdout = typeof sample.stdout === 'string' ? sample.stdout : '';
+    const stderr = typeof sample.stderr === 'string' ? sample.stderr : '';
+    result.exitCode = sample.status;
+    result.stdoutBytes = Buffer.byteLength(stdout);
+    result.stderrBytes = Buffer.byteLength(stderr);
+    result.timedOut = (sample.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+    if (sample.error || sample.status !== 0) {
+      result.reason = /not permitted|permission denied|(?:unable|failed) to (?:get|obtain).*task|task_for_pid.*fail|requires root/i.test((stdout + '\n' + stderr).slice(0, 65_536))
+        ? 'sampling_permission_denied' : result.timedOut ? 'sampling_timeout' : 'sampling_failed';
+      return result;
+    }
+    result.waitFamilies = classifyNativeWaitSample(stdout);
+    result.available = result.waitFamilies.available;
+    result.reason = result.available ? 'sampled' : 'sample_format_unavailable';
+  } catch { result.reason = 'sampling_unavailable_or_budget_exhausted'; }
+  return result;
 }
 
 async function sha256(file: string): Promise<string> {
@@ -591,6 +691,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
   let profileOwnership: ReturnType<typeof createOwnedDiaProfile> | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let browserRole: 'source' | 'destination' | undefined;
+  let sourceExecutable: string | undefined;
   const attemptStarts: Partial<Record<'source' | 'destination', number>> = {};
   const receipt: Record<string, any> = {
     status: 'incomplete', reason: 'not_run', runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -679,6 +780,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     if (!executableName || path.basename(executableName) !== executableName) throw new Error('invalid_bundle_executable');
     const executable = realpathSync(path.join(app, 'Contents/MacOS', executableName));
     if (!executable.startsWith(realpathSync(app) + path.sep)) throw new Error('bundle_executable_escape');
+    sourceExecutable = executable;
     const architectures = run('/usr/bin/lipo', ['-archs', executable]).stdout.split(/\s+/);
     if (!architectures.includes('arm64')) throw new Error('dia_arm64_binary_required');
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
@@ -851,6 +953,11 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       facts.error = browserPreflightError(error, stderrReasons);
       receipt.blocker = facts.error;
       if (facts.stage === 'runtime_import') facts.moduleLoad = playwrightModuleLoadFacts(repository, error);
+      if (browserRole === 'source' && facts.stage === 'launch' && facts.timedOut && !facts.launchReturned && facts.error === 'operation_timeout') {
+        facts.nativeWait = children.length === 1 && sourceExecutable
+          ? sampleOwnedDiaWait(children[0], account.uid, sourceExecutable, deadline, environment)
+          : { available: false, reason: 'source_root_ownership_unconfirmed', attempted: false };
+      }
     }
     if (error instanceof Error && error.message === 'onboarding_or_external_page') receipt.blocker = 'onboarding_or_unexpected_startup_page';
     if (error instanceof Error && error.message === 'preexisting_browser_state_refused') receipt.blocker = 'preexisting_browser_state_refused';
@@ -891,6 +998,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       const role = child.executable === account.destinationExecutable ? 'destination' : 'source';
       const group: Record<string, any> = { pid: child.pid, stage: 'probe_before_signal', signalSent: false, absenceConfirmed: false };
       receipt.browsers[role].cleanup.groups.push(group);
+      const until = Math.min(cleanupDeadline, performance.now() + 5_000);
       try {
         try {
           process.kill(-child.pid, 0);
@@ -898,8 +1006,10 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
           process.kill(-child.pid, 'SIGKILL');
           group.signalSent = true;
         } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
+        group.stage = 'join_child_close';
+        await joinOwnedBrowserClose(child, until);
+        group.childCloseObserved = child.closeObserved;
         group.stage = 'probe_after_signal';
-        const until = Math.min(cleanupDeadline, performance.now() + 5_000);
         while (true) {
           try { process.kill(-child.pid, 0); }
           catch (error: any) { if (error.code === 'ESRCH') { group.absenceConfirmed = true; break; } throw error; }
@@ -909,6 +1019,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
         group.stage = 'completed';
       } catch (error) {
         stopped = false;
+        group.childCloseObserved = child.closeObserved;
         group.failure = browserCleanupError(error);
         try {
           const timeout = Math.floor(Math.min(2_000, cleanupDeadline - performance.now()));

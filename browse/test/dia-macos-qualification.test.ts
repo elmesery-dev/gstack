@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
   allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserOperationTimedOut, browserPreflightError, browserRootFacts,
-  browserStartupCategory, browserStartupFacts, browserStderrFacts, browserStderrReasons, captureUserKeychains, createBrowserStderrCapture, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches,
+  browserStartupCategory, browserStartupFacts, browserStderrFacts, browserStderrReasons, captureUserKeychains, classifyNativeWaitSample, createBrowserStderrCapture, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands,
+  hasSandboxDisablingArgument, joinOwnedBrowserClose, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches, sampleOwnedDiaWait,
   observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
   qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
@@ -224,12 +225,35 @@ describe('Dia macOS CI qualification safety', () => {
     const env = { HOME: '/fixture/home', PATH: '/usr/bin:/bin' };
     const options = nativeDiaLaunchOptions('/fixture/Dia.app/Contents/MacOS/Dia', env);
     expect(options.headless).toBe(true);
+    expect(options.chromiumSandbox).toBe(true);
     expect(options.timeout).toBe(30_000);
     expect(options.ignoreDefaultArgs).toEqual(['--use-mock-keychain', '--password-store=basic', '--no-first-run']);
     expect(options.args).toEqual(['--disable-sync', '--no-default-browser-check', '--profile-directory=Default']);
     expect(options.env).toBe(env);
     expect(options.serviceWorkers).toBe('block');
     expect(options.args.some(arg => /onboarding|skip-login|remote-debugging-port/.test(arg))).toBe(false);
+  });
+
+  test('Mac native spawn policy refuses sandbox-disabling arguments regardless of caller options', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const profile = path.join(root, 'mac-sandbox-policy');
+    const childProcess = require('node:child_process');
+    const observer = observeBrowserLaunches(new Map([[process.execPath, profile]]));
+    try {
+      Object.defineProperty(process, 'platform', { ...descriptor, value: 'darwin' });
+      for (const disabling of [['--no-sandbox'], ['--no-sandbox=false'], ['--disable-sandbox'], ['--disable-gpu-sandbox'],
+        ['--disable-setuid-sandbox'], ['--disable-seccomp-filter-sandbox'], ['--disable-namespace-sandbox'], ['--no-zygote-sandbox'],
+        ['--single-process'], ['--in-process-gpu'], ['--disable-features=GpuSandboxV2'], ['--disable-features', 'RendererSandbox']]) {
+        expect(hasSandboxDisablingArgument(disabling)).toBe(true);
+        expect(() => childProcess.spawn(process.execPath, ['--remote-debugging-pipe', '--user-data-dir=' + profile, ...disabling], {
+          detached: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], chromiumSandbox: false,
+          allowSandboxDisable: true, env: { DISABLE_SANDBOX: '1' },
+        })).toThrow('browser_launch_policy_rejected');
+        expect(observer.attempts.at(-1)).toMatchObject({ sandboxRequired: true, sandboxDisablingFlag: true });
+      }
+      expect(observer.children).toHaveLength(0);
+    } finally { Object.defineProperty(process, 'platform', descriptor); observer.restore(); }
+    expect(hasSandboxDisablingArgument(['--headless', '--disable-sync', '--disable-features=MediaRouter,Translate'])).toBe(false);
   });
 
   test('startup admits only blank pages or the exact synthetic loopback origin', () => {
@@ -398,6 +422,92 @@ describe('Dia macOS CI qualification safety', () => {
     expect(browserGroupFacts(Array.from({ length: 70 }, (_, index) => `20000 ${index + 300} 1 300 S`).join('\n'), 20000, 300).processes).toHaveLength(64);
     expect(() => browserGroupFacts('private-invalid-row', 20000, 300)).toThrow('invalid_group_snapshot');
     expect(() => browserGroupFacts('', 20000, 0)).toThrow('invalid_group_snapshot_target');
+  });
+
+  test('native samples retain fixed wait families only from call-graph frames', () => {
+    const output = `Process: private-process [123]
+Path: /private/sensitive/Security/AppKit/CFNetwork
+Call graph:
+    100 Thread_11 DispatchQueue_1: com.apple.main-thread (serial)
+    + 100 NSApplicationMain (in AppKit) private-source-path
+    +   100 SecKeychainFindGenericPassword (in Security) private-item-name
+    +     100 mach_msg_trap (in libsystem_kernel)
+    100 Thread_12 private-thread-name
+    + 100 NSURLSessionTask (in CFNetwork) private-request-url
+Total number in stack (recursive counted multiple):
+    999 SecItemCopyMatching private-unrelated-summary
+Binary Images:
+    Security AppKit CFNetwork /private/image/path
+`;
+    const result = classifyNativeWaitSample(output);
+    expect(result).toEqual({ available: true, callGraphSeen: true, mainThreadSeen: true, frames: 4,
+      frameCounts: { security_keychain: 1, appkit_bootstrap: 1, network: 1, runloop: 1 },
+      mainThreadFrameCounts: { security_keychain: 1, appkit_bootstrap: 1, network: 0, runloop: 1 } });
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(JSON.stringify(result)).not.toContain('SecKeychain');
+    expect(classifyNativeWaitSample('private missing call graph').available).toBe(false);
+    expect(classifyNativeWaitSample('x'.repeat(1024 * 1024 + 1))).toEqual({ available: false, reason: 'sample_output_oversized' });
+  });
+
+  test('native wait sampling uses only the observed live child and never writes a stack artifact', () => {
+    const pid = 12345;
+    const uid = process.getuid!();
+    const child: any = { pid, executable: '/owned/Dia', closeObserved: false, process: { pid, exitCode: null, signalCode: null } };
+    const calls: string[][] = [];
+    const result = sampleOwnedDiaWait(child, uid, child.executable, performance.now() + 10_000, { HOME: root },
+      ((command: string, args: string[], options: any) => {
+        calls.push([command, ...args]);
+        expect(Number.isInteger(options.timeout)).toBe(true);
+        expect(options.timeout).toBeGreaterThan(0);
+        expect(options.timeout).toBeLessThanOrEqual(5_000);
+        expect(options.killSignal).toBe('SIGKILL');
+        if (command === '/bin/ps') return { status: 0, stdout: `${uid} ${pid} ${process.pid} S Dia\n`, stderr: '' };
+        return { status: 0, stdout: 'private-header\nCall graph:\n 10 Thread_1 DispatchQueue_1: com.apple.main-thread\n + 10 CFRunLoopRun (in CoreFoundation) private-path\nBinary Images:\nprivate-image', stderr: '' };
+      }) as typeof spawnSync);
+    expect(calls).toEqual([['/bin/ps', '-p', String(pid), '-o', 'uid=,pid=,ppid=,state=,ucomm='],
+      ['/usr/bin/sample', String(pid), '1', '10', '-file', '/dev/stdout']]);
+    expect(result).toMatchObject({ available: true, attempted: true, ownedLiveChildConfirmed: true, reason: 'sampled',
+      waitFamilies: { mainThreadFrameCounts: { runloop: 1 } } });
+    expect(JSON.stringify(result)).not.toContain('private-');
+    expect(JSON.stringify(result)).not.toContain('CFRunLoopRun');
+  });
+
+  test('sampling refuses changed identity, zombies, and closed roots without attempting a native sample', () => {
+    const uid = process.getuid!();
+    const child: any = { pid: 12345, executable: '/owned/Dia', closeObserved: false, process: { pid: 12345, exitCode: null, signalCode: null } };
+    for (const row of [`${uid + 1} 12345 ${process.pid} S Dia`, `${uid} 12345 ${process.pid + 1} S Dia`,
+      `${uid} 12345 ${process.pid} Z Dia`, `${uid} 12345 ${process.pid} S other`, `${uid} 12346 ${process.pid} S Dia`]) {
+      let calls = 0;
+      const result = sampleOwnedDiaWait(child, uid, child.executable, performance.now() + 10_000, {},
+        ((command: string) => { calls++; expect(command).toBe('/bin/ps'); return { status: 0, stdout: row, stderr: '' }; }) as typeof spawnSync);
+      expect(calls).toBe(1);
+      expect(result.attempted).toBe(false);
+    }
+    for (const changed of [{ ...child, closeObserved: true }, { ...child, executable: '/other/Chromium' },
+      { ...child, process: { ...child.process, exitCode: 0 } }]) {
+      const result = sampleOwnedDiaWait(changed, uid, '/owned/Dia', performance.now() + 10_000, {}, (() => { throw new Error('must_not_spawn'); }) as typeof spawnSync);
+      expect(result).toMatchObject({ available: false, attempted: false });
+    }
+  });
+
+  test('sampling reports OS permission refusal without escalation or raw failure text', () => {
+    const uid = process.getuid!();
+    const child: any = { pid: 12345, executable: '/owned/Dia', closeObserved: false, process: { pid: 12345, exitCode: null, signalCode: null } };
+    const result = sampleOwnedDiaWait(child, uid, child.executable, performance.now() + 10_000, {},
+      ((command: string) => command === '/bin/ps'
+        ? { status: 0, stdout: `${uid} 12345 ${process.pid} S Dia`, stderr: '' }
+        : { status: 1, stdout: '', stderr: 'Failed to get task for pid: private-process-path. Operation not permitted.' }) as typeof spawnSync);
+    expect(result).toMatchObject({ available: false, attempted: true, reason: 'sampling_permission_denied' });
+    expect(JSON.stringify(result)).not.toContain('private-process');
+  });
+
+  test('child close joining stays within its deadline and refuses an unconfirmed close', async () => {
+    await expect(joinOwnedBrowserClose({ closed: Promise.resolve(), closeObserved: false } as any, performance.now() + 1000))
+      .rejects.toThrow('owned_child_close_unconfirmed');
+    await expect(joinOwnedBrowserClose({ closed: new Promise(() => {}), closeObserved: false } as any, performance.now() + 5))
+      .rejects.toThrow('operation_timeout');
+    await expect(joinOwnedBrowserClose({ closed: Promise.resolve(), closeObserved: true } as any, 0))
+      .rejects.toThrow('cleanup_budget_exhausted');
   });
 
   for (const [error, category] of [
@@ -1293,6 +1403,45 @@ with tarfile.open(file, 'w') as out:
     } finally { observer.restore(); }
   });
 
+  test('an owned killed child is joined before proving its process group absent', async () => {
+    const childProcess = require('node:child_process');
+    const profile = path.join(root, 'reaping-profile');
+    const observer = observeBrowserLaunches(new Map([[process.execPath, profile]]));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const child = childProcess.spawn(process.execPath, ['--no-env-file', '--no-install', '-e',
+        'process.stdout.write("ready\\n"); setInterval(() => {}, 1000)', '--', '--remote-debugging-pipe', '--user-data-dir=' + profile], {
+        detached: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], env: { HOME: root, PATH: path.dirname(process.execPath) },
+      });
+      await Promise.race([new Promise(resolve => child.stdout.once('data', resolve)), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('fixture_startup_timeout')), 3000);
+      })]);
+      clearTimeout(timer);
+      const owned = observer.children[0];
+      expect(owned.closeObserved).toBe(false);
+      const until = performance.now() + 5_000;
+      process.kill(-owned.pid, 'SIGKILL');
+      await joinOwnedBrowserClose(owned, until);
+      expect(owned.closeObserved).toBe(true);
+      let absent = false;
+      while (performance.now() < until) {
+        try { process.kill(-owned.pid, 0); }
+        catch (error: any) { if (error.code === 'ESRCH') { absent = true; break; } throw error; }
+        await Bun.sleep(10);
+      }
+      expect(absent).toBe(true);
+      expect(browserRootFacts(observer.children)[0]).toMatchObject({ closeObserved: true, signal: 'SIGKILL' });
+    } finally {
+      clearTimeout(timer);
+      for (const owned of observer.children) {
+        if (owned.closeObserved) continue;
+        try { process.kill(-owned.pid, 'SIGKILL'); } catch {}
+        await joinOwnedBrowserClose(owned, performance.now() + 5_000);
+      }
+      observer.restore();
+    }
+  });
+
   test('the pinned Playwright launch is captured with the observer installed after importing Playwright', async () => {
     const { chromium } = await import('playwright');
     expect(require('playwright/package.json').version).toBe('1.62.1');
@@ -1301,14 +1450,17 @@ with tarfile.open(file, 'w') as out:
     const observer = observeBrowserLaunches(new Map([[executable, profile]]));
     let context: Awaited<ReturnType<typeof chromium.launchPersistentContext>> | undefined;
     try {
-      context = await chromium.launchPersistentContext(profile, nativeDiaLaunchOptions(executable, {
+      const nativeOptions = nativeDiaLaunchOptions(executable, {
         HOME: root, PATH: path.dirname(process.execPath),
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
-      }));
+      });
+      expect(nativeOptions.chromiumSandbox).toBe(true);
+      const linuxContainerTestOnly = process.platform === 'linux';
+      context = await chromium.launchPersistentContext(profile, { ...nativeOptions, ...(linuxContainerTestOnly ? { chromiumSandbox: false } : {}) });
       expect(observer.children).toHaveLength(1);
       expect(observer.children[0].executable).toBe(executable);
       expect(observer.children[0].pid).toBeGreaterThan(1);
-      expect(browserRootFacts(observer.children)).toEqual([{ pid: observer.children[0].pid, exitCode: null, signal: null }]);
+      expect(browserRootFacts(observer.children)).toEqual([{ pid: observer.children[0].pid, exitCode: null, closeObserved: false, signal: null }]);
       expect(browserStartupFacts(context.pages().map(page => page.url()), 'http://127.0.0.1:8123').allowed).toBe(true);
       expect(browserStderrFacts(observer.children)[0].available).toBe(true);
       expect(browserStderrFacts(observer.children)[0].bytesInspected).toBeLessThanOrEqual(65_536);
@@ -1316,7 +1468,7 @@ with tarfile.open(file, 'w') as out:
       expect(observer.attempts[0]).toEqual({ admissionOpen: true, argumentsArray: true, pipeFlag: true, profileArgumentCount: 1,
         expectedProfile: true, detached: true, shellDisabled: true, stdioCount: 5, extraPipeDescriptors: true,
         headlessFlag: true, blankStartupArgument: true, tcpDebuggingFlag: false, mockKeychainFlag: false,
-        passwordStoreFlag: false, firstRunSuppressed: false });
+        passwordStoreFlag: false, firstRunSuppressed: false, sandboxRequired: process.platform === 'darwin', sandboxDisablingFlag: linuxContainerTestOnly });
       expect(JSON.stringify(observer.attempts)).not.toContain(executable);
       expect(JSON.stringify(observer.attempts)).not.toContain(profile);
       const page = context.pages()[0] ?? await context.newPage();

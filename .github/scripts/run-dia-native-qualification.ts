@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, FRESH_WORK_PREFIX, type FreshAccount,
-  nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord,
+  joinOwnedBrowserClose, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord,
   playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 export { FRESH_WORK_PREFIX, ownsFreshAccount, parseDirectoryRecord } from './qualify-dia-macos';
 
@@ -478,9 +478,10 @@ async function freshWorker(configFile: string) {
     if (context) await limit(context.close().catch(() => {}), 5_000).catch(() => {});
     let stopped = !launchAttempted || observer?.children.length === 1;
     for (const child of observer?.children ?? []) {
+      const until = performance.now() + 5_000;
       try {
         try { process.kill(-child.pid, 0); process.kill(-child.pid, 'SIGKILL'); } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
-        const until = performance.now() + 5_000;
+        await joinOwnedBrowserClose(child, until);
         while (true) {
           try { process.kill(-child.pid, 0); } catch (error: any) { if (error.code === 'ESRCH') break; throw error; }
           if (performance.now() >= until) throw new Error('probe_browser_still_live');
