@@ -1,5 +1,7 @@
 import { describe, test, expect, afterAll, setDefaultTimeout } from 'bun:test';
 import * as path from 'path';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 
 // Every test here spawnSync's a `node` child; Windows CI cold-start (AV scan,
 // first-touch of node.exe) alone can blow bun's 5s default — observed 5,007ms
@@ -203,6 +205,67 @@ describe('bun-polyfill', () => {
     `], { stdout: 'pipe', stderr: 'pipe', timeout: 30_000 });
     expect(result.stdout.toString().trim()).toBe('1048576:0');
   }, 15000);
+
+  test('cancelled replay readers release inherited pipes after the direct child exits', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'polyfill-cancel-')));
+    const marker = path.join(root, 'descendant.pid');
+    expect(fs.realpathSync(root)).toBe(root);
+    try {
+      const childScript = `
+        const { spawn } = require('node:child_process');
+        const fs = require('node:fs');
+        const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'],
+          { stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
+        fs.writeFileSync(${JSON.stringify(marker)}, String(descendant.pid));
+        process.stdout.write('private-stdout');
+        process.stderr.write('private-stderr');
+        process.exit(0);
+      `;
+      const script = `
+        const childProcess = require('node:child_process');
+        const originalSpawn = childProcess.spawn;
+        let direct;
+        childProcess.spawn = (...args) => { direct = originalSpawn(...args); return direct; };
+        require(${JSON.stringify(polyfillPath)});
+        (async () => {
+          const proc = Bun.spawn([process.execPath, '-e', ${JSON.stringify(childScript)}],
+            { stdio: ['ignore', 'pipe', 'pipe'] });
+          const stdout = proc.stdout.getReader();
+          const stderr = proc.stderr.getReader();
+          const stdoutRead = stdout.read();
+          const stderrRead = stderr.read();
+          await new Promise((resolve, reject) => { direct.once('exit', resolve); direct.once('error', reject); });
+          await new Promise(resolve => setImmediate(resolve));
+          let settled = false;
+          proc.exited.then(() => { settled = true; });
+          await new Promise(resolve => setImmediate(resolve));
+          if (settled) throw new Error('Inherited pipes unexpectedly closed before cancellation');
+          await Promise.all([stdout.cancel(), stderr.cancel()]);
+          const reads = await Promise.all([stdoutRead, stderrRead]);
+          let timer;
+          const code = await Promise.race([proc.exited, new Promise((_, reject) =>
+            { timer = setTimeout(() => reject(new Error('cancel did not settle exited')), 5000); })])
+            .finally(() => clearTimeout(timer));
+          console.log(JSON.stringify({ code, reads: reads.map(read => read.done), descendantAlive: (() => {
+            try { process.kill(Number(require('node:fs').readFileSync(${JSON.stringify(marker)}, 'utf8')), 0); return true; }
+            catch { return false; }
+          })() }));
+        })().catch(error => { console.error(error.message); process.exitCode = 1; });
+      `;
+      const result = Bun.spawnSync(['node', '-e', script], { stdout: 'pipe', stderr: 'pipe', timeout: 30_000 });
+      expect(result.exitCode).toBe(0);
+      expect(result.stderr.toString()).toBe('');
+      expect(JSON.parse(result.stdout.toString())).toEqual({ code: 0, reads: [true, true], descendantAlive: true });
+    } finally {
+      if (fs.existsSync(marker)) {
+        const pidText = fs.readFileSync(marker, 'utf8');
+        if (/^[1-9]\d*$/.test(pidText)) {
+          try { process.kill(Number(pidText)); } catch (error: any) { if (error.code !== 'ESRCH') throw error; }
+        }
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   test('Bun.serve creates an HTTP server that responds', async () => {
     const result = Bun.spawnSync(['node', '-e', `

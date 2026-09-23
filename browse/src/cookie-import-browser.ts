@@ -605,20 +605,11 @@ async function dpapiDecrypt(encryptedBytes: Buffer): Promise<Buffer> {
     stderr: 'pipe',
   });
 
-  proc.stdin.write(encryptedBytes.toString('base64'));
-  proc.stdin.end();
-
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      proc.kill();
-      reject(new CookieImportError('DPAPI decryption timed out', 'keychain_timeout', 'retry'));
-    }, 10_000);
-  });
-
   try {
-    const exitCode = await Promise.race([proc.exited, timeout]);
-    const stdout = await new Response(proc.stdout).text();
+    proc.stdin.write(encryptedBytes.toString('base64'));
+    proc.stdin.end();
+    const { exitCode, stdout } = await readCredentialProcess(proc, 10_000, () =>
+      new CookieImportError('DPAPI decryption timed out', 'keychain_timeout', 'retry'));
     if (exitCode !== 0) {
       throw new CookieImportError('DPAPI decryption failed', 'keychain_error');
     }
@@ -629,6 +620,41 @@ async function dpapiDecrypt(encryptedBytes: Buffer): Promise<Buffer> {
       'DPAPI decryption failed',
       'keychain_error',
     );
+  }
+}
+
+async function readCredentialProcess(
+  proc: { exited: Promise<number>; stdout: ReadableStream<Uint8Array>; stderr: ReadableStream<Uint8Array>; kill(): void },
+  timeoutMs: number,
+  timeoutError: () => Error,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const readers = [proc.stdout.getReader(), proc.stderr.getReader()];
+  const read = async (reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> => {
+    const chunks: Uint8Array[] = [];
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, bytes).toString('utf8');
+      bytes += value.byteLength;
+      if (bytes > 64 * 1024) throw new Error('Credential process output exceeded the limit');
+      chunks.push(value);
+    }
+  };
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(timeoutError()), timeoutMs);
+  });
+  try {
+    const [exitCode, stdout, stderr] = await Promise.race([
+      Promise.all([proc.exited, read(readers[0]), read(readers[1])]), timeout,
+    ]);
+    return { exitCode, stdout, stderr };
+  } catch (error) {
+    try { proc.kill(); } catch {}
+    for (const reader of readers) {
+      try { void reader.cancel().catch(() => {}); } catch {}
+    }
+    throw error;
   } finally {
     clearTimeout(timer!);
   }
@@ -642,22 +668,13 @@ async function getMacKeychainPassword(service: string): Promise<string> {
     { stdout: 'pipe', stderr: 'pipe', windowsHide: true },
   );
 
-  let timer: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      proc.kill();
-      reject(new CookieImportError(
+  try {
+    const { exitCode, stdout, stderr } = await readCredentialProcess(proc, 10_000, () =>
+      new CookieImportError(
         `macOS is waiting for Keychain permission. Look for a dialog asking to allow access to "${service}".`,
         'keychain_timeout',
         'retry',
       ));
-    }, 10_000);
-  });
-
-  try {
-    const exitCode = await Promise.race([proc.exited, timeout]);
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
 
     if (exitCode !== 0) {
       // Distinguish denied vs not found vs other
@@ -690,8 +707,6 @@ async function getMacKeychainPassword(service: string): Promise<string> {
       'keychain_error',
       'retry',
     );
-  } finally {
-    clearTimeout(timer!);
   }
 }
 
@@ -716,26 +731,15 @@ async function getLinuxSecretPassword(browser: BrowserInfo): Promise<string | nu
 }
 
 async function runPasswordLookup(cmd: string[], timeoutMs: number): Promise<string | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const proc = Bun.spawn(cmd, { stdout: 'pipe', stderr: 'pipe', windowsHide: true });
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        proc.kill();
-        reject(new Error('timeout'));
-      }, timeoutMs);
-    });
-
-    const exitCode = await Promise.race([proc.exited, timeout]);
-    const stdout = await new Response(proc.stdout).text();
+    const { exitCode, stdout } = await readCredentialProcess(proc, timeoutMs, () => new Error('timeout'));
     if (exitCode !== 0) return null;
 
     const password = stdout.trim();
     return password.length > 0 ? password : null;
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
