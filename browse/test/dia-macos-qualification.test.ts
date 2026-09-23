@@ -1,14 +1,14 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, captureUserKeychains, DIA_DOWNLOAD, nativeDiaLaunchOptions, observeBrowserLaunches,
-  parseDefaultKeychain, parseKeychainPaths, validateQualificationHost,
+  allowedFixturePage, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
+  observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, prepareKeychainHome, validateQualificationHost,
 } from '../../.github/scripts/qualify-dia-macos';
 import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord } from '../../.github/scripts/run-dia-native-qualification';
 
@@ -192,6 +192,89 @@ describe('Dia macOS CI qualification safety', () => {
         stdout: args[0] === 'list-keychains' ? JSON.stringify(file) : '', stderr: '' })))
         .toThrow('keychain_outside_owned_home_refused');
     }
+  });
+
+  test('a fresh Keychain home gains only owned standard directories, not a fabricated preference file', () => {
+    const home = realpathSync(mkdtempSync(path.join(root, 'keychain-home-')));
+    expect(prepareKeychainHome(home)).toEqual({ before: { Library: false, 'Library/Preferences': false, 'Library/Keychains': false }, directoriesReady: true });
+    for (const directory of ['Library', 'Library/Preferences', 'Library/Keychains']) {
+      expect(lstatSync(path.join(home, directory)).uid).toBe(process.getuid!());
+      expect(lstatSync(path.join(home, directory)).isDirectory()).toBe(true);
+    }
+    const preferences = path.join(home, 'Library/Preferences/com.apple.security.plist');
+    expect(existsSync(preferences)).toBe(false);
+    expect(existsSync(path.join(home, 'Library/Safari'))).toBe(false);
+    writeFileSync(preferences, 'opaque fixture preferences', { mode: 0o600 });
+    expect(prepareKeychainHome(home).before).toEqual({ Library: true, 'Library/Preferences': true, 'Library/Keychains': true });
+    expect(readFileSync(preferences, 'utf8')).toBe('opaque fixture preferences');
+  });
+
+  test('home preparation rejects a linked or unowned home without writing through it', () => {
+    const home = realpathSync(mkdtempSync(path.join(root, 'linked-home-')));
+    const elsewhere = realpathSync(mkdtempSync(path.join(root, 'other-home-')));
+    symlinkSync(elsewhere, path.join(home, 'Library'), 'dir');
+    expect(() => prepareKeychainHome(home)).toThrow('keychain_home_unsafe');
+    expect(readdirSync(elsewhere)).toEqual([]);
+    expect(() => prepareKeychainHome(elsewhere, process.getuid!() + 1)).toThrow('keychain_home_unsafe');
+    expect(readdirSync(elsewhere)).toEqual([]);
+  });
+
+  for (const mismatch of ['search-empty', 'default-empty', 'search-path', 'default-path', 'search-error', 'default-error', 'read-mismatch', 'read-error']) {
+    test(`Keychain diagnostics observe the explicit read independently of ${mismatch}`, () => {
+      const directory = realpathSync(mkdtempSync(path.join(root, 'keychain-facts-')));
+      const keychain = path.join(directory, 'fixture.keychain-db');
+      const other = path.join(directory, 'other.keychain-db');
+      writeFileSync(keychain, 'opaque synthetic keychain', { mode: 0o600 });
+      writeFileSync(other, 'other synthetic keychain', { mode: 0o600 });
+      const expected = 'synthetic-private-equality-value';
+      const calls: string[][] = [];
+      const facts = observeFixtureKeychain({ HOME: directory }, [directory], keychain, expected, 1000, (args, timeout) => {
+        expect(Number.isInteger(timeout)).toBe(true);
+        expect(timeout).toBeGreaterThan(0);
+        calls.push(args);
+        if (args[0] === 'list-keychains') return mismatch === 'search-error'
+          ? { status: 1, stdout: '', stderr: 'synthetic-private-error' }
+          : { status: 0, stdout: mismatch === 'search-empty' ? '' : JSON.stringify(mismatch === 'search-path' ? other : keychain), stderr: '' };
+        if (args[0] === 'default-keychain') return mismatch === 'default-error'
+          ? { status: 1, stdout: '', stderr: 'synthetic-private-error' }
+          : mismatch === 'default-empty'
+            ? { status: 1, stdout: '', stderr: 'security: SecKeychainCopyDomainDefault user: A default keychain could not be found.' }
+            : { status: 0, stdout: JSON.stringify(mismatch === 'default-path' ? other : keychain), stderr: '' };
+        if (mismatch === 'read-error') return { status: 1, stdout: '', stderr: 'synthetic-private-error' };
+        return { status: 0, stdout: mismatch === 'read-mismatch' ? 'other synthetic value' : expected + '\n', stderr: '' };
+      });
+      expect(calls).toEqual([['list-keychains', '-d', 'user'], ['default-keychain', '-d', 'user'],
+        ['find-generic-password', '-s', 'Gstack Native Probe', '-w', keychain]]);
+      expect(facts.searchCount).toBe(mismatch === 'search-error' ? null : mismatch === 'search-empty' ? 0 : 1);
+      expect(facts.searchPathMatches).toBe(!mismatch.startsWith('search-'));
+      expect(facts.defaultCount).toBe(mismatch === 'default-error' ? null : mismatch === 'default-empty' ? 0 : 1);
+      expect(facts.defaultPathMatches).toBe(!mismatch.startsWith('default-'));
+      expect(facts.explicitReadAttempted).toBe(true);
+      expect(facts.explicitReadSucceeded).toBe(mismatch !== 'read-error');
+      expect(facts.explicitReadMatches).toBe(!mismatch.startsWith('read-'));
+      expect(JSON.stringify(facts)).not.toContain(expected);
+      expect(JSON.stringify(facts)).not.toContain('synthetic-private-error');
+      expect(JSON.stringify(facts)).not.toContain(keychain);
+    });
+  }
+
+  test('an originally absent default is restored by deleting only the created fixture, never by a null default setter', () => {
+    expect(fixtureKeychainRestoreCommands({ search: [], default: [] }, '/owned/fixture.keychain-db', true)).toEqual([
+      ['delete-keychain', '/owned/fixture.keychain-db'], ['list-keychains', '-d', 'user', '-s'],
+    ]);
+    expect(fixtureKeychainRestoreCommands({ search: [], default: [] }, '/owned/fixture.keychain-db', false)).toEqual([
+      ['list-keychains', '-d', 'user', '-s'],
+    ]);
+  });
+
+  test('an existing default is restored before deleting the fixture, and preexisting fixture references are refused', () => {
+    const before = { search: ['/owned/prior.keychain-db', '/owned/other.keychain-db'], default: ['/owned/prior.keychain-db'] };
+    expect(fixtureKeychainRestoreCommands(before, '/owned/fixture.keychain-db', true)).toEqual([
+      ['default-keychain', '-d', 'user', '-s', '/owned/prior.keychain-db'],
+      ['delete-keychain', '/owned/fixture.keychain-db'],
+      ['list-keychains', '-d', 'user', '-s', '/owned/prior.keychain-db', '/owned/other.keychain-db'],
+    ]);
+    expect(() => fixtureKeychainRestoreCommands(before, '/owned/prior.keychain-db', true)).toThrow('fixture_keychain_not_fresh');
   });
 
   test('fresh account cleanup requires the same GUID, UID, private group, and registered home', () => {

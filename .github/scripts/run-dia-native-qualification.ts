@@ -4,7 +4,8 @@ import { accessSync, chmodSync, constants, copyFileSync, createReadStream, exist
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { captureUserKeychains, nativeDiaLaunchOptions, observeBrowserLaunches, validateQualificationHost } from './qualify-dia-macos';
+import { captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
+  prepareKeychainHome, validateQualificationHost } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
@@ -152,10 +153,13 @@ async function freshWorker(configFile: string) {
     preflight: { registeredIdentity: false, foundationHome: false, keychain: false, headlessChromium: false },
     cleanup: { probeBrowsersStopped: false, probeKeychainRestored: false }, sessionCreate: true };
   const env = account.environment;
+  let cleaning = false;
   const run = (command: string, args: string[], timeout = 10_000) => {
     try { return safeCommand(command, args, timeout, env, account.snapshot); }
     catch (error) {
-      receipt.commandFailure = (error as { diagnostic?: object }).diagnostic ?? { command: path.basename(command), operation: args[0] };
+      const diagnostic = (error as { diagnostic?: object }).diagnostic ?? { command: path.basename(command), operation: args[0] };
+      if (cleaning) (receipt.cleanupCommandFailures ??= []).push(diagnostic);
+      else receipt.initialCommandFailure ??= diagnostic;
       throw new Error('native_command_failed');
     }
   };
@@ -179,6 +183,7 @@ async function freshWorker(configFile: string) {
     const foundationHome = run('/usr/bin/osascript', ['-l', 'JavaScript', '-e', 'ObjC.import("Foundation"); $.NSHomeDirectory().js']);
     if (realpathSync(foundationHome) !== account.home) throw new Error('foundation_home_mismatch');
     receipt.preflight.foundationHome = true;
+    receipt.keychainHome = prepareKeychainHome(account.home, account.uid);
     for (const executable of [account.bun, account.destinationExecutable]) {
       accessSync(executable, constants.X_OK);
       if (!path.isAbsolute(executable) || realpathSync(executable) !== executable || !executable.startsWith(account.work + path.sep)) throw new Error('staged_executable_escape');
@@ -201,10 +206,9 @@ async function freshWorker(configFile: string) {
     run('/usr/bin/security', ['default-keychain', '-d', 'user', '-s', keychain]);
     run('/usr/bin/security', ['add-generic-password', '-s', 'Gstack Native Probe', '-a', 'fixture', '-w', value,
       '-T', '/usr/bin/security', keychain]);
-    const active = captureUserKeychains(env, [account.home, account.temporary]);
-    if (active.search.length !== 1 || realpathSync(active.search[0]) !== realpathSync(keychain)
-      || active.default.length !== 1 || realpathSync(active.default[0]) !== realpathSync(keychain)
-      || run('/usr/bin/security', ['find-generic-password', '-s', 'Gstack Native Probe', '-w', keychain]) !== value) throw new Error('native_keychain_probe_failed');
+    const observed = observeFixtureKeychain(env, [account.home, account.temporary], keychain, value);
+    receipt.keychainObservations = { ...observed, preferencesFileExists: existsSync(path.join(account.home, 'Library/Preferences/com.apple.security.plist')) };
+    if (!observed.searchPathMatches || !observed.defaultPathMatches || !observed.explicitReadMatches) throw new Error('native_keychain_probe_failed');
     receipt.preflight.keychain = true;
     receipt.reason = 'background_headless_chromium_preflight';
     const { chromium } = await import('playwright');
@@ -224,12 +228,14 @@ async function freshWorker(configFile: string) {
     if (error instanceof Error && ['fresh_identity_mismatch', 'fresh_directory_ownership_mismatch', 'fresh_registered_identity_mismatch',
       'foundation_home_mismatch', 'staged_executable_escape', 'staged_executable_changed', 'pinned_runtime_mismatch',
       'user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'keychain_outside_owned_home_refused',
-      'native_keychain_probe_failed'].includes(error.message)) receipt.blocker = error.message;
+      'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed'].includes(error.message)) receipt.blocker = error.message;
     if (receipt.reason === 'background_headless_chromium_preflight') {
       receipt.blocker = 'background_headless_unavailable_gui_session_may_be_required';
       receipt.graphicsSessionError = /WindowServer|CGSConnection|audit session|bootstrap_check_in/i.test(error instanceof Error ? error.message : '');
     }
+    receipt.initialFailure = { stage: receipt.reason, blocker: receipt.blocker ?? 'native_preflight_failed' };
   } finally {
+    cleaning = true;
     observer?.stop();
     if (context) await limit(context.close().catch(() => {}), 5_000).catch(() => {});
     let stopped = !launchAttempted || observer?.children.length === 1;
@@ -249,15 +255,14 @@ async function freshWorker(configFile: string) {
       try {
         if (keychainChanged && snapshot) {
           let restored = true;
-          for (const args of [['default-keychain', '-d', 'user', '-s', ...snapshot.default], ['list-keychains', '-d', 'user', '-s', ...snapshot.search]]) {
+          for (const args of fixtureKeychainRestoreCommands(snapshot, keychain, keychainCreated)) {
             try { run('/usr/bin/security', args); } catch { restored = false; }
           }
           if (!restored || JSON.stringify(captureUserKeychains(env, [account.home, account.temporary])) !== JSON.stringify(snapshot)) throw new Error('probe_keychain_restore_failed');
         }
-        if (keychainCreated) run('/usr/bin/security', ['delete-keychain', keychain]);
         receipt.cleanup.probeKeychainRestored = true;
         if (existsSync(probe) && realpathSync(probe) === probe) rmSync(probe, { recursive: true, force: true });
-      } catch {}
+      } catch { receipt.cleanupFailure = 'probe_keychain_restore_failed'; }
     }
     if (!receipt.cleanup.probeBrowsersStopped || !receipt.cleanup.probeKeychainRestored) { receipt.status = 'incomplete'; receipt.reason = 'background_probe_cleanup_incomplete'; }
     const update = path.join(account.temporary, 'preflight-' + randomBytes(8).toString('hex') + '.json');

@@ -52,24 +52,88 @@ export function parseDefaultKeychain(result: { status: number | null; stdout: st
   return paths;
 }
 
-export function captureUserKeychains(env: Record<string, string>, allowedRoots: string[], milliseconds = 10_000,
-  execute?: (args: string[], timeout: number) => { status: number | null; stdout: string; stderr: string; error?: unknown }) {
-  const deadline = performance.now() + milliseconds;
-  const probe = (args: string[]) => {
-    const timeout = Math.floor(deadline - performance.now());
-    if (!Number.isFinite(timeout) || timeout < 1) throw new Error('user_keychain_probe_timeout');
-    return execute ? execute(args, timeout) : spawnSync('/usr/bin/security', args, {
-      env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
-    });
-  };
-  const search = probe(['list-keychains', '-d', 'user']);
-  if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('user_keychain_search_unavailable');
-  const snapshot = { search: parseKeychainPaths(search.stdout, true), default: parseDefaultKeychain(probe(['default-keychain', '-d', 'user'])) };
-  for (const keychain of [...snapshot.search, ...snapshot.default]) {
+export function prepareKeychainHome(home: string, uid = process.getuid?.()) {
+  if (uid === undefined || realpathSync(home) !== home || !lstatSync(home).isDirectory() || lstatSync(home).uid !== uid) throw new Error('keychain_home_unsafe');
+  const directories = ['Library', 'Library/Preferences', 'Library/Keychains'];
+  const before = Object.fromEntries(directories.map(name => [name, existsSync(path.join(home, name))]));
+  for (const name of directories) {
+    const directory = path.join(home, name);
+    if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
+    const info = lstatSync(directory);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== uid || (info.mode & 0o022) !== 0 || realpathSync(directory) !== directory) throw new Error('keychain_home_unsafe');
+  }
+  return { before, directoriesReady: true };
+}
+
+type KeychainResult = { status: number | null; stdout: string; stderr: string; error?: unknown };
+type KeychainExecutor = (args: string[], timeout: number) => KeychainResult;
+
+function keychainCommand(env: Record<string, string>, args: string[], deadline: number, execute?: KeychainExecutor, onDispatch?: () => void): KeychainResult {
+  const timeout = Math.floor(deadline - performance.now());
+  if (!Number.isFinite(timeout) || timeout < 1) throw new Error('user_keychain_probe_timeout');
+  onDispatch?.();
+  return execute ? execute(args, timeout) : spawnSync('/usr/bin/security', args, {
+    env, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
+  });
+}
+
+function requireOwnedKeychains(paths: string[], allowedRoots: string[]) {
+  for (const keychain of paths) {
     const resolved = existsSync(keychain) ? realpathSync(keychain) : path.resolve(keychain);
     if (!allowedRoots.some(root => resolved.startsWith(realpathSync(root) + path.sep))) throw new Error('keychain_outside_owned_home_refused');
   }
+}
+
+export function captureUserKeychains(env: Record<string, string>, allowedRoots: string[], milliseconds = 10_000,
+  execute?: KeychainExecutor) {
+  const deadline = performance.now() + milliseconds;
+  const probe = (args: string[]) => keychainCommand(env, args, deadline, execute);
+  const search = probe(['list-keychains', '-d', 'user']);
+  if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('user_keychain_search_unavailable');
+  const snapshot = { search: parseKeychainPaths(search.stdout, true), default: parseDefaultKeychain(probe(['default-keychain', '-d', 'user'])) };
+  requireOwnedKeychains([...snapshot.search, ...snapshot.default], allowedRoots);
   return snapshot;
+}
+
+export function observeFixtureKeychain(env: Record<string, string>, allowedRoots: string[], keychain: string, expected: string,
+  milliseconds = 10_000, execute?: KeychainExecutor) {
+  requireOwnedKeychains([keychain], allowedRoots);
+  const info = lstatSync(keychain);
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.()) throw new Error('fixture_keychain_not_owned');
+  const expectedPath = realpathSync(keychain);
+  const deadline = performance.now() + milliseconds;
+  const result = { searchCount: null as number | null, searchPathMatches: false, defaultCount: null as number | null,
+    defaultPathMatches: false, explicitReadAttempted: false, explicitReadSucceeded: false, explicitReadMatches: false };
+  try {
+    const search = keychainCommand(env, ['list-keychains', '-d', 'user'], deadline, execute);
+    if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('search_unavailable');
+    const paths = parseKeychainPaths(search.stdout, true);
+    result.searchCount = paths.length;
+    requireOwnedKeychains(paths, allowedRoots);
+    result.searchPathMatches = paths.length === 1 && realpathSync(paths[0]) === expectedPath;
+  } catch {}
+  try {
+    const paths = parseDefaultKeychain(keychainCommand(env, ['default-keychain', '-d', 'user'], deadline, execute));
+    result.defaultCount = paths.length;
+    requireOwnedKeychains(paths, allowedRoots);
+    result.defaultPathMatches = paths.length === 1 && realpathSync(paths[0]) === expectedPath;
+  } catch {}
+  try {
+    const read = keychainCommand(env, ['find-generic-password', '-s', 'Gstack Native Probe', '-w', keychain], deadline, execute,
+      () => { result.explicitReadAttempted = true; });
+    result.explicitReadSucceeded = !read.error && read.status === 0;
+    result.explicitReadMatches = result.explicitReadSucceeded && read.stdout.trim() === expected;
+  } catch {}
+  return result;
+}
+
+export function fixtureKeychainRestoreCommands(snapshot: { search: string[]; default: string[] }, keychain: string, created: boolean): string[][] {
+  if (created && [...snapshot.search, ...snapshot.default].some(original => path.resolve(original) === path.resolve(keychain))) throw new Error('fixture_keychain_not_fresh');
+  return [
+    ...(snapshot.default.length ? [['default-keychain', '-d', 'user', '-s', ...snapshot.default]] : []),
+    ...(created ? [['delete-keychain', keychain]] : []),
+    ['list-keychains', '-d', 'user', '-s', ...snapshot.search],
+  ];
 }
 
 export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
@@ -191,6 +255,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
         throw new Error('preexisting_browser_state_refused');
       }
     }
+    receipt.keychainHome = prepareKeychainHome(systemEnvironment.HOME);
     const revision = process.env.GSTACK_DIA_SOURCE_REVISION;
     if (revision && !/^[0-9a-f]{40}$/.test(revision)) throw new Error('invalid_source_revision');
     receipt.sourceRevision = revision ?? run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']).stdout;
@@ -350,7 +415,7 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       try {
         if (keychainChanged) {
           let restored = true;
-          for (const args of [['default-keychain', '-d', 'user', '-s', ...originalDefault], ['list-keychains', '-d', 'user', '-s', ...originalSearch]]) {
+          for (const args of fixtureKeychainRestoreCommands({ search: originalSearch, default: originalDefault }, keychain, keychainCreated)) {
             try { run('/usr/bin/security', args); } catch { restored = false; }
           }
           if (!restored) throw new Error('keychain_restore_failed');
@@ -358,7 +423,6 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
           if (JSON.stringify(restoredSnapshot.search) !== JSON.stringify(originalSearch)
             || JSON.stringify(restoredSnapshot.default) !== JSON.stringify(originalDefault)) throw new Error('keychain_restore_failed');
         }
-        if (keychainCreated) run('/usr/bin/security', ['delete-keychain', keychain]);
         receipt.cleanup.keychainRestored = true;
       } catch {}
     }
