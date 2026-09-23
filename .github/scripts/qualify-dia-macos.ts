@@ -177,7 +177,74 @@ export function browserStartupCategory(value: string): string {
   } catch { return 'invalid'; }
 }
 
-export function browserPreflightError(error: unknown): string {
+const BROWSER_STDERR_REASONS = {
+  default_profile_policy: /DevTools remote debugging requires a non-default data directory\./i,
+  debugging_pipe_unavailable: /Remote debugging pipe file descriptors are not open\./i,
+  keychain_interaction_disallowed: /\berrSecInteractionNotAllowed\b|User interaction is not allowed\./,
+  keychain_interaction_required: /\berrSecInteractionRequired\b/,
+  keychain_access_failed: /\berrSecAuthFailed\b|KeychainReauthorize failed\. Cannot retrieve item\./,
+  dynamic_library_error: /Library not loaded:|dyld(?:\[\d+\])?:|no suitable image found/i,
+  code_signing_error: /code signature (?:invalid|not valid)|mapped file has no cdhash|library load disallowed by system policy|CODESIGNING/i,
+  graphics_or_bootstrap_error: /(?:CGSConnection|WindowServer|bootstrap_check_in)[^\r\n]{0,160}(?:failed|failure|denied|invalid)|Failed to (?:connect to|initialize) (?:the )?WindowServer/i,
+  browser_profile_unavailable: /ProcessSingleton|SingletonLock|user data directory is already in use/i,
+} as const;
+
+type BrowserStderrReason = keyof typeof BROWSER_STDERR_REASONS;
+
+export function browserStderrReasons(text: string): BrowserStderrReason[] {
+  const bounded = text.slice(0, 65_536);
+  return (Object.keys(BROWSER_STDERR_REASONS) as BrowserStderrReason[]).filter(reason => BROWSER_STDERR_REASONS[reason].test(bounded));
+}
+
+export function createBrowserStderrCapture() {
+  const reasonCounts = Object.fromEntries(Object.keys(BROWSER_STDERR_REASONS).map(reason => [reason, 0])) as Record<BrowserStderrReason, number>;
+  let bytesSeen = 0;
+  let bytesInspected = 0;
+  let pending = '';
+  let droppingLine = false;
+  let discardedLongLines = 0;
+  let ended = false;
+  const classify = (line: string) => { for (const reason of browserStderrReasons(line)) reasonCounts[reason]++; };
+  return {
+    consume(chunk: Buffer | string) {
+      const size = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk);
+      bytesSeen = Math.min(Number.MAX_SAFE_INTEGER, bytesSeen + size);
+      const remaining = 65_536 - bytesInspected;
+      if (remaining < 1) return;
+      const buffer = Buffer.isBuffer(chunk) ? chunk.subarray(0, remaining) : Buffer.from(chunk.slice(0, remaining)).subarray(0, remaining);
+      bytesInspected += buffer.length;
+      for (const character of buffer.toString('utf8')) {
+        if (character === '\n') {
+          if (!droppingLine) classify(pending);
+          pending = '';
+          droppingLine = false;
+        } else if (!droppingLine) {
+          pending += character;
+          if (pending.length >= 4096) {
+            classify(pending);
+            pending = '';
+            droppingLine = true;
+            discardedLongLines++;
+          }
+        }
+      }
+    },
+    end() { if (!droppingLine) classify(pending); pending = ''; ended = true; },
+    clear() { pending = ''; },
+    snapshot() {
+      const counts = { ...reasonCounts };
+      if (!droppingLine) for (const reason of browserStderrReasons(pending)) counts[reason]++;
+      return { bytesSeen, bytesInspected, truncated: bytesSeen > bytesInspected || discardedLongLines > 0, discardedLongLines, ended, reasonCounts: counts };
+    },
+  };
+}
+
+export function browserOperationTimedOut(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError'
+    || ['native_operation_timed_out', 'operation_timeout', 'qualification_budget_exhausted'].includes(error.message));
+}
+
+export function browserPreflightError(error: unknown, stderrReasons: readonly BrowserStderrReason[] = []): string {
   const message = error instanceof Error ? error.message : '';
   const code = (error as { code?: string } | null)?.code;
   if (['MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND'].includes(code ?? '')) return 'module_unavailable';
@@ -187,13 +254,14 @@ export function browserPreflightError(error: unknown): string {
   if (['background_browser_ownership_failed', 'source_process_ownership_unconfirmed', 'destination_process_ownership_unconfirmed'].includes(message)) return 'ownership_unconfirmed';
   if (['background_browser_startup_page_rejected', 'onboarding_or_external_page'].includes(message)) return 'startup_page_rejected';
   if (message === 'background_browser_render_failed') return 'render_mismatch';
-  if ((error instanceof Error && error.name === 'TimeoutError') || ['native_operation_timed_out', 'operation_timeout', 'qualification_budget_exhausted'].includes(message)) return 'operation_timeout';
+  const causalReasons = [...stderrReasons, ...browserStderrReasons(message)];
+  const causal = (Object.keys(BROWSER_STDERR_REASONS) as BrowserStderrReason[]).find(reason => causalReasons.includes(reason));
+  if (causal) return causal;
+  if (browserOperationTimedOut(error)) return 'operation_timeout';
   if (code === 'ENOENT' || /Executable doesn't exist|spawn .* ENOENT/.test(message)) return 'executable_unavailable';
   if (['EACCES', 'EPERM'].includes(code ?? '') || /spawn .* EACCES/.test(message)) return 'permission_denied';
   if (code === 'ERR_OUT_OF_RANGE' || (error instanceof Error && error.name === 'RangeError')) return 'invalid_runtime_range';
   if (error instanceof Error && error.name === 'TypeError') return 'runtime_type_error';
-  if (/Library not loaded:|dyld(?:\[\d+\])?:|no suitable image found/i.test(message)) return 'dynamic_library_error';
-  if (/code signature (?:invalid|not valid)|mapped file has no cdhash|library load disallowed by system policy|CODESIGNING/i.test(message)) return 'code_signing_error';
   if (/ProcessSingleton|SingletonLock|profile.*in use/i.test(message)) return 'browser_profile_unavailable';
   if (/WindowServer|CGSConnection|audit session|bootstrap_check_in/i.test(message)) return 'graphics_or_bootstrap_error';
   if (/Target page, context or browser has been closed|Browser closed|Target closed/.test(message)) return 'target_closed';
@@ -427,8 +495,9 @@ export function fixtureKeychainRestoreCommands(snapshot: { search: string[]; def
 export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
   const childProcess = require('node:child_process');
   const original = childProcess.spawn;
-  const children: Array<{ process: ChildProcess; executable: string; pid: number }> = [];
+  const children: Array<{ process: ChildProcess; executable: string; pid: number; stderr?: ReturnType<typeof createBrowserStderrCapture> }> = [];
   const attempts: Array<Record<string, number | boolean | null>> = [];
+  const detachStderr: Array<() => void> = [];
   let accepting = true;
   childProcess.spawn = function(command: string, args: string[], options: any) {
     if (!expected.has(command)) return original.call(this, command, args, options);
@@ -453,10 +522,23 @@ export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
       throw new Error('browser_launch_policy_rejected');
     }
     const child: ChildProcess = original.call(this, command, args, options);
-    if (child.pid) children.push({ process: child, executable: command, pid: child.pid });
+    if (child.pid) {
+      const stderr = child.stderr ? createBrowserStderrCapture() : undefined;
+      if (stderr && child.stderr) {
+        const stream = child.stderr;
+        stream.on('data', stderr.consume);
+        stream.once('end', stderr.end);
+        detachStderr.push(() => { stream.off('data', stderr.consume); stream.off('end', stderr.end); stderr.clear(); });
+      }
+      children.push({ process: child, executable: command, pid: child.pid, stderr });
+    }
     return child;
   };
-  return { children, attempts, stop() { accepting = false; }, restore() { childProcess.spawn = original; } };
+  return { children, attempts, stop() { accepting = false; }, restore() { childProcess.spawn = original; for (const detach of detachStderr) detach(); } };
+}
+
+export function browserStderrFacts(children: ReturnType<typeof observeBrowserLaunches>['children']) {
+  return children.slice(0, 64).map(child => ({ pid: child.pid, available: Boolean(child.stderr), ...child.stderr?.snapshot() }));
 }
 
 async function sha256(file: string): Promise<string> {
@@ -762,7 +844,11 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     receipt.failureStage = stage;
     if (browserRole) {
       const facts = receipt.browsers[browserRole];
-      facts.error = browserPreflightError(error);
+      const children = (observer?.children ?? []).filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === browserRole);
+      const stderrReasons = browserStderrFacts(children).flatMap(fact => Object.entries(fact.reasonCounts ?? {})
+        .filter(([, count]) => count > 0).map(([reason]) => reason as BrowserStderrReason));
+      facts.timedOut = browserOperationTimedOut(error);
+      facts.error = browserPreflightError(error, stderrReasons);
       receipt.blocker = facts.error;
       if (facts.stage === 'runtime_import') facts.moduleLoad = playwrightModuleLoadFacts(repository, error);
     }
@@ -776,6 +862,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
     receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',
       ...(browserRole ? { browser: browserRole, browserStage: receipt.browsers[browserRole].stage } : {}),
+      ...(browserRole ? { timedOut: receipt.browsers[browserRole].timedOut } : {}),
       ...(stage === 'temporary_keychain' ? { keychainStage: receipt.keychainStage } : {}) };
     receipt.status = Object.values(receipt.cases).includes('failed') ? 'failed' : 'incomplete';
   } finally {
@@ -787,6 +874,7 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       const children = (observer?.children ?? []).filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role);
       facts.ownedRootCount = children.length;
       facts.rootStatesBeforeCleanup = browserRootFacts(children);
+      facts.stderrBeforeCleanup = browserStderrFacts(children);
       facts.launchAttempts = attemptStarts[role] === undefined ? [] : (observer?.attempts ?? [])
         .slice(attemptStarts[role], role === 'source' ? attemptStarts.destination : undefined);
       facts.cleanup = { closeAttempted: false, groups: [] };
@@ -833,6 +921,10 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
         } catch { group.membersAfterFailure = { available: false }; }
       }
       group.rootAfterCleanup = browserRootFacts([child])[0];
+    }
+    for (const role of ['source', 'destination'] as const) {
+      receipt.browsers[role].stderrAfterCleanup = browserStderrFacts((observer?.children ?? [])
+        .filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role));
     }
     receipt.cleanup.ownedBrowsersStopped = stopped;
     receipt.observedBrowserRoots = observer?.children.length ?? 0;

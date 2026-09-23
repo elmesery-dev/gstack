@@ -7,8 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserPreflightError, browserRootFacts,
-  browserStartupCategory, browserStartupFacts, captureUserKeychains, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches,
+  allowedFixturePage, assertDiaSocketPath, assertOwnedDiaProfile, browserCleanupError, browserGroupFacts, browserOperationTimedOut, browserPreflightError, browserRootFacts,
+  browserStartupCategory, browserStartupFacts, browserStderrFacts, browserStderrReasons, captureUserKeychains, createBrowserStderrCapture, createOwnedDiaProfile, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, macosCompatibility, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeDiaKeychainEnvironments, observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome,
   qualifyDia, readFreshAccountConfiguration, removeOwnedDiaProfile, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
@@ -260,6 +260,85 @@ describe('Dia macOS CI qualification safety', () => {
     expect(JSON.stringify(categories)).not.toContain('synthetic-private-value');
     expect(JSON.stringify(categories)).not.toContain('fixture.invalid');
     for (const [url] of pages.slice(1, 10)) expect(allowedFixturePage(url, 'http://127.0.0.1:8123')).toBe(false);
+  });
+
+  test('browser stderr classifies only known policy, pipe, Keychain, loader and bootstrap diagnostics', () => {
+    for (const [line, reason] of [
+      ['DevTools remote debugging requires a non-default data directory. Specify this using --user-data-dir.', 'default_profile_policy'],
+      ['Remote debugging pipe file descriptors are not open.', 'debugging_pipe_unavailable'],
+      ['errSecInteractionNotAllowed: User interaction is not allowed.', 'keychain_interaction_disallowed'],
+      ['errSecInteractionRequired', 'keychain_interaction_required'],
+      ['errSecAuthFailed', 'keychain_access_failed'],
+      ['dyld[123]: Library not loaded:', 'dynamic_library_error'],
+      ['code signature invalid', 'code_signing_error'],
+      ['bootstrap_check_in failed', 'graphics_or_bootstrap_error'],
+      ['ProcessSingleton', 'browser_profile_unavailable'],
+    ]) {
+      const reasons = browserStderrReasons(line + ' synthetic-private-value /private/fixture/profile');
+      expect(reasons).toContain(reason);
+      expect(JSON.stringify(reasons)).not.toContain('synthetic-private');
+      expect(JSON.stringify(reasons)).not.toContain('/private');
+    }
+    for (const line of ['using a non-default data directory', 'remote-debugging-pipe enabled', 'Waiting for Keychain',
+      'WindowServer connection available', 'private unknown diagnostic']) expect(browserStderrReasons(line)).toEqual([]);
+  });
+
+  test('stderr capture handles chunk boundaries and final unterminated lines without retaining text', () => {
+    const capture = createBrowserStderrCapture();
+    const policy = 'DevTools remote debugging requires a non-default data directory.';
+    capture.consume(Buffer.from('synthetic-private-value\n' + policy.slice(0, 23)));
+    expect(capture.snapshot().reasonCounts.default_profile_policy).toBe(0);
+    capture.consume(Buffer.from(policy.slice(23)));
+    const before = capture.snapshot();
+    expect(before.reasonCounts.default_profile_policy).toBe(1);
+    capture.consume(Buffer.from('\n' + policy));
+    capture.end();
+    expect(capture.snapshot().reasonCounts.default_profile_policy).toBe(2);
+    expect(before.reasonCounts.default_profile_policy).toBe(1);
+    expect(capture.snapshot().ended).toBe(true);
+    expect(JSON.stringify(capture.snapshot())).not.toContain('synthetic-private');
+    expect(JSON.stringify(capture.snapshot())).not.toContain('DevTools');
+  });
+
+  test('stderr inspection caps bytes and pending line size while exposing truncation honestly', () => {
+    const capture = createBrowserStderrCapture();
+    capture.consume(Buffer.alloc(65_536, 120));
+    capture.consume(Buffer.from('\nDevTools remote debugging requires a non-default data directory.\n'));
+    const facts = capture.snapshot();
+    expect(facts.bytesInspected).toBe(65_536);
+    expect(facts.bytesSeen).toBeGreaterThan(65_536);
+    expect(facts.truncated).toBe(true);
+    expect(facts.discardedLongLines).toBe(1);
+    expect(facts.reasonCounts.default_profile_policy).toBe(0);
+    const lines = createBrowserStderrCapture();
+    lines.consume('x'.repeat(5000) + '\nRemote debugging pipe file descriptors are not open.\n');
+    expect(lines.snapshot().reasonCounts.debugging_pipe_unavailable).toBe(1);
+    expect(lines.snapshot().truncated).toBe(true);
+  });
+
+  test('causal stderr reasons outrank a generic timeout without changing its timeout identity', () => {
+    const timeout = Object.assign(new Error('synthetic-private-timeout'), { name: 'TimeoutError' });
+    expect(browserOperationTimedOut(timeout)).toBe(true);
+    expect(browserPreflightError(timeout)).toBe('operation_timeout');
+    expect(browserPreflightError(timeout, ['default_profile_policy'])).toBe('default_profile_policy');
+    expect(browserPreflightError(timeout, ['debugging_pipe_unavailable'])).toBe('debugging_pipe_unavailable');
+    expect(browserPreflightError(timeout, ['keychain_interaction_required'])).toBe('keychain_interaction_required');
+    const embedded = Object.assign(new Error('Timed out\nDevTools remote debugging requires a non-default data directory.'), { name: 'TimeoutError' });
+    expect(browserPreflightError(embedded)).toBe('default_profile_policy');
+    expect(browserOperationTimedOut(embedded)).toBe(true);
+  });
+
+  test('stderr snapshots keep source, destination, and cleanup-time observations separate', () => {
+    const source = createBrowserStderrCapture();
+    const destination = createBrowserStderrCapture();
+    source.consume('DevTools remote debugging requires a non-default data directory.\n');
+    const beforeCleanup = source.snapshot();
+    source.consume('bootstrap_check_in failed\n');
+    destination.consume('Remote debugging pipe file descriptors are not open.\n');
+    expect(beforeCleanup.reasonCounts.graphics_or_bootstrap_error).toBe(0);
+    expect(source.snapshot().reasonCounts.graphics_or_bootstrap_error).toBe(1);
+    expect(destination.snapshot().reasonCounts.default_profile_policy).toBe(0);
+    expect(destination.snapshot().reasonCounts.debugging_pipe_unavailable).toBe(1);
   });
 
   test('signed macOS requirements compare numeric versions and preserve unknown metadata', () => {
@@ -1186,6 +1265,34 @@ with tarfile.open(file, 'w') as out:
     expect(childProcess.spawn).toBe(original);
   });
 
+  test('the owned spawn stderr observer preserves the consumer stream and removes only its own listeners', async () => {
+    const childProcess = require('node:child_process');
+    const original = childProcess.spawn;
+    const profile = path.join(root, 'stderr-observer-profile');
+    const observer = observeBrowserLaunches(new Map([[process.execPath, profile]]));
+    const text = 'DevTools remote debugging requires a non-default data directory.\nsynthetic-private-value\n';
+    try {
+      const child = childProcess.spawn(process.execPath, ['--no-env-file', '--no-install', '-e',
+        `process.stderr.write(${JSON.stringify(text)})`, '--', '--remote-debugging-pipe', '--user-data-dir=' + profile], {
+        detached: true, shell: false, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'], env: { HOME: root, PATH: path.dirname(process.execPath) },
+      });
+      const chunks: Buffer[] = [];
+      const consumer = (chunk: Buffer) => { chunks.push(chunk); };
+      child.stderr.on('data', consumer);
+      const code = await new Promise(resolve => child.once('close', resolve));
+      expect(code).toBe(0);
+      expect(Buffer.concat(chunks).toString()).toBe(text);
+      const facts = browserStderrFacts(observer.children);
+      expect(facts).toHaveLength(1);
+      expect(facts[0]).toMatchObject({ available: true, bytesSeen: Buffer.byteLength(text), ended: true,
+        reasonCounts: { default_profile_policy: 1 } });
+      expect(JSON.stringify(facts)).not.toContain('synthetic-private');
+      observer.restore();
+      expect(child.stderr.listeners('data')).toContain(consumer);
+      expect(childProcess.spawn).toBe(original);
+    } finally { observer.restore(); }
+  });
+
   test('the pinned Playwright launch is captured with the observer installed after importing Playwright', async () => {
     const { chromium } = await import('playwright');
     expect(require('playwright/package.json').version).toBe('1.62.1');
@@ -1203,6 +1310,8 @@ with tarfile.open(file, 'w') as out:
       expect(observer.children[0].pid).toBeGreaterThan(1);
       expect(browserRootFacts(observer.children)).toEqual([{ pid: observer.children[0].pid, exitCode: null, signal: null }]);
       expect(browserStartupFacts(context.pages().map(page => page.url()), 'http://127.0.0.1:8123').allowed).toBe(true);
+      expect(browserStderrFacts(observer.children)[0].available).toBe(true);
+      expect(browserStderrFacts(observer.children)[0].bytesInspected).toBeLessThanOrEqual(65_536);
       expect(observer.attempts).toHaveLength(1);
       expect(observer.attempts[0]).toEqual({ admissionOpen: true, argumentsArray: true, pipeFlag: true, profileArgumentCount: 1,
         expectedProfile: true, detached: true, shellDisabled: true, stdioCount: 5, extraPipeDescriptors: true,
