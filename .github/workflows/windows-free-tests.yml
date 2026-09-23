@@ -26,6 +26,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dia_native_only:
+        description: Run disposable ARM64 macOS Dia qualification instead of Windows
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-free-${{ github.event.pull_request.number || github.run_id }}
@@ -37,6 +42,7 @@ permissions:
 
 jobs:
   windows-free-tests:
+    if: ${{ !inputs.dia_native_only }}
     # Ubicloud Windows runner (same provider as the Linux evals workflow).
     # To revert: swap to `windows-latest` (GitHub's free 4-core Windows runner).
     runs-on: windows-latest
@@ -142,7 +148,7 @@ jobs:
           if-no-files-found: ignore
 
   cookie-native-qualification:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && !inputs.dia_native_only
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -168,4 +174,31 @@ jobs:
         with:
           name: cookie-native-qualification
           path: ${{ runner.temp }}/cookie-native-qualification-*/
+          if-no-files-found: error
+
+  dia-native-qualification:
+    if: github.event_name == 'workflow_dispatch' && inputs.dia_native_only
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.4.0
+      - name: Install pinned dependencies
+        run: bun install --frozen-lockfile
+      - name: Install the synthetic destination browser
+        run: bunx --no-install playwright install chromium
+      - name: Qualify native Dia discovery, decryption, and import
+        env:
+          GSTACK_DIA_NATIVE_QUALIFY: '1'
+        run: bun .github/scripts/qualify-dia-macos.ts
+      - name: Preserve only the sanitized qualification receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: dia-native-qualification
+          path: ${{ runner.temp }}/dia-native-qualification.json
           if-no-files-found: error
