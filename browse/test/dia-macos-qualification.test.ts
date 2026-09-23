@@ -10,7 +10,8 @@ import {
   allowedFixturePage, assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
-import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed, inspectUserDomain,
+import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyParentDomain, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
+  inspectParentDomain, inspectUidProcesses, inspectUserDomain,
   ownedUserDomainTarget, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
@@ -485,6 +486,118 @@ describe('Dia macOS CI qualification safety', () => {
       const stdout = minimal.replace('\thandle', '\tservice count = ' + value + '\n\thandle');
       expect(classifyUserDomain(23456, { status: 0, stdout, stderr: '' }).structure?.counts['service count']).toBeNull();
     }
+  });
+
+  test('known bracketed creator syntax is matched exactly while unsupported spellings remain unknown', () => {
+    const fixture = (creator: string) => classifyUserDomain(23456, { status: 0,
+      stdout: `user/23456 = {\n\ttype = user\n\tcreator = ${creator}\n}`, stderr: '' }, 4567);
+    expect(fixture('launchctl[4567]').structure?.creatorIsProbe).toBe(true);
+    expect(fixture('launchctl[4568]').structure?.creatorIsProbe).toBe(false);
+    for (const creator of ['launchctl(4567)', 'launchctl[4567] extra', 'other[4567]', 'launchctl[0]', 'launchctl[4567)']) {
+      expect(fixture(creator).structure?.creatorIsProbe).toBeNull();
+      expect(fixture(creator).structure?.creator).toBe('other');
+    }
+  });
+
+  test('parent-domain observation extracts only candidate UID membership from complete subdomains', () => {
+    for (const [header, target, gui] of [
+      ['system', 'user/23456', 'gui/23456'],
+      ['com.apple.xpc.launchd.domain.system', 'com.apple.xpc.launchd.domain.user.23456', 'com.apple.xpc.launchd.user.domain.23456.100007.Aqua'],
+    ]) {
+      const stdout = `${header} = {\n\ttype = system\n\tsubdomains = {\n\t\t${target}\n\t\t${gui}\n\t\tpid/15\n\t}\n}`;
+      expect(classifyParentDomain(23456, { status: 0, stdout, stderr: '' })).toMatchObject({ state: 'present', parseStage: 'parsed',
+        subdomainCount: 3, matchingUserDomains: 1, matchingGuiDomains: 1, unrecognizedEntries: 0 });
+    }
+    const stdout = `system = {
+\ttype = system
+\tenvironment = {
+\t\tsynthetic-private-name => user/23456
+\t\tsubdomains = {
+\t\t\tuser/23456
+\t\t}
+\t}
+\tsubdomains = {
+\t\tuser/234560
+\t\tgui/501
+\t\tpid/123
+\t\tsession/100007
+\t\tcom.apple.xpc.launchd.domain.pid.synthetic-private-process.23456
+\t}
+\tservices = {
+\t\tsynthetic-private-service-user/23456
+\t}
+}`;
+    const observation = classifyParentDomain(23456, { status: 0, stdout, stderr: '' });
+    expect(observation).toMatchObject({ state: 'absent', parseStage: 'parsed', subdomainCount: 5, matchingUserDomains: 0 });
+    expect(JSON.stringify(observation)).not.toContain('synthetic-private');
+    expect(JSON.stringify(observation)).not.toContain('234560');
+  });
+
+  test('parent-domain absence refuses incomplete, missing, duplicate, nested-only, or unknown subdomain output', () => {
+    const empty = 'system = {\n\ttype = system\n\tsubdomains = {}\n}';
+    expect(classifyParentDomain(23456, { status: 0, stdout: empty, stderr: '' }).state).toBe('absent');
+    for (const stdout of [empty.slice(0, -1), empty.replace('system = {', 'user/23456 = {'),
+      empty.replace('\tsubdomains = {}\n', ''), empty.replace('\tsubdomains = {}', '\tsubdomains = {}\n\tsubdomains = {}'),
+      empty.replace('type = system', 'type = user'),
+      empty.replace('\tsubdomains = {}', '\tenvironment = {\n\t\tsubdomains = {}\n\t}'),
+      empty.replace('subdomains = {}', 'subdomains = {\n\t\tunknown-private-domain\n\t}'),
+      empty.replace('subdomains = {}', 'subdomains = {\n\t\tuser/23456\n\t\tunknown-private-domain\n\t}')]) {
+      const observation = classifyParentDomain(23456, { status: 0, stdout, stderr: '' });
+      expect(observation.state).toBe('unavailable');
+      expect(JSON.stringify(observation)).not.toContain('private-domain');
+    }
+    expect(classifyParentDomain(23456, { status: 1, stdout: empty, stderr: 'synthetic-private-error' }).state).toBe('unavailable');
+    expect(classifyParentDomain(23456, { status: 0, stdout: empty, stderr: '', error: new Error('synthetic-private-error') }).state).toBe('unavailable');
+    expect(classifyParentDomain(23456, { status: 0, stdout: empty + ' '.repeat(1024 * 1024), stderr: '' }).parseStage).toBe('oversized');
+  });
+
+  test('the registered parent observer queries only the existing system domain under its original bounds', () => {
+    const env = { HOME: root, PATH: '/usr/bin:/bin' };
+    const observation = inspectParentDomain(23456, performance.now() + 10_000, env,
+      ((command: string, args: string[], options: any) => {
+        expect(command).toBe('/usr/bin/sudo');
+        expect(args).toEqual(['-n', '/bin/launchctl', 'print', 'system']);
+        expect(options.env).toBe(env);
+        expect(options.maxBuffer).toBe(1024 * 1024);
+        expect(Number.isInteger(options.timeout)).toBe(true);
+        expect(options.timeout).toBeGreaterThan(0);
+        expect(options.timeout).toBeLessThanOrEqual(3_000);
+        return { status: 0, stdout: 'system = {\n\ttype = system\n\tsubdomains = {}\n}', stderr: '' };
+      }) as typeof spawnSync);
+    expect(observation.state).toBe('absent');
+    const never = (() => { throw new Error('must_not_spawn'); }) as typeof spawnSync;
+    expect(() => inspectParentDomain(501, performance.now() + 10_000, {}, never)).toThrow('invalid_fresh_user_domain');
+    for (const deadline of [0, NaN, Infinity]) expect(() => inspectParentDomain(23456, deadline, {}, never)).toThrow('fresh_launcher_deadline');
+  });
+
+  test('the registered UID observer filters numeric global ps rows without resolving an unregistered account', () => {
+    const env = { HOME: root, PATH: '/usr/bin:/bin' };
+    const observation = inspectUidProcesses(23456, performance.now() + 10_000, env,
+      ((command: string, args: string[], options: any) => {
+        expect(command).toBe('/bin/ps');
+        expect(args).toEqual(['-axo', 'uid=,pid=,ppid=,state=,ucomm=']);
+        expect(options.env).toBe(env);
+        expect(options.maxBuffer).toBe(128 * 1024);
+        expect(Number.isInteger(options.timeout)).toBe(true);
+        expect(options.timeout).toBeGreaterThan(0);
+        expect(options.timeout).toBeLessThanOrEqual(2_000);
+        return { status: 0, stdout: '501 300 1 S synthetic-private-name\n23456 400 1 S distnoted\n', stderr: '' };
+      }) as typeof spawnSync);
+    expect(observation).toMatchObject({ available: true, count: 1, processes: [{ pid: 400, ppid: 1, state: 'S', basename: 'distnoted' }] });
+    expect(JSON.stringify(observation)).not.toContain('synthetic-private');
+    expect(inspectUidProcesses(23456, performance.now() + 10_000, {}, (() => ({ status: 0,
+      stdout: '501 300 1 S synthetic-private-name\n', stderr: '' })) as typeof spawnSync)).toMatchObject({ available: true, count: 0, processes: [] });
+    for (const result of [
+      { status: 1, stdout: '', stderr: '' }, { status: 0, stdout: '', stderr: '' },
+      { status: 0, stdout: 'truncated-private-row', stderr: '' },
+      { status: null, stdout: null, stderr: null, error: new Error('synthetic-private-error') },
+    ]) expect(inspectUidProcesses(23456, performance.now() + 10_000, {}, (() => result) as typeof spawnSync)).toEqual({ available: false });
+  });
+
+  test('numeric UID process filtering runs through the real global process table', () => {
+    const observation = inspectUidProcesses(23456, performance.now() + 10_000, { HOME: root, PATH: '/usr/bin:/bin' });
+    expect(observation.available).toBe(true);
+    expect('count' in observation).toBe(true);
   });
 
   test('the registered domain probe binds its creator check to the shell exec PID and bounds the query', () => {
