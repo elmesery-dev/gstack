@@ -2,14 +2,20 @@ import { randomUUID } from 'node:crypto';
 
 const NATIVE_COOKIE_STAGES = [
   'platform', 'ffi_import', 'ffi_open', 'job_create', 'job_limits', 'job_open',
-  'process_open', 'job_assign', 'process_close', 'job_query', 'job_terminate', 'job_close',
-  'supervisor_input', 'runtime_check', 'member_start', 'member_input', 'member_exit',
-  'node_start', 'node_input', 'node_load', 'browser_launch', 'cookie_read', 'browser_close',
+  'process_open', 'job_assign', 'job_assigned', 'job_joined', 'process_close', 'job_query', 'job_terminate', 'job_close',
+  'worker_boot', 'supervisor_input', 'runtime_check', 'member_start', 'member_input', 'member_decoded', 'member_exit',
+  'node_start', 'node_spawned', 'node_exit', 'node_input', 'node_load', 'browser_launch', 'cookie_read', 'browser_close',
 ] as const;
 
 export interface NativeCookieDiagnostic {
   stage: typeof NATIVE_COOKIE_STAGES[number];
   win32Error?: number;
+  lastStage?: typeof NATIVE_COOKIE_STAGES[number];
+  exitCode?: number;
+  nodeExitCode?: number;
+  signal?: string;
+  memberMode?: boolean;
+  stderrBytes?: number;
 }
 
 export class NativeCookieJobError extends Error {
@@ -30,7 +36,15 @@ export function parseNativeCookieDiagnostic(value: unknown): NativeCookieDiagnos
   if (!value || typeof value !== 'object') return undefined;
   const candidate = value as NativeCookieDiagnostic;
   if (!NATIVE_COOKIE_STAGES.includes(candidate.stage)) return undefined;
-  return new NativeCookieJobError(candidate.stage, candidate.win32Error).diagnostic;
+  const diagnostic = new NativeCookieJobError(candidate.stage, candidate.win32Error).diagnostic;
+  if (NATIVE_COOKIE_STAGES.includes(candidate.lastStage!)) diagnostic.lastStage = candidate.lastStage;
+  for (const field of ['exitCode', 'nodeExitCode', 'stderrBytes'] as const) {
+    const value = candidate[field];
+    if (typeof value === 'number' && Number.isInteger(value) && value >= (field === 'stderrBytes' ? 0 : -0x80000000) && value <= 0xffffffff) diagnostic[field] = value;
+  }
+  if (['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGSEGV', 'SIGABRT', 'SIGBREAK', 'SIGHUP'].includes(candidate.signal!)) diagnostic.signal = candidate.signal;
+  if (typeof candidate.memberMode === 'boolean') diagnostic.memberMode = candidate.memberMode;
+  return diagnostic;
 }
 
 export interface NativeCookieJob {
@@ -89,28 +103,35 @@ export async function createNativeCookieJob(): Promise<NativeCookieJob> {
   }
 }
 
-export async function joinNativeCookieJob(name: string): Promise<void> {
+export async function joinNativeCookieJob(name: string, observe?: (stage: NativeCookieDiagnostic['stage']) => void): Promise<void> {
   if (process.platform !== 'win32' || !/^Local\\gstack-cookie-[0-9a-f-]{36}$/.test(name)) {
     throw new NativeCookieJobError('job_open');
   }
+  observe?.('ffi_import');
   const { api, ptr, closeLibrary } = await openKernel();
   const wideName = Buffer.from(`${name}\0`, 'utf16le');
   let stage: NativeCookieDiagnostic['stage'] = 'job_open';
   let handle: number | bigint = 0;
   let currentProcess: number | bigint = 0;
   try {
+    observe?.(stage);
     handle = api.OpenJobObjectW(1, 0, ptr(wideName));
     if (!handle) throw new NativeCookieJobError(stage, api.GetLastError());
     stage = 'process_open';
+    observe?.(stage);
     currentProcess = api.OpenProcess(0x0101, 0, process.pid);
     if (!currentProcess) throw new NativeCookieJobError(stage, api.GetLastError());
     stage = 'job_assign';
+    observe?.(stage);
     if (!api.AssignProcessToJobObject(handle, currentProcess)) throw new NativeCookieJobError(stage, api.GetLastError());
+    observe?.('job_assigned');
   } catch (error) {
     throw error instanceof NativeCookieJobError ? error : new NativeCookieJobError(stage);
   } finally {
     let closeError: NativeCookieJobError | undefined;
+    observe?.('process_close');
     if (currentProcess && !api.CloseHandle(currentProcess)) closeError = new NativeCookieJobError('process_close', api.GetLastError());
+    observe?.('job_close');
     if (handle && !api.CloseHandle(handle)) closeError ??= new NativeCookieJobError('job_close', api.GetLastError());
     closeLibrary();
     if (closeError) throw closeError;

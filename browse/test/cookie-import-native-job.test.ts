@@ -80,6 +80,8 @@ describe('production Windows Job Object API contract', () => {
     expect(parseNativeCookieDiagnostic({ stage: 'job_assign', win32Error: 87, message: 'sensitive-sentinel' })).toEqual({ stage: 'job_assign', win32Error: 87 });
     expect(parseNativeCookieDiagnostic({ stage: 'sensitive-sentinel', win32Error: 5 })).toBeUndefined();
     expect(parseNativeCookieDiagnostic({ stage: 'job_assign', win32Error: 'sensitive-sentinel' })).toEqual({ stage: 'job_assign' });
+    expect(parseNativeCookieDiagnostic({ stage: 'member_exit', lastStage: 'node_spawned', exitCode: 1, nodeExitCode: 1, signal: 'SIGTERM', memberMode: true, stderrBytes: 50 })).toEqual({ stage: 'member_exit', lastStage: 'node_spawned', exitCode: 1, nodeExitCode: 1, signal: 'SIGTERM', memberMode: true, stderrBytes: 50 });
+    expect(parseNativeCookieDiagnostic({ stage: 'member_exit', lastStage: 'sensitive-sentinel', signal: 'sensitive-sentinel', exitCode: 'sensitive-sentinel', memberMode: 'sensitive-sentinel', stderrBytes: -1 })).toEqual({ stage: 'member_exit' });
   });
 
   test('owner creates a non-inheritable kill-on-close job and queries active members', () => {

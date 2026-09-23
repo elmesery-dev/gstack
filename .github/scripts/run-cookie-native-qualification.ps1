@@ -20,10 +20,10 @@ if ($Child) {
   $env:USERPROFILE = $registered
   $env:HOME = $registered
   $profile = [Environment]::GetFolderPath('UserProfile')
-  $local = [Environment]::GetFolderPath('LocalApplicationData')
-  $roaming = [Environment]::GetFolderPath('ApplicationData')
+  $local = [Environment]::GetFolderPath('LocalApplicationData', 'DoNotVerify')
+  $roaming = [Environment]::GetFolderPath('ApplicationData', 'DoNotVerify')
   if ($profile -ne $registered -or -not $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    Write-Output (ConvertTo-Json -Compress @{ profileMatchesRegistered = ($profile -eq $registered); localInsideProfile = $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase) })
+    Write-Output (ConvertTo-Json -Compress @{ profileMatchesRegistered = ($profile -eq $registered); localInsideProfile = $local.StartsWith($profile + '\', [StringComparison]::OrdinalIgnoreCase); localEmpty = [string]::IsNullOrEmpty($local); localMatchesInherited = ($local -eq $env:LOCALAPPDATA) })
     throw 'Qualification must use the new account real Windows profile.'
   }
   $keep = @('SystemRoot', 'WINDIR', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData', 'PATHEXT')

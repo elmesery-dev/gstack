@@ -6,7 +6,8 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { nativeBrowserPaths, importNativeCookies } from '../src/cookie-import-native';
-import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT } from '../src/cookie-import-native-worker';
+import { nativeCookieEnvironment, NATIVE_COOKIE_NODE_SCRIPT, NATIVE_PROGRESS_PREFIX } from '../src/cookie-import-native-worker';
+import { parseNativeCookieDiagnostic } from '../src/cookie-import-native-job';
 import { hashNativeFile, nativeCodeHashes, nativeCodeMatches, NATIVE_CODE_INPUTS, NATIVE_QUALIFICATION_DATA, readNativeQualifications } from '../src/cookie-import-native-integrity';
 
 const root = mkdtempSync(path.join(tmpdir(), 'native-cookies-'));
@@ -27,6 +28,17 @@ function isolatedEnv(): NodeJS.ProcessEnv {
     TMP: root,
     ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
   };
+}
+
+function expectNativeProgress(stderr: string) {
+  const lines = stderr.trim().split(/\r?\n/).filter(Boolean);
+  expect(lines.length).toBeGreaterThan(0);
+  return lines.map(line => {
+    expect(line.startsWith(NATIVE_PROGRESS_PREFIX)).toBe(true);
+    const record = JSON.parse(line.slice(NATIVE_PROGRESS_PREFIX.length));
+    expect(parseNativeCookieDiagnostic(record)).toEqual(record);
+    return record;
+  });
 }
 
 function adapter(options: object, extraEnv: object = {}) {
@@ -54,6 +66,18 @@ const options = {
 };
 
 describe('native-cookie production admission', () => {
+  test('the real member entry reports boot and decoded input before refusing an unowned job', () => {
+    const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, path.resolve(import.meta.dir, '../src/cookie-import-native-worker.ts'), '--member-smoke'], {
+      env: isolatedEnv(), input: JSON.stringify({ jobName: 'Local\\gstack-cookie-00000000-0000-0000-0000-000000000000' }), encoding: 'utf8', timeout: 10_000,
+    });
+    const progress = expectNativeProgress(result.stderr);
+    expect(progress).toContainEqual({ stage: 'worker_boot', memberMode: true });
+    expect(progress).toContainEqual({ stage: 'member_input' });
+    expect(progress).toContainEqual({ stage: 'member_decoded' });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({ error: 'native_supervision_failed', diagnostic: { stage: 'job_open' } });
+  });
+
   test.skipIf(process.platform === 'win32')('qualification refuses non-Windows without issuing a receipt', () => {
     const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--config=/dev/null', path.resolve(import.meta.dir, 'cookie-import-native-qualification.ts'), root], {
       env: isolatedEnv(), encoding: 'utf8', timeout: 10_000,
@@ -305,7 +329,9 @@ function runNodeWorker(mode: string, cookies: object[] = []) {
     timeout: 30_000,
   });
   expect(result.status).toBe(0);
-  expect(result.stderr).toBe('');
+  const progress = expectNativeProgress(result.stderr);
+  expect(progress).toContainEqual({ stage: 'node_input' });
+  expect(progress).toContainEqual({ stage: 'node_load' });
   return { result: JSON.parse(result.stdout), observation: JSON.parse(readFileSync(observation, 'utf8')), userDataDir };
 }
 
@@ -338,7 +364,9 @@ describe('production Node Playwright worker', () => {
       timeout: 30_000,
     });
     expect(result.status).toBe(0);
-    expect(result.stderr).toBe('');
+    const progress = expectNativeProgress(result.stderr);
+    expect(progress).toContainEqual({ stage: 'browser_launch' });
+    expect(progress).toContainEqual({ stage: 'cookie_read' });
     expect(JSON.parse(result.stdout).cookies).toHaveLength(1);
     const launched = JSON.parse(readFileSync(observation, 'utf8'));
     expect(launched.args).toContain('--remote-debugging-pipe');

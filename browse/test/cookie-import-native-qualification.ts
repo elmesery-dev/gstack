@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { release, tmpdir } from 'node:os';
 import path from 'node:path';
 import { nativeBrowserPaths } from '../src/cookie-import-native';
-import { nativeCookieEnvironment } from '../src/cookie-import-native-worker';
+import { nativeCookieEnvironment, probeNativeCookieMember } from '../src/cookie-import-native-worker';
 import { hashNativeFile, nativeCodeHashes, nativeCodeMatches, NATIVE_QUALIFICATION_DATA } from '../src/cookie-import-native-integrity';
 import { createNativeCookieJob, NativeCookieJobError, nativeCookieDiagnostic, type NativeCookieDiagnostic, type NativeCookieJob } from '../src/cookie-import-native-job';
 
@@ -41,6 +41,11 @@ try {
   writeFileSync(path.join(output, 'job-preflight.json'), JSON.stringify({ status: 'failed', diagnostic }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
   incomplete('native_job_preflight_failed', diagnostic);
 }
+const memberProbe = await probeNativeCookieMember();
+const memberPreflight = 'cookies' in memberProbe ? { status: 'passed', activeProcesses: 0 } : { status: 'failed', error: memberProbe.error, diagnostic: memberProbe.diagnostic };
+writeFileSync(path.join(output, 'member-preflight.json'), JSON.stringify(memberPreflight, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
+console.log(JSON.stringify({ nativeMemberPreflight: memberPreflight }));
+if ('error' in memberProbe) incomplete('native_member_preflight_failed', memberProbe.diagnostic);
 const root = path.resolve(import.meta.dir, '../..');
 let sourceHashes: Record<string, string>;
 try {
@@ -100,6 +105,7 @@ const receipt = {
   browserVersion: versionProbe.stdout.trim(),
   supervisorArchitecture: process.arch,
   jobPreflight: { status: 'passed', activeProcesses: 0 },
+  memberPreflight,
   counts,
   inputsUnchanged,
   sourceHashes,
