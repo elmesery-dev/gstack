@@ -388,6 +388,7 @@ describe('production Node Playwright worker', () => {
     const launched = JSON.parse(readFileSync(observation, 'utf8'));
     expect(launched.args).toContain('--remote-debugging-pipe');
     expect(launched.args.some((arg: string) => arg.startsWith('--remote-debugging-port'))).toBe(false);
+    expect(launched.args.some((arg: string) => /^--(?:no-sandbox|disable-setuid-sandbox)(?:=|$)/.test(arg))).toBe(false);
     expect(launched.args).toContain(`--user-data-dir=${path.join(fixture, 'User Data')}`);
     expect(() => process.kill(launched.pid, 0)).toThrow();
   }, 35_000);
@@ -401,6 +402,7 @@ describe('production Node Playwright worker', () => {
       args: ['--profile-directory=Profile 2'],
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       headless: true,
+      chromiumSandbox: true,
     });
     expect(observation.options.timeout).toBeGreaterThan(0);
     expect(observation.options.timeout).toBeLessThanOrEqual(25_000);

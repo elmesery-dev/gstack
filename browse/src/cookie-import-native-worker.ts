@@ -58,6 +58,7 @@ progress();
       executablePath: request.executablePath,
       args: ['--profile-directory=' + request.profile],
       headless: true,
+      chromiumSandbox: true,
       timeout: remaining,
       handleSIGINT: false,
       handleSIGTERM: false,

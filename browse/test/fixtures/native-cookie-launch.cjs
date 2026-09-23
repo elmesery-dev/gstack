@@ -46,6 +46,7 @@ module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspect
     });
   });
   cp.spawn = function(command, args, options) {
+    if (args.some(arg => /^--(?:no-sandbox|disable-setuid-sandbox)(?:=|$)/.test(arg))) throw new Error('Native fixture refuses a sandbox-disabled browser');
     const child = originalSpawn.call(this, command, args, options);
     const evidence = {
       command, args, pid: child.pid,
@@ -113,6 +114,7 @@ module.exports = ({ observation, playwrightEntry, mode = 'normal-close', inspect
   };
   const { chromium } = require(playwrightEntry);
   return { chromium: { async launchPersistentContext(root, options) {
+    if (options.chromiumSandbox !== true) throw new Error('Native fixture requires the browser sandbox');
     const started = Date.now();
     if (inspectCommandLine && process.platform === 'win32') {
       const directoriesBefore = directoryState(options.env, root);

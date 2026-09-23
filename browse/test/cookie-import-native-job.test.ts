@@ -616,7 +616,10 @@ describe('native Windows process qualification', () => {
       const cp = require('node:child_process');
       const spawn = cp.spawn;
       let pid;
-      cp.spawn = function(command, args, options) { const child = spawn.call(this, command, args, options); pid = child.pid; return child; };
+      cp.spawn = function(command, args, options) {
+        if (args.some(arg => /^--(?:no-sandbox|disable-setuid-sandbox)(?:=|$)/.test(arg))) throw new Error('Native owner fixture refuses a sandbox-disabled browser');
+        const child = spawn.call(this, command, args, options); pid = child.pid; return child;
+      };
       const { chromium } = require(${JSON.stringify(require.resolve('playwright'))});
       exports.chromium = { async launchPersistentContext(root, options) {
         const context = await chromium.launchPersistentContext(root, options);
@@ -673,6 +676,7 @@ describe('native Windows process qualification', () => {
         expect(browser.command).toBe(edge);
         expect(browser.args).toContain('--remote-debugging-pipe');
         expect(browser.args.some((arg: string) => arg.startsWith('--remote-debugging-port'))).toBe(false);
+        expect(browser.args.some((arg: string) => /^--(?:no-sandbox|disable-setuid-sandbox)(?:=|$)/.test(arg))).toBe(false);
         expect(alive(browser.pid)).toBe(false);
         expect(Date.now() - started).toBeLessThan(30_000);
       } finally {
@@ -890,7 +894,7 @@ describe('native Windows launch diagnostics', () => {
       child.stderr = new (require('node:stream').PassThrough)();
       cp.spawn = () => child;
       const api = require(${JSON.stringify(path.resolve(import.meta.dir, 'fixtures/native-cookie-launch.cjs'))})(${JSON.stringify({ observation, playwrightEntry })});
-      api.chromium.launchPersistentContext('synthetic-profile', {}).then(() => console.log('observed'));
+      api.chromium.launchPersistentContext('synthetic-profile', { chromiumSandbox: true }).then(() => console.log('observed'));
     `;
     const result = spawnSync(node, ['-e', script], {
       env: { PATH: path.dirname(node), TEMP: fixture, TMP: fixture, HOME: fixture, USERPROFILE: fixture, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
