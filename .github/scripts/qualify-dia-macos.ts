@@ -33,14 +33,39 @@ export function allowedFixturePage(url: string, origin: string): boolean {
   catch { return false; }
 }
 
-export function parseKeychainPaths(output: string): string[] {
+export function parseKeychainPaths(output: string, allowEmpty = false): string[] {
   const paths = output.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
     const value = JSON.parse(line);
     if (typeof value !== 'string' || !path.isAbsolute(value)) throw new Error('invalid_keychain_snapshot');
     return value;
   });
-  if (!paths.length) throw new Error('empty_keychain_snapshot');
+  if (!paths.length && !allowEmpty) throw new Error('empty_keychain_snapshot');
   return paths;
+}
+
+export function parseDefaultKeychain(result: { status: number | null; stdout: string; stderr: string; error?: unknown }): string[] {
+  if (!result.error && result.status === 1 && !result.stdout.trim()
+    && /^security: SecKeychainCopy(?:DomainDefault user|Default): A default keychain could not be found\.$/.test(result.stderr.trim())) return [];
+  if (result.error || result.status !== 0 || (!result.stdout.trim() && result.stderr.trim())) throw new Error('user_default_keychain_unavailable');
+  const paths = parseKeychainPaths(result.stdout, true);
+  if (paths.length > 1) throw new Error('invalid_default_keychain_snapshot');
+  return paths;
+}
+
+export function captureUserKeychains(env: Record<string, string>, allowedRoots: string[], milliseconds = 10_000,
+  execute?: (args: string[], timeout: number) => { status: number | null; stdout: string; stderr: string; error?: unknown }) {
+  const deadline = performance.now() + milliseconds;
+  const probe = (args: string[]) => execute ? execute(args, Math.max(1, deadline - performance.now())) : spawnSync('/usr/bin/security', args, {
+    env, encoding: 'utf8', timeout: Math.max(1, deadline - performance.now()), maxBuffer: 1024 * 1024,
+  });
+  const search = probe(['list-keychains', '-d', 'user']);
+  if (search.error || search.status !== 0 || (!search.stdout.trim() && search.stderr.trim())) throw new Error('user_keychain_search_unavailable');
+  const snapshot = { search: parseKeychainPaths(search.stdout, true), default: parseDefaultKeychain(probe(['default-keychain', '-d', 'user'])) };
+  for (const keychain of [...snapshot.search, ...snapshot.default]) {
+    const resolved = existsSync(keychain) ? realpathSync(keychain) : path.resolve(keychain);
+    if (!allowedRoots.some(root => resolved.startsWith(realpathSync(root) + path.sep))) throw new Error('keychain_outside_owned_home_refused');
+  }
+  return snapshot;
 }
 
 export function observeBrowserLaunches(expected: ReadonlyMap<string, string>) {
@@ -81,6 +106,7 @@ async function bounded<T>(operation: Promise<T>, milliseconds: number): Promise<
 
 export async function qualifyDia(isolation: { root: string; originalHome: string; destinationExecutable: string }): Promise<Record<string, any>> {
   validateQualificationHost(process.env);
+  if (process.env.GSTACK_DIA_EXPECT_UID && process.getuid?.() !== Number(process.env.GSTACK_DIA_EXPECT_UID)) throw new Error('fresh_account_uid_mismatch');
   if (Bun.version !== '1.4.0' || require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_runtimes_required');
   const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(runnerTemp, 'dia-native-qualification.json');
@@ -160,7 +186,9 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
         throw new Error('preexisting_browser_state_refused');
       }
     }
-    receipt.sourceRevision = run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']).stdout;
+    const revision = process.env.GSTACK_DIA_SOURCE_REVISION;
+    if (revision && !/^[0-9a-f]{40}$/.test(revision)) throw new Error('invalid_source_revision');
+    receipt.sourceRevision = revision ?? run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']).stdout;
     const sourceFiles = ['.github/scripts/qualify-dia-macos.ts', 'browse/src/cookie-import-browser.ts', 'browse/src/cookie-import-operation.ts', 'browse/src/cookie-database.ts', 'browse/src/cookie-auth-verification.ts', 'browse/src/cdp-bridge.ts'];
     receipt.sourceHashes = Object.fromEntries(await within(() => Promise.all(sourceFiles.map(async file => [file, await sha256(path.join(repository, file))])), 10_000));
     stage = 'official_download';
@@ -195,8 +223,9 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
     receipt.artifact = { ...receipt.artifact, version: property('CFBundleShortVersionString'), bundleId: property('CFBundleIdentifier'), authority, team,
       architectures, executableSha256: await within(() => sha256(executable), 10_000), signatureVerified: true, gatekeeperNotarized: true };
     stage = 'temporary_keychain';
-    originalSearch = parseKeychainPaths(run('/usr/bin/security', ['list-keychains', '-d', 'user']).stdout);
-    originalDefault = parseKeychainPaths(run('/usr/bin/security', ['default-keychain', '-d', 'user']).stdout);
+    const originalKeychains = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root]);
+    originalSearch = originalKeychains.search;
+    originalDefault = originalKeychains.default;
     const keychainPassword = randomBytes(24).toString('hex');
     const fixtureKey = randomBytes(24).toString('hex');
     keychainChanged = true;
@@ -316,12 +345,13 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       try {
         if (keychainChanged) {
           let restored = true;
-          for (const args of [['default-keychain', '-d', 'user', '-s', originalDefault[0]], ['list-keychains', '-d', 'user', '-s', ...originalSearch]]) {
+          for (const args of [['default-keychain', '-d', 'user', '-s', ...originalDefault], ['list-keychains', '-d', 'user', '-s', ...originalSearch]]) {
             try { run('/usr/bin/security', args); } catch { restored = false; }
           }
           if (!restored) throw new Error('keychain_restore_failed');
-          if (JSON.stringify(parseKeychainPaths(run('/usr/bin/security', ['list-keychains', '-d', 'user']).stdout)) !== JSON.stringify(originalSearch)
-            || JSON.stringify(parseKeychainPaths(run('/usr/bin/security', ['default-keychain', '-d', 'user']).stdout)) !== JSON.stringify(originalDefault)) throw new Error('keychain_restore_failed');
+          const restoredSnapshot = captureUserKeychains(systemEnvironment, [systemEnvironment.HOME, root], Math.max(1, cleanupDeadline - performance.now()));
+          if (JSON.stringify(restoredSnapshot.search) !== JSON.stringify(originalSearch)
+            || JSON.stringify(restoredSnapshot.default) !== JSON.stringify(originalDefault)) throw new Error('keychain_restore_failed');
         }
         if (keychainCreated) run('/usr/bin/security', ['delete-keychain', keychain]);
         receipt.cleanup.keychainRestored = true;
@@ -358,7 +388,7 @@ if (import.meta.main) {
       const originalHome = realpathSync(homedir());
       const originalHomeEnvironment = process.env.HOME;
       const { chromium } = await import('playwright');
-      const destinationExecutable = realpathSync(chromium.executablePath());
+      const destinationExecutable = realpathSync(process.env.GSTACK_DIA_DESTINATION_EXECUTABLE || chromium.executablePath());
       const runnerTemp = realpathSync(process.env.RUNNER_TEMP!);
       const output = path.join(runnerTemp, 'dia-native-qualification.json');
       if (existsSync(output)) throw new Error('fresh_receipt_path_required');
@@ -369,7 +399,8 @@ if (import.meta.main) {
       mkdirSync(home, { mode: 0o700 });
       mkdirSync(temporary, { mode: 0o700 });
       const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'RUNNER_TEMP',
-        'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY'].map(name => [name, process.env[name]!]));
+        'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY', 'GSTACK_DIA_EXPECT_UID', 'GSTACK_DIA_SOURCE_REVISION']
+        .filter(name => process.env[name] !== undefined).map(name => [name, process.env[name]!]));
       const child = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', '--config=/dev/null', import.meta.path,
         '--isolated-worker', root, originalHome, destinationExecutable], {
         cwd: repository, env: { ...metadata, HOME: home, TMPDIR: temporary, PATH: '/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8' },

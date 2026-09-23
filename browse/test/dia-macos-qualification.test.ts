@@ -1,15 +1,16 @@
 import { afterAll, describe, expect, test } from 'bun:test';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, DIA_DOWNLOAD, nativeDiaLaunchOptions, observeBrowserLaunches,
-  parseKeychainPaths, validateQualificationHost,
+  allowedFixturePage, captureUserKeychains, DIA_DOWNLOAD, nativeDiaLaunchOptions, observeBrowserLaunches,
+  parseDefaultKeychain, parseKeychainPaths, validateQualificationHost,
 } from '../../.github/scripts/qualify-dia-macos';
+import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
 const root = mkdtempSync(path.join(tmpdir(), 'dia-qualification-test-'));
@@ -115,6 +116,144 @@ describe('Dia macOS CI qualification safety', () => {
     for (const output of ['', 'not-json', '"relative-path"', '42', '"/valid/path"\ninvalid']) {
       expect(() => parseKeychainPaths(output)).toThrow();
     }
+  });
+
+  test('fresh users can have an empty user search list and no default Keychain', () => {
+    const calls: string[][] = [];
+    const snapshot = captureUserKeychains({ HOME: root }, [root], 1000, (args, timeout) => {
+      calls.push(args);
+      expect(timeout).toBeGreaterThan(0);
+      expect(timeout).toBeLessThanOrEqual(1000);
+      return args[0] === 'list-keychains' ? { status: 0, stdout: '', stderr: '' }
+        : { status: 1, stdout: '', stderr: 'security: SecKeychainCopyDomainDefault user: A default keychain could not be found.\n' };
+    });
+    expect(snapshot).toEqual({ search: [], default: [] });
+    expect(calls).toEqual([['list-keychains', '-d', 'user'], ['default-keychain', '-d', 'user']]);
+  });
+
+  test('permission, securityd, and transport errors are never mistaken for no default Keychain', () => {
+    for (const result of [
+      { status: 1, stdout: '', stderr: 'security: SecKeychainCopyDefault: User interaction is not allowed.' },
+      { status: 1, stdout: '', stderr: 'security: SecKeychainCopyDomainDefault system: A default keychain could not be found.' },
+      { status: 1, stdout: '', stderr: 'synthetic-private-error' },
+      { status: 0, stdout: '', stderr: 'synthetic-private-error' },
+      { status: 1, stdout: 'unexpected-data', stderr: 'security: SecKeychainCopyDefault: A default keychain could not be found.' },
+      { status: null, stdout: '', stderr: '', error: new Error('synthetic-private-error') },
+    ]) expect(() => parseDefaultKeychain(result)).toThrow('user_default_keychain_unavailable');
+    expect(parseDefaultKeychain({ status: 0, stdout: '', stderr: '' })).toEqual([]);
+    expect(parseDefaultKeychain({ status: 1, stdout: '', stderr: 'security: SecKeychainCopyDefault: A default keychain could not be found.' })).toEqual([]);
+  });
+
+  test('the snapshot boundary rejects System Keychain fallback and paths outside the owned home', () => {
+    for (const file of ['/Library/Keychains/System.keychain', '/System/Library/Keychains/SystemRootCertificates.keychain', '/unowned/keychain']) {
+      expect(() => captureUserKeychains({ HOME: root }, [root], 1000, args => ({ status: 0,
+        stdout: args[0] === 'list-keychains' ? JSON.stringify(file) : '', stderr: '' })))
+        .toThrow('keychain_outside_owned_home_refused');
+    }
+  });
+
+  test('fresh account cleanup requires the same GUID, UID, private group, and registered home', () => {
+    const identity = { guid: 'A38AC39B-5960-4F0C-B02F-C32A4F625B33', uid: 23456, gid: 23456, home: '/private/tmp/fixture/home' };
+    const record = parseDirectoryRecord(`GeneratedUID: ${identity.guid}\nUniqueID: ${identity.uid}\nPrimaryGroupID: ${identity.gid}\nNFSHomeDirectory: ${identity.home}\n`);
+    expect(ownsFreshAccount(record, identity)).toBe(true);
+    for (const key of ['GeneratedUID', 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory']) {
+      expect(ownsFreshAccount({ ...record, [key]: 'different' }, identity)).toBe(false);
+    }
+    expect(() => parseDirectoryRecord('UniqueID: 23456\nUniqueID: 501')).toThrow('invalid_directory_record');
+  });
+
+  test('launchd receives a one-shot fresh-user security session without an Aqua or auto-login workaround', () => {
+    const account: any = { label: 'ai.gstack.dia.fixture', account: 'gsdiafixture', bun: '/private/tmp/fixture/bin/bun',
+      snapshot: '/private/tmp/fixture/repo', configFile: '/private/tmp/fixture/account.json', environment: { HOME: '/private/tmp/fixture/home', CI: 'true' } };
+    const definition = freshLaunchDefinition(account);
+    expect(definition.UserName).toBe(account.account);
+    expect(definition.GroupName).toBe(account.account);
+    expect(definition.SessionCreate).toBe(true);
+    expect(definition.RunAtLoad).toBe(true);
+    expect(definition.KeepAlive).toBe(false);
+    expect(definition.Umask).toBe(63);
+    expect(definition.ProgramArguments[0]).toBe(account.bun);
+    expect(definition.ProgramArguments).toContain('--fresh-worker');
+    expect(definition.StandardOutPath).toBe('/dev/null');
+    expect(definition.StandardErrorPath).toBe('/dev/null');
+    expect(JSON.stringify(definition)).not.toMatch(/Aqua|autoLogin|LoginWindow|GITHUB_TOKEN/);
+  });
+
+  test('service cleanup binds the exact system label, executable, user, and private group', () => {
+    const owner = { label: 'ai.gstack.dia.fixture', bun: '/private/tmp/fixture/bin/bun', account: 'gsdiafixture' };
+    const state = `system/${owner.label} = {\n program = ${owner.bun}\n username = ${owner.account}\n group = ${owner.account}\n}`;
+    expect(ownsLaunchService(state, owner)).toBe(true);
+    for (const replacement of [state.replace('system/', 'gui/501/'), state.replace(owner.label, 'unrelated'),
+      state.replace(owner.bun, '/unrelated/bun'), state.replace('username = gsdiafixture', 'username = runner'),
+      state.replace('group = gsdiafixture', 'group = staff')]) expect(ownsLaunchService(replacement, owner)).toBe(false);
+  });
+
+  test('the fresh-account launcher refuses this non-authorized invocation without privileged work', () => {
+    const launcher = path.resolve(import.meta.dir, '../../.github/scripts/run-dia-native-qualification.ts');
+    const result = spawnSync(process.execPath, ['--no-env-file', '--no-install', '--no-macros', `--config=${process.platform === 'win32' ? 'NUL' : '/dev/null'}`, launcher], {
+      cwd: root, env: { HOME: root, PATH: path.dirname(process.execPath) }, encoding: 'utf8', timeout: 10_000,
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout).reason).toBe('fresh_account_launcher_preflight_failed');
+  });
+
+  for (const shape of ['normal', 'safe-link', 'traversal', 'absolute', 'escape-link', 'symlink-parent', 'symlink-dotdot', 'hardlink', 'case-collision', 'unicode-collision', 'device']) {
+    test(`archive preflight classifies ${shape} before extraction`, () => {
+      const python = Bun.which('python3');
+      if (!python) throw new Error('Python 3 is required for archive boundary tests');
+      const archive = path.join(root, shape + '.tar');
+      const create = spawnSync(python, ['-I', '-c', `
+import io, sys, tarfile
+shape, file = sys.argv[1:]
+with tarfile.open(file, 'w') as out:
+    def entry(name, kind=tarfile.REGTYPE, link=''):
+        item = tarfile.TarInfo(name); item.type = kind; item.linkname = link
+        if kind == tarfile.REGTYPE:
+            item.size = 1; out.addfile(item, io.BytesIO(b'x'))
+        else: out.addfile(item)
+    if shape == 'normal': entry('src/file.ts')
+    elif shape == 'safe-link': entry('target'); entry('link', tarfile.SYMTYPE, 'target')
+    elif shape == 'traversal': entry('../outside')
+    elif shape == 'absolute': entry('/outside')
+    elif shape == 'escape-link': entry('link', tarfile.SYMTYPE, '../outside')
+    elif shape == 'symlink-parent': entry('link', tarfile.SYMTYPE, 'target'); entry('link/child')
+    elif shape == 'symlink-dotdot': entry('b', tarfile.SYMTYPE, '.'); entry('a/link', tarfile.SYMTYPE, '../b/..')
+    elif shape == 'hardlink': entry('target'); entry('link', tarfile.LNKTYPE, 'target')
+    elif shape == 'case-collision': entry('File'); entry('file')
+    elif shape == 'unicode-collision': entry('Caf' + chr(233)); entry('Cafe' + chr(769))
+    elif shape == 'device': entry('device', tarfile.CHRTYPE)
+`, shape, archive], { encoding: 'utf8', timeout: 10_000 });
+      expect(create.status).toBe(0);
+      const checked = spawnSync(python, ['-I', '-c', ARCHIVE_CHECK, archive], { encoding: 'utf8', timeout: 10_000 });
+      expect(checked.status).toBe(['normal', 'safe-link'].includes(shape) ? 0 : 2);
+      expect(JSON.parse(checked.stdout).valid).toBe(['normal', 'safe-link'].includes(shape));
+      expect(checked.stderr).toBe('');
+    });
+  }
+
+  test('receipt collection rejects symlinks and an unrelated owner without printing content', () => {
+    const python = Bun.which('python3');
+    if (!python) throw new Error('Python 3 is required for receipt boundary tests');
+    const directory = realpathSync(mkdtempSync(path.join(root, 'receipts-')));
+    const file = path.join(directory, 'receipt.json');
+    writeFileSync(file, JSON.stringify({ status: 'incomplete', reason: 'synthetic_fixture' }), { mode: 0o600 });
+    chmodSync(file, 0o600);
+    const uid = process.getuid!();
+    const read = (selected: string, owner: number) => spawnSync(python, ['-I', '-c', PRIVATE_RECEIPT_READ, selected, String(owner), directory], {
+      encoding: 'utf8', timeout: 10_000,
+    });
+    const valid = read(file, uid);
+    expect(valid.status).toBe(0);
+    expect(JSON.parse(valid.stdout).status).toBe('incomplete');
+    const wrong = read(file, uid + 1);
+    expect(wrong.status).toBe(2);
+    expect(wrong.stdout).toBe('');
+    const link = path.join(directory, 'linked.json');
+    symlinkSync(file, link);
+    const linked = read(link, uid);
+    expect(linked.status).toBe(2);
+    expect(linked.stdout).toBe('');
   });
 
   test('the registered spawn observer records the actual owned child and closes launch admission', async () => {

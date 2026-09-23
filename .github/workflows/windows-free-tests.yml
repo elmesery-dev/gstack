@@ -200,7 +200,7 @@ jobs:
   dia-native-qualification:
     if: github.event_name == 'workflow_dispatch' && inputs.dia_native_only
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -215,7 +215,7 @@ jobs:
       - name: Qualify native Dia discovery, decryption, and import
         env:
           GSTACK_DIA_NATIVE_QUALIFY: '1'
-        run: bun .github/scripts/qualify-dia-macos.ts
+        run: bun --no-env-file --no-install --no-macros --config=/dev/null .github/scripts/run-dia-native-qualification.ts
       - name: Preserve only the sanitized qualification receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
