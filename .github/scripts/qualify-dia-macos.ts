@@ -7,7 +7,7 @@ import path from 'node:path';
 import type { BrowserContext } from 'playwright';
 
 const require = createRequire(import.meta.url);
-const repository = path.resolve(import.meta.dir, '../..');
+const repository = path.resolve(import.meta.dirname, '../..');
 export const DIA_DOWNLOAD = 'https://releases.diabrowser.com/release/Dia-latest.dmg';
 export const FRESH_WORK_PREFIX = '/private/tmp/dn-';
 
@@ -16,6 +16,8 @@ export interface FreshAccount {
   uid: number; gid: number; account: string; guid: string; groupGuid: string; label: string;
   sourceRevision: string; archiveSha256: string; bunSha256: string; destinationSha256: string;
   configFile: string; environment: Record<string, string>;
+  launchComparison?: { mode: 'launch-only'; runtime: 'bun' | 'node'; executable: string; executableSha256: string;
+    driverSha256: string; helpersSha256: string };
 }
 
 export function parseDirectoryRecord(output: string): Record<string, string> {
@@ -33,7 +35,7 @@ export function ownsFreshAccount(record: Record<string, string>, account: Pick<F
     && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
 }
 
-export function readFreshAccountConfiguration(configFile: string): FreshAccount {
+export function readFreshAccountConfiguration(configFile: string, role: 'coordinator' | 'comparison-driver' = 'coordinator'): FreshAccount {
   const work = path.dirname(configFile);
   if (!path.isAbsolute(configFile) || path.basename(configFile) !== 'account.json' || path.dirname(work) !== '/private/tmp'
     || !path.basename(work).startsWith(path.basename(FRESH_WORK_PREFIX)) || realpathSync(work) !== work) throw new Error('unsafe_fresh_account_configuration');
@@ -42,9 +44,15 @@ export function readFreshAccountConfiguration(configFile: string): FreshAccount 
   if (!parent.isDirectory() || parent.uid !== 0 || (parent.mode & 0o022) !== 0 || !info.isFile() || info.uid !== 0
     || info.nlink !== 1 || (info.mode & 0o022) !== 0 || info.size > 64 * 1024 || realpathSync(configFile) !== configFile) throw new Error('unsafe_fresh_account_configuration');
   const account: FreshAccount = JSON.parse(readFileSync(configFile, 'utf8'));
+  if (role === 'comparison-driver' && (!account.launchComparison || account.launchComparison.mode !== 'launch-only'
+    || !['bun', 'node'].includes(account.launchComparison.runtime)
+    || account.launchComparison.executable !== path.join(work, 'bin', account.launchComparison.runtime)
+    || ![account.launchComparison.executableSha256, account.launchComparison.driverSha256, account.launchComparison.helpersSha256]
+      .every(value => /^[a-f0-9]{64}$/.test(value)))) throw new Error('comparison_driver_authority_missing');
+  const expectedRuntime = role === 'comparison-driver' ? account.launchComparison!.executable : account.bun;
   if (account.work !== work || account.configFile !== configFile || account.home !== path.join(work, 'home')
     || account.temporary !== path.join(work, 'tmp') || account.snapshot !== repository || account.snapshot !== path.join(work, 'repo')
-    || account.bun !== path.join(work, 'bin/bun') || realpathSync(process.execPath) !== account.bun
+    || account.bun !== path.join(work, 'bin/bun') || realpathSync(process.execPath) !== expectedRuntime
     || !Number.isSafeInteger(account.uid) || account.uid < 20_000 || account.uid >= 60_000 || account.gid !== account.uid
     || process.getuid?.() !== account.uid || process.geteuid?.() !== account.uid || process.getgid?.() !== account.gid
     || !/^[a-z][a-z0-9]{8,24}$/.test(account.account) || !/^[A-F0-9-]{36}$/.test(account.guid)
@@ -58,6 +66,76 @@ export function readFreshAccountConfiguration(configFile: string): FreshAccount 
   if (!account.destinationExecutable.startsWith(path.join(work, 'browser') + path.sep)
     || realpathSync(account.destinationExecutable) !== account.destinationExecutable) throw new Error('staged_executable_escape');
   return account;
+}
+
+export function safeDiaComparisonResponse(value: unknown): boolean {
+  const keys = new Set(['protocol', 'purpose', 'stage', 'launchReturned', 'protocolResponded', 'ready', 'timedOut', 'error', 'samplingEnabled',
+    'cleanup', 'startupPages', 'postProbePages', 'argvSha256', 'environmentSha256', 'rootCount', 'launchAttempts', 'rootsBeforeCleanup',
+    'stderrBeforeCleanup', 'stderrAfterCleanup', 'rootsAfterCleanup', 'driver', 'childClosed', 'groupAbsent', 'launchSettled', 'confirmed', 'groups', 'pid', 'signalSent',
+    'absenceConfirmed', 'childCloseObserved', 'failed', 'initialSignalFailure', 'reason', 'code', 'errno', 'closeObserved', 'exitCode', 'signal',
+    'count', 'categories', 'truncated', 'allowed', 'admissionOpen', 'argumentsArray', 'pipeFlag', 'profileArgumentCount', 'expectedProfile',
+    'detached', 'shellDisabled', 'stdioCount', 'extraPipeDescriptors', 'headlessFlag', 'blankStartupArgument', 'tcpDebuggingFlag', 'mockKeychainFlag',
+    'passwordStoreFlag', 'firstRunSuppressed', 'sandboxRequired', 'sandboxDisablingFlag', 'available', 'bytesSeen', 'bytesInspected',
+    'discardedLongLines', 'ended', 'reasonCounts', ...Object.keys(BROWSER_STDERR_REASONS), 'runtime', 'version', 'architecture', 'os', 'release',
+    'executableSha256', 'driverSha256', 'helpersSha256', 'playwright']);
+  const strings = new Set(['control', 'source', 'runtime_import', 'launch', 'ownership', 'startup_pages', 'protocol_probe', 'ready',
+    'probe_before_signal', 'signal', 'join_child_close', 'probe_after_signal', 'completed', 'signal_or_probe_failed', 'cleanup_deadline',
+    'child_close_timeout', 'child_close_unconfirmed', 'group_still_live', 'ESRCH', 'EPERM', 'EACCES', 'EINVAL', 'ENOSYS', 'ETIMEDOUT',
+    'unclassified', 'SIGABRT', 'SIGTRAP', 'SIGSEGV', 'SIGBUS', 'SIGKILL', 'SIGTERM', 'SIGILL', 'other', 'blank', 'other_about',
+    'chromium_new_tab', 'chromium_onboarding', 'chromium_internal', 'dia_internal', 'extension', 'loopback_web', 'external_web', 'file',
+    'data', 'other_scheme', 'invalid', 'bun', 'node', 'arm64', 'darwin', ...Object.keys(BROWSER_STDERR_REASONS), 'module_unavailable',
+    'module_export_unavailable', 'module_format_error', 'launch_policy_rejected', 'ownership_unconfirmed', 'startup_page_rejected',
+    'render_mismatch', 'operation_timeout', 'executable_unavailable', 'permission_denied', 'invalid_runtime_range', 'runtime_type_error',
+    'target_closed', 'protocol_error', 'unclassified_browser_error']);
+  const safe = (item: unknown): boolean => item === null || typeof item === 'boolean'
+    || (typeof item === 'number' && Number.isSafeInteger(item))
+    || (typeof item === 'string' && (strings.has(item) || /^[a-f0-9]{64}$/.test(item) || /^\d{1,3}(?:\.\d{1,3}){1,2}$/.test(item)))
+    || (Array.isArray(item) && item.length <= 64 && item.every(safe))
+    || (typeof item === 'object' && !Array.isArray(item) && item !== null && Object.entries(item).every(([key, child]) => keys.has(key) && safe(child)));
+  return safe(value);
+}
+
+export async function runDiaLaunchComparison(account: FreshAccount, purpose: 'control' | 'source', source?: {
+  assetRoot: string; executableName: string; executableSha256: string;
+}, execute: typeof spawnSync = spawnSync, milliseconds = 40_000) {
+  const deadline = performance.now() + Math.min(40_000, milliseconds);
+  if (!Number.isFinite(milliseconds) || !Number.isFinite(deadline) || milliseconds < 1) throw new Error('comparison_budget_exhausted');
+  const config = account.launchComparison;
+  if (!config || config.mode !== 'launch-only' || !['bun', 'node'].includes(config.runtime)
+    || config.executable !== path.join(account.work, 'bin', config.runtime)) throw new Error('comparison_driver_authority_missing');
+  if (await sha256(config.executable) !== config.executableSha256
+    || await sha256(path.join(account.snapshot, '.github/scripts/dia-launch-driver.mjs')) !== config.driverSha256
+    || await sha256(path.join(account.snapshot, '.github/scripts/qualify-dia-macos.ts')) !== config.helpersSha256) throw new Error('comparison_driver_inputs_changed');
+  const args = [...(config.runtime === 'bun' ? ['--no-env-file', '--no-install', '--no-macros', '--config=/dev/null'] : []),
+    path.join(account.snapshot, '.github/scripts/dia-launch-driver.mjs'), account.configFile];
+  const timeout = Math.floor(deadline - performance.now());
+  if (timeout < 1) throw new Error('comparison_budget_exhausted');
+  const result = execute(config.executable, args, { env: account.environment, cwd: account.snapshot,
+    input: JSON.stringify({ purpose, ...source }), encoding: 'utf8', timeout, killSignal: 'SIGKILL', maxBuffer: 64 * 1024 });
+  const failed = { protocol: 1, purpose, ready: false, launchReturned: false, error: 'driver_exchange_failed',
+    cleanup: { confirmed: false }, supervisor: { closed: !result.error && result.status !== null, exitCode: result.status,
+      timedOut: (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT', stderrBytes: Buffer.byteLength(result.stderr || '') } };
+  if (result.error || result.status !== 0) return failed;
+  try {
+    const response = JSON.parse(result.stdout);
+    const keys = ['protocol', 'purpose', 'stage', 'launchReturned', 'protocolResponded', 'ready', 'timedOut', 'error', 'samplingEnabled', 'cleanup', 'startupPages', 'postProbePages',
+      'argvSha256', 'environmentSha256', 'rootCount', 'launchAttempts', 'rootsBeforeCleanup', 'stderrBeforeCleanup', 'stderrAfterCleanup', 'rootsAfterCleanup', 'driver'];
+    if (!response || !safeDiaComparisonResponse(response) || Object.keys(response).some(key => !keys.includes(key)) || response.protocol !== 1 || response.purpose !== purpose
+      || response.samplingEnabled !== false || response.driver?.runtime !== config.runtime
+      || response.driver?.version !== (config.runtime === 'bun' ? '1.4.0' : '24.18.0') || response.driver?.architecture !== 'arm64'
+      || response.driver?.os !== 'darwin' || response.driver?.playwright !== '1.62.1'
+      || response.driver?.executableSha256 !== config.executableSha256 || response.driver?.driverSha256 !== config.driverSha256
+      || response.driver?.helpersSha256 !== config.helpersSha256 || typeof response.ready !== 'boolean'
+      || typeof response.launchReturned !== 'boolean' || typeof response.cleanup?.confirmed !== 'boolean') return failed;
+    if (response.ready && (response.launchReturned !== true || response.protocolResponded !== true
+      || response.startupPages?.allowed !== true || response.postProbePages?.allowed !== true)) return failed;
+    if (response.cleanup.confirmed && (response.cleanup.childClosed !== true || response.cleanup.groupAbsent !== true || response.cleanup.launchSettled !== true || response.rootCount !== 1
+      || response.cleanup.groups?.length !== 1 || response.cleanup.groups[0].absenceConfirmed !== true || response.cleanup.groups[0].childCloseObserved !== true
+      || response.rootsAfterCleanup?.length !== 1 || response.rootsAfterCleanup[0].closeObserved !== true
+      || response.launchAttempts?.length !== 1 || response.launchAttempts[0].sandboxRequired !== true || response.launchAttempts[0].sandboxDisablingFlag !== false
+      || response.launchAttempts[0].pipeFlag !== true || !/^[a-f0-9]{64}$/.test(response.argvSha256) || !/^[a-f0-9]{64}$/.test(response.environmentSha256))) return failed;
+    return { ...response, supervisor: { closed: true, exitCode: 0, timedOut: false, stderrBytes: Buffer.byteLength(result.stderr || '') } };
+  } catch { return failed; }
 }
 
 export function createOwnedDiaProfile(home: string) {
@@ -673,7 +751,7 @@ export async function stopOwnedBrowserGroup(child: ReturnType<typeof observeBrow
     }
     const remaining = deadline - performance.now();
     if (remaining <= 0) throw new Error('owned_process_group_still_live');
-    await Bun.sleep(Math.min(50, remaining));
+    await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));
   }
 }
 
@@ -823,6 +901,8 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
   let destination: BrowserContext | undefined;
   let observer: ReturnType<typeof observeBrowserLaunches> | undefined;
   let launchAttempts = 0;
+  let comparisonAttempted = false;
+  let comparisonSource: Record<string, any> | undefined;
   let profileCreationAttempted = false;
   let profileOwnership: ReturnType<typeof createOwnedDiaProfile> | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
@@ -959,6 +1039,21 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     const keychainFailure = receipt.keychainObservations.firstFailure;
     if (keychainFailure) throw new Error(keychainFailure.check === 'search_path' ? 'keychain_search_isolation_failed' : 'fixture_keychain_read_failed');
     receipt.keychainStage = 'completed';
+    if (account.launchComparison) {
+      stage = 'diagnostic_source_launch';
+      profileCreationAttempted = true;
+      profileOwnership = createOwnedDiaProfile(home);
+      assertOwnedDiaProfile(profileOwnership);
+      receipt.isolation.sourceProfileOwnershipConfirmed = true;
+      comparisonAttempted = true;
+      comparisonSource = await runDiaLaunchComparison(account, 'source', { assetRoot: root, executableName, executableSha256: receipt.artifact.executableSha256 },
+        undefined, deadline - performance.now());
+      receipt.launchComparison = { mode: 'launch-only', qualificationCredit: false, source: comparisonSource };
+      receipt.browsers.source = { stage: 'delegated_comparison', launchReturned: comparisonSource.launchReturned,
+        timedOut: comparisonSource.timedOut ?? false, error: comparisonSource.error ?? null };
+      receipt.reason = 'diagnostic_launch_comparison_only';
+      return receipt;
+    }
     delete process.env.DEBUG;
     delete process.env.PWDEBUG;
     browserRole = 'source';
@@ -1109,7 +1204,8 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       'keychain_search_isolation_failed', 'fixture_keychain_read_failed', 'user_keychain_probe_timeout', 'fixture_keychain_not_owned',
       'fresh_registered_identity_mismatch', 'unsafe_profile_ancestor', 'profile_ownership_unconfirmed', 'source_macos_version_unsupported',
       'invalid_macho_header', 'unsupported_macho_architecture', 'unsafe_macho_file', 'macho_changed_during_inspection',
-      'macho_read_budget_exhausted', 'dia_arm64_binary_required'].includes(error.message)) receipt.blocker = error.message;
+      'macho_read_budget_exhausted', 'dia_arm64_binary_required', 'comparison_driver_inputs_changed',
+      'comparison_driver_authority_missing', 'comparison_budget_exhausted'].includes(error.message)) receipt.blocker = error.message;
     const code = (error as { code?: string } | null)?.code;
     if (code && ['keychain_timeout', 'keychain_denied', 'keychain_not_found', 'keychain_error', 'db_read_error', 'db_corrupt', 'target_changed', 'target_mismatch'].includes(code)) receipt.blocker = code;
     receipt.initialFailure ??= { stage, blocker: receipt.blocker ?? 'qualification_step_failed',
@@ -1123,6 +1219,14 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
     observer?.stop();
     for (const role of ['source', 'destination'] as const) {
       const facts = receipt.browsers[role];
+      if (role === 'source' && comparisonAttempted && comparisonSource) {
+        facts.ownedRootCount = comparisonSource.rootCount ?? 0;
+        facts.rootStatesBeforeCleanup = comparisonSource.rootsBeforeCleanup ?? [];
+        facts.stderrBeforeCleanup = comparisonSource.stderrBeforeCleanup ?? [];
+        facts.launchAttempts = comparisonSource.launchAttempts ?? [];
+        facts.cleanup = comparisonSource.cleanup;
+        continue;
+      }
       const children = (observer?.children ?? []).filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role);
       facts.ownedRootCount = children.length;
       facts.rootStatesBeforeCleanup = browserRootFacts(children);
@@ -1137,8 +1241,10 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       try { await bounded(context.close(), 5_000); }
       catch (error) { receipt.browsers[role].cleanup.closeError = browserPreflightError(error); }
     }
-    let stopped = !observer || observer.children.length >= launchAttempts;
-    receipt.browserCleanup = { launchAttempts, capturedRootCount: observer?.children.length ?? 0, rootCaptureComplete: stopped };
+    let stopped = comparisonAttempted ? comparisonSource?.cleanup?.confirmed === true : !observer || observer.children.length >= launchAttempts;
+    receipt.browserCleanup = { launchAttempts: comparisonAttempted ? 1 : launchAttempts,
+      capturedRootCount: comparisonAttempted ? comparisonSource?.rootCount ?? 0 : observer?.children.length ?? 0,
+      rootCaptureComplete: comparisonAttempted ? comparisonSource?.rootCount === 1 : stopped };
     for (const child of observer?.children ?? []) {
       const role = child.executable === account.destinationExecutable ? 'destination' : 'source';
       const group: Record<string, any> = { pid: child.pid, stage: 'probe_before_signal', signalSent: false, absenceConfirmed: false };
@@ -1163,11 +1269,11 @@ export async function qualifyDia(isolation: { root: string; configFile: string }
       group.rootAfterCleanup = browserRootFacts([child])[0];
     }
     for (const role of ['source', 'destination'] as const) {
-      receipt.browsers[role].stderrAfterCleanup = browserStderrFacts((observer?.children ?? [])
-        .filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role));
+      receipt.browsers[role].stderrAfterCleanup = role === 'source' && comparisonAttempted ? comparisonSource?.stderrAfterCleanup ?? []
+        : browserStderrFacts((observer?.children ?? []).filter(child => (child.executable === account.destinationExecutable ? 'destination' : 'source') === role));
     }
     receipt.cleanup.ownedBrowsersStopped = stopped;
-    receipt.observedBrowserRoots = observer?.children.length ?? 0;
+    receipt.observedBrowserRoots = comparisonAttempted ? comparisonSource?.rootCount ?? 0 : observer?.children.length ?? 0;
     server?.stop(true);
     if (!profileCreationAttempted) receipt.cleanup.sourceProfileRemoved = true;
     else if (stopped && profileOwnership) {

@@ -66,3 +66,22 @@ test('focused Windows diagnostics include the repaired lock and close cases with
     'native Windows process qualification > real Edge synthetic profile: normal-close', 'native Windows process qualification > real Edge synthetic profile: stalled-close']) expect(selected.test(name)).toBe(true);
   expect(selected.test('native Windows process qualification > an exclusively created default Edge profile persists v20')).toBe(false);
 });
+
+test('Dia comparison uses separate pinned runtime jobs and retains diagnostic failures', () => {
+  const windows = Bun.YAML.parse(readFileSync(path.join(root, '.github/workflows/windows-free-tests.yml'), 'utf8')) as any;
+  const job = windows.jobs['dia-native-qualification'];
+  expect(job['runs-on']).toBe('macos-15');
+  expect(job.strategy['fail-fast']).toBe(false);
+  expect(job.strategy.matrix.runtime).toContain('["bun","node"]');
+  expect(job.strategy.matrix.runtime).toContain('inputs.dia_launch_comparison');
+  const node = job.steps.find((step: any) => step.uses?.startsWith('actions/setup-node@'));
+  expect(node.with).toEqual({ 'node-version': '24.18.0', architecture: 'arm64' });
+  const comparison = job.steps.find((step: any) => step.name === 'Compare protected native Dia launch without qualification credit');
+  expect(comparison.run).toContain('--launch-comparison "$COMPARISON_RUNTIME"');
+  expect(comparison['continue-on-error']).toBeUndefined();
+  const upload = job.steps.find((step: any) => step.uses?.startsWith('actions/upload-artifact@'));
+  expect(upload.if).toBe('always()');
+  expect(upload.with.name).toContain("format('dia-launch-comparison-{0}', matrix.runtime)");
+  expect(windows.jobs['windows-free-tests'].if).toContain('!inputs.dia_launch_comparison');
+  expect(windows.jobs['cookie-native-qualification'].if).toContain('!inputs.dia_launch_comparison');
+});

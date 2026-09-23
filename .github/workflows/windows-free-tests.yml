@@ -35,6 +35,10 @@ on:
         description: Run Windows launch diagnostics and credential regressions without qualification
         type: boolean
         default: false
+      dia_launch_comparison:
+        description: Compare protected Dia launch under Bun and Node in separate fresh Mac jobs
+        type: boolean
+        default: false
 
 concurrency:
   group: windows-free-${{ github.event.pull_request.number || github.run_id }}
@@ -46,7 +50,7 @@ permissions:
 
 jobs:
   windows-free-tests:
-    if: ${{ !inputs.dia_native_only }}
+    if: ${{ !inputs.dia_native_only && !inputs.dia_launch_comparison }}
     # Ubicloud Windows runner (same provider as the Linux evals workflow).
     # To revert: swap to `windows-latest` (GitHub's free 4-core Windows runner).
     runs-on: windows-latest
@@ -168,7 +172,7 @@ jobs:
           if-no-files-found: ignore
 
   cookie-native-qualification:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dia_native_only && !inputs.native_diagnostics_only
+    if: github.event_name == 'workflow_dispatch' && !inputs.dia_native_only && !inputs.native_diagnostics_only && !inputs.dia_launch_comparison
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -197,9 +201,13 @@ jobs:
           if-no-files-found: error
 
   dia-native-qualification:
-    if: github.event_name == 'workflow_dispatch' && inputs.dia_native_only
+    if: github.event_name == 'workflow_dispatch' && (inputs.dia_native_only || inputs.dia_launch_comparison)
     runs-on: macos-15
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: ${{ fromJSON(inputs.dia_launch_comparison && '["bun","node"]' || '["bun"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -207,18 +215,30 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version: 1.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        if: inputs.dia_launch_comparison
+        with:
+          node-version: 24.18.0
+          architecture: arm64
       - name: Install pinned dependencies
         run: bun install --frozen-lockfile
       - name: Install the synthetic destination browser
         run: bunx --no-install playwright install chromium
       - name: Qualify native Dia discovery, decryption, and import
+        if: ${{ !inputs.dia_launch_comparison }}
         env:
           GSTACK_DIA_NATIVE_QUALIFY: '1'
         run: bun --no-env-file --no-install --no-macros --config=/dev/null .github/scripts/run-dia-native-qualification.ts
+      - name: Compare protected native Dia launch without qualification credit
+        if: inputs.dia_launch_comparison
+        env:
+          GSTACK_DIA_NATIVE_QUALIFY: '1'
+          COMPARISON_RUNTIME: ${{ matrix.runtime }}
+        run: bun --no-env-file --no-install --no-macros --config=/dev/null .github/scripts/run-dia-native-qualification.ts --launch-comparison "$COMPARISON_RUNTIME"
       - name: Preserve only the sanitized qualification receipt
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: dia-native-qualification
+          name: ${{ inputs.dia_launch_comparison && format('dia-launch-comparison-{0}', matrix.runtime) || 'dia-native-qualification' }}
           path: ${{ runner.temp }}/dia-native-qualification.json
           if-no-files-found: error

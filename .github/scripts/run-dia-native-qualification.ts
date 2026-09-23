@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, FRESH_WORK_PREFIX, type FreshAccount,
   nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain, ownsFreshAccount, parseDirectoryRecord, stopOwnedBrowserGroup,
-  playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
+  playwrightModuleLoadFacts, prepareKeychainHome, readFreshAccountConfiguration, runDiaLaunchComparison, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 export { FRESH_WORK_PREFIX, ownsFreshAccount, parseDirectoryRecord } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
@@ -366,6 +366,7 @@ async function freshWorker(configFile: string) {
   };
   let context: any;
   let observer: ReturnType<typeof observeBrowserLaunches> | undefined;
+  let comparisonControl: Record<string, any> | undefined;
   let launchAttempted = false;
   let keychainCreated = false;
   let keychainChanged = false;
@@ -412,50 +413,61 @@ async function freshWorker(configFile: string) {
     receipt.keychainObservations = { ...observed, preferencesFileExists: existsSync(path.join(account.home, 'Library/Preferences/com.apple.security.plist')) };
     if (!observed.searchPathMatches || !observed.defaultPathMatches || !observed.explicitReadMatches) throw new Error('native_keychain_probe_failed');
     receipt.preflight.keychain = true;
-    receipt.browserPreflight = { stage: 'runtime_import', launchReturned: false, ownedRootCount: 0,
-      startupPageCount: null, startupPageCategories: [], pageSelected: false, contentSet: false, readbackMatched: false };
-    receipt.reason = 'background_browser_runtime_import';
-    const { chromium } = await import('playwright');
-    const profile = path.join(probe, 'chromium');
-    observer = observeBrowserLaunches(new Map([[account.destinationExecutable, profile]]));
-    launchAttempted = true;
-    receipt.browserPreflight.stage = 'launch';
-    receipt.reason = 'background_browser_launch';
-    context = await limit(chromium.launchPersistentContext(profile, nativeDiaLaunchOptions(account.destinationExecutable, env)), 40_000);
-    receipt.browserPreflight.launchReturned = true;
-    receipt.browserPreflight.stage = 'ownership';
-    receipt.reason = 'background_browser_ownership';
-    receipt.browserPreflight.ownedRootCount = observer.children.length;
-    if (observer.children.length !== 1) throw new Error('background_browser_ownership_failed');
-    receipt.browserPreflight.stage = 'startup_pages';
-    receipt.reason = 'background_browser_startup_pages';
-    const pages = context.pages();
-    const startupUrls = pages.map((page: any) => page.url());
-    receipt.browserPreflight.startupPageCount = pages.length;
-    receipt.browserPreflight.startupPageCategories = startupUrls.map(browserStartupCategory);
-    if (startupUrls.some((url: string) => url !== 'about:blank')) throw new Error('background_browser_startup_page_rejected');
-    receipt.browserPreflight.stage = 'page_selection';
-    receipt.reason = 'background_browser_page_selection';
-    const page = pages[0] ?? await limit(context.newPage(), 5_000);
-    receipt.browserPreflight.pageSelected = true;
-    receipt.browserPreflight.stage = 'content_set';
-    receipt.reason = 'background_browser_content_set';
-    await limit(page.setContent('<div id="fixture">background browser ready</div>'), 5_000);
-    receipt.browserPreflight.contentSet = true;
-    receipt.browserPreflight.stage = 'readback';
-    receipt.reason = 'background_browser_readback';
-    receipt.browserPreflight.readbackMatched = await limit(page.locator('#fixture').innerText(), 5_000) === 'background browser ready';
-    if (!receipt.browserPreflight.readbackMatched) throw new Error('background_browser_render_failed');
-    receipt.browserPreflight.stage = 'completed';
-    receipt.preflight.headlessChromium = true;
-    receipt.status = 'passed';
-    receipt.reason = 'background_session_ready';
+    if (account.launchComparison) {
+      receipt.reason = 'comparison_chromium_control';
+      launchAttempted = true;
+      comparisonControl = await runDiaLaunchComparison(account, 'control');
+      receipt.comparisonControl = comparisonControl;
+      if (!comparisonControl.ready || !comparisonControl.cleanup?.confirmed) throw new Error('comparison_control_failed');
+      receipt.preflight.headlessChromium = true;
+      receipt.status = 'passed';
+      receipt.reason = 'background_session_ready';
+    } else {
+      receipt.browserPreflight = { stage: 'runtime_import', launchReturned: false, ownedRootCount: 0,
+        startupPageCount: null, startupPageCategories: [], pageSelected: false, contentSet: false, readbackMatched: false };
+      receipt.reason = 'background_browser_runtime_import';
+      const { chromium } = await import('playwright');
+      const profile = path.join(probe, 'chromium');
+      observer = observeBrowserLaunches(new Map([[account.destinationExecutable, profile]]));
+      launchAttempted = true;
+      receipt.browserPreflight.stage = 'launch';
+      receipt.reason = 'background_browser_launch';
+      context = await limit(chromium.launchPersistentContext(profile, nativeDiaLaunchOptions(account.destinationExecutable, env)), 40_000);
+      receipt.browserPreflight.launchReturned = true;
+      receipt.browserPreflight.stage = 'ownership';
+      receipt.reason = 'background_browser_ownership';
+      receipt.browserPreflight.ownedRootCount = observer.children.length;
+      if (observer.children.length !== 1) throw new Error('background_browser_ownership_failed');
+      receipt.browserPreflight.stage = 'startup_pages';
+      receipt.reason = 'background_browser_startup_pages';
+      const pages = context.pages();
+      const startupUrls = pages.map((page: any) => page.url());
+      receipt.browserPreflight.startupPageCount = pages.length;
+      receipt.browserPreflight.startupPageCategories = startupUrls.map(browserStartupCategory);
+      if (startupUrls.some((url: string) => url !== 'about:blank')) throw new Error('background_browser_startup_page_rejected');
+      receipt.browserPreflight.stage = 'page_selection';
+      receipt.reason = 'background_browser_page_selection';
+      const page = pages[0] ?? await limit(context.newPage(), 5_000);
+      receipt.browserPreflight.pageSelected = true;
+      receipt.browserPreflight.stage = 'content_set';
+      receipt.reason = 'background_browser_content_set';
+      await limit(page.setContent('<div id="fixture">background browser ready</div>'), 5_000);
+      receipt.browserPreflight.contentSet = true;
+      receipt.browserPreflight.stage = 'readback';
+      receipt.reason = 'background_browser_readback';
+      receipt.browserPreflight.readbackMatched = await limit(page.locator('#fixture').innerText(), 5_000) === 'background browser ready';
+      if (!receipt.browserPreflight.readbackMatched) throw new Error('background_browser_render_failed');
+      receipt.browserPreflight.stage = 'completed';
+      receipt.preflight.headlessChromium = true;
+      receipt.status = 'passed';
+      receipt.reason = 'background_session_ready';
+    }
   } catch (error) {
     receipt.status = 'incomplete';
     if (error instanceof Error && ['fresh_identity_mismatch', 'fresh_directory_ownership_mismatch', 'fresh_registered_identity_mismatch',
       'foundation_home_mismatch', 'staged_executable_escape', 'staged_executable_changed', 'pinned_runtime_mismatch',
       'user_keychain_search_unavailable', 'user_default_keychain_unavailable', 'keychain_outside_owned_home_refused',
-      'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed'].includes(error.message)) receipt.blocker = error.message;
+      'keychain_home_unsafe', 'fixture_keychain_not_owned', 'native_keychain_probe_failed', 'comparison_control_failed'].includes(error.message)) receipt.blocker = error.message;
     if (receipt.browserPreflight) {
       receipt.blocker = browserPreflightError(error);
       receipt.browserPreflight.error = receipt.blocker;
@@ -476,7 +488,7 @@ async function freshWorker(configFile: string) {
     }
     observer?.stop();
     if (context) await limit(context.close().catch(() => {}), 5_000).catch(() => {});
-    let stopped = !launchAttempted || observer?.children.length === 1;
+    let stopped = !launchAttempted || (account.launchComparison ? comparisonControl?.cleanup?.confirmed === true : observer?.children.length === 1);
     for (const child of observer?.children ?? []) {
       const until = performance.now() + 5_000;
       try {
@@ -508,8 +520,9 @@ async function freshWorker(configFile: string) {
   return !result.error && result.status === 0 ? 0 : 2;
 }
 
-export async function runFreshAccountQualification() {
+export async function runFreshAccountQualification(comparisonRuntime?: 'bun' | 'node') {
   validateQualificationHost(process.env);
+  if (comparisonRuntime !== undefined && !['bun', 'node'].includes(comparisonRuntime)) throw new Error('invalid_comparison_runtime');
   if (process.getuid?.() === 0 || Bun.version !== '1.4.0') throw new Error('run_as_unprivileged_pinned_ci_runner');
   const outputRoot = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(outputRoot, 'dia-native-qualification.json');
@@ -571,6 +584,23 @@ export async function runFreshAccountQualification() {
     const bun = path.join(bin, 'bun');
     copyFileSync(sourceBun, bun);
     chmodSync(bun, 0o755);
+    let launchComparison: FreshAccount['launchComparison'];
+    if (comparisonRuntime) {
+      let executable = bun;
+      if (comparisonRuntime === 'node') {
+        const sourceNode = Bun.which('node');
+        if (!sourceNode) throw new Error('pinned_node_unavailable');
+        const resolvedNode = realpathSync(sourceNode);
+        const node = JSON.parse(run(resolvedNode, ['-p', 'JSON.stringify({version:process.versions.node,arch:process.arch,os:process.platform,bun:Boolean(process.versions.bun)})']));
+        if (node.version !== '24.18.0' || node.arch !== 'arm64' || node.os !== 'darwin' || node.bun) throw new Error('pinned_node_required');
+        executable = path.join(bin, 'node');
+        copyFileSync(resolvedNode, executable);
+        chmodSync(executable, 0o755);
+      }
+      launchComparison = { mode: 'launch-only', runtime: comparisonRuntime, executable, executableSha256: await digest(executable),
+        driverSha256: await digest(path.join(snapshot, '.github/scripts/dia-launch-driver.mjs')),
+        helpersSha256: await digest(path.join(snapshot, '.github/scripts/qualify-dia-macos.ts')) };
+    }
     const { chromium } = await import('playwright');
     if (require('playwright/package.json').version !== '1.62.1') throw new Error('pinned_playwright_required');
     const originalExecutable = realpathSync(chromium.executablePath());
@@ -603,7 +633,7 @@ export async function runFreshAccountQualification() {
     const configFile = path.join(work, 'account.json');
     const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'GITHUB_RUN_ID',
       'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY'].map(name => [name, process.env[name]!]));
-    account = { work, home, temporary, snapshot, bun, destinationExecutable, uid, gid: uid, account: accountName,
+    account = { work, home, temporary, snapshot, bun, destinationExecutable, uid, gid: uid, account: accountName, ...(launchComparison ? { launchComparison } : {}),
       guid: randomUUID().toUpperCase(), groupGuid: randomUUID().toUpperCase(), label, sourceRevision,
       archiveSha256: await digest(archive), bunSha256: await digest(bun), destinationSha256: await digest(originalExecutable), configFile,
       environment: { ...metadata, HOME: home, TMPDIR: temporary, RUNNER_TEMP: temporary, PATH: bin + ':/usr/bin:/bin:/usr/sbin:/sbin', LANG: 'en_US.UTF-8',
@@ -760,9 +790,13 @@ export async function runFreshAccountQualification() {
     if (receipt.qualification) receipt.counts = receipt.qualification.counts;
     if (account) receipt.launcher = { ...receipt.launcher, uid: account.uid, gid: account.gid, accountGuid: account.guid, groupGuid: account.groupGuid, serviceLabel: account.label,
       sourceRevision: account.sourceRevision, archiveSha256: account.archiveSha256, bunSha256: account.bunSha256, destinationSha256: account.destinationSha256 };
+    if (account?.launchComparison) receipt.launchComparison = { mode: 'launch-only', runtime: account.launchComparison.runtime,
+      executableSha256: account.launchComparison.executableSha256, driverSha256: account.launchComparison.driverSha256,
+      helpersSha256: account.launchComparison.helpersSha256, qualificationCredit: false };
     const clean = Object.values(receipt.launcherCleanup).every(value => value === true);
     receipt.workerExitCode = workerExit ?? null;
-    receipt.status = freshQualificationPassed(workerExit, receipt.backgroundPreflight?.status, receipt.qualification?.status, receipt.launcherCleanup) ? 'passed' : 'incomplete';
+    receipt.status = !account?.launchComparison && freshQualificationPassed(workerExit, receipt.backgroundPreflight?.status, receipt.qualification?.status, receipt.launcherCleanup) ? 'passed' : 'incomplete';
+    if (account?.launchComparison && receipt.qualification?.reason === 'diagnostic_launch_comparison_only') receipt.reason = 'diagnostic_launch_comparison_only';
     if (!clean) receipt.recovery = 'Discard this disposable runner. Do not reuse its account, session, profile, or Keychain.';
     if (receipt.backgroundPreflight?.status !== 'passed' && receipt.backgroundPreflight) receipt.reason = receipt.backgroundPreflight.reason;
     writePrivateReceipt(output, receipt);
@@ -774,7 +808,9 @@ if (import.meta.main) {
   try {
     if (process.argv[2] === '--fresh-worker') process.exitCode = await freshWorker(process.argv[3]);
     else {
-      const receipt = await runFreshAccountQualification();
+      const args = process.argv.slice(2);
+      if (args.length && (args.length !== 2 || args[0] !== '--launch-comparison' || !['bun', 'node'].includes(args[1]))) throw new Error('invalid_comparison_arguments');
+      const receipt = await runFreshAccountQualification(args[1] as 'bun' | 'node' | undefined);
       console.log(JSON.stringify({ status: receipt.status, reason: receipt.reason, counts: receipt.counts, artifact: 'dia-native-qualification.json' }));
       process.exitCode = receipt.status === 'passed' ? 0 : 2;
     }
