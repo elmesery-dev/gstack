@@ -4,11 +4,35 @@ import { accessSync, chmodSync, constants, copyFileSync, createReadStream, exist
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
+import { assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches, observeFixtureKeychain,
   playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt } from './qualify-dia-macos';
 
 const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
+export const FRESH_WORK_PREFIX = '/private/tmp/dn-';
+
+interface UserDomainObservation {
+  uid: number;
+  state: 'present' | 'absent' | 'unavailable';
+  hasGuiDomain: boolean;
+  exitCode: number | null;
+  stdoutBytes: number;
+  stderrBytes: number;
+}
+
+export function classifyUserDomain(uid: number, result: { status: number | null; stdout: string; stderr: string; error?: unknown }): UserDomainObservation {
+  if (!Number.isSafeInteger(uid) || uid < 20_000 || uid >= 60_000) throw new Error('invalid_fresh_user_domain');
+  const text = result.stdout.trimStart();
+  const diagnostic = [result.stdout.trim(), result.stderr.trim()].filter(Boolean).join('\n');
+  const missing = new RegExp('^(?:Bad request\\.\\s*)?Could not find domain for (?:(?:user (?:uid|user)|uid|user):\\s*' + uid + '|user/' + uid + ')\\.?$');
+  const present = !result.error && result.status === 0
+    && (text.startsWith('user/' + uid + ' = {') || text.startsWith('com.apple.xpc.launchd.domain.user.' + uid + ' = {'));
+  const absent = !result.error && Number.isInteger(result.status) && result.status! > 0 && missing.test(diagnostic);
+  return { uid, state: present ? 'present' : absent ? 'absent' : 'unavailable',
+    hasGuiDomain: present && (new RegExp('\\bgui/' + uid + '(?:\\b|/)').test(text) || /\bsession\s*=\s*Aqua\b/.test(text)
+      || new RegExp('com\\.apple\\.xpc\\.launchd\\.user\\.domain\\.' + uid + '\\.\\d+\\.Aqua\\b').test(text)),
+    exitCode: result.status, stdoutBytes: Buffer.byteLength(result.stdout), stderrBytes: Buffer.byteLength(result.stderr) };
+}
 
 export const ARCHIVE_CHECK = `import json, posixpath, sys, tarfile, unicodedata
 try:
@@ -99,7 +123,7 @@ export function uidProcessFacts(output: string, uid: number) {
 
 export function freshQualificationPassed(workerExit: number | undefined, backgroundStatus: unknown, qualificationStatus: unknown, cleanup: Record<string, unknown>): boolean {
   return workerExit === 0 && backgroundStatus === 'passed' && qualificationStatus === 'passed'
-    && ['serviceStopped', 'userProcessesStopped', 'accountRemoved', 'groupRemoved', 'stagingRemoved'].every(key => cleanup[key] === true)
+    && ['serviceStopped', 'userDomainStopped', 'userProcessesStopped', 'accountRemoved', 'groupRemoved', 'stagingRemoved'].every(key => cleanup[key] === true)
     && Object.values(cleanup).every(value => value === true);
 }
 
@@ -123,6 +147,16 @@ export function parseDirectoryRecord(output: string): Record<string, string> {
 export function ownsFreshAccount(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>): boolean {
   return record.GeneratedUID?.toUpperCase() === account.guid.toUpperCase() && record.UniqueID === String(account.uid)
     && record.PrimaryGroupID === String(account.gid) && record.NFSHomeDirectory === account.home;
+}
+
+export function ownedUserDomainTarget(record: Record<string, string>, account: Pick<FreshAccount, 'guid' | 'uid' | 'gid' | 'home'>,
+  beforeCreation: UserDomainObservation | undefined, current: UserDomainObservation, currentUid = process.getuid?.()): string {
+  if (!Number.isSafeInteger(account.uid) || account.uid < 20_000 || account.uid >= 60_000 || account.uid === currentUid
+    || !ownsFreshAccount(record, account) || beforeCreation?.uid !== account.uid || beforeCreation.state !== 'absent'
+    || current.uid !== account.uid || current.state === 'unavailable' || current.hasGuiDomain) {
+    throw new Error('fresh_user_domain_ownership_unconfirmed');
+  }
+  return 'user/' + account.uid;
 }
 
 export function freshLaunchDefinition(account: FreshAccount) {
@@ -181,7 +215,7 @@ async function freshWorker(configFile: string) {
   if (!info.isFile() || info.uid !== 0 || (info.mode & 0o022) !== 0 || info.size > 64 * 1024 || realpathSync(configFile) !== configFile) throw new Error('unsafe_fresh_account_configuration');
   const account: FreshAccount = JSON.parse(readFileSync(configFile, 'utf8'));
   if (realpathSync(account.work) !== account.work || path.dirname(account.work) !== '/private/tmp'
-    || !path.basename(account.work).startsWith('dia-native-') || configFile !== path.join(account.work, 'account.json')
+    || !path.basename(account.work).startsWith(path.basename(FRESH_WORK_PREFIX)) || configFile !== path.join(account.work, 'account.json')
     || account.temporary !== path.join(account.work, 'tmp') || realpathSync(account.temporary) !== account.temporary
     || lstatSync(account.temporary).uid !== process.getuid?.()) throw new Error('unsafe_fresh_account_output');
   const preflightFile = path.join(account.temporary, 'dia-background-preflight.json');
@@ -356,7 +390,7 @@ export async function runFreshAccountQualification() {
   const outputRoot = realpathSync(process.env.RUNNER_TEMP!);
   const output = path.join(outputRoot, 'dia-native-qualification.json');
   if (existsSync(output)) throw new Error('fresh_output_required');
-  const work = realpathSync(mkdtempSync('/private/tmp/dia-native-'));
+  const work = realpathSync(mkdtempSync(FRESH_WORK_PREFIX));
   const home = path.join(work, 'home');
   const temporary = path.join(work, 'tmp');
   const snapshot = path.join(work, 'repo');
@@ -379,15 +413,25 @@ export async function runFreshAccountQualification() {
   let userCreated = false;
   let groupCreated = false;
   let serviceAttempted = false;
+  let domainBeforeCreation: UserDomainObservation | undefined;
   let stage = 'fresh_launcher_preflight';
   const receipt: Record<string, any> = { status: 'incomplete', reason: stage, runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
     counts: { pass: 0, fail: 0, skip: 0 }, launcher: { sessionCreate: true, aquaLogin: false },
-    launcherCleanup: { serviceStopped: false, userProcessesStopped: false, accountRemoved: false, groupRemoved: false, stagingRemoved: false } };
+    launcherCleanup: { serviceStopped: false, userDomainStopped: false, userProcessesStopped: false, accountRemoved: false, groupRemoved: false, stagingRemoved: false } };
   let workerExit: number | undefined;
   let pythonExecutable: string | undefined;
+  const probeUserDomain = (uid: number) => {
+    const timeout = Math.floor(Math.min(3_000, (cleanupDeadline || deadline) - performance.now()));
+    if (timeout < 1) throw new Error('fresh_launcher_deadline');
+    const result = spawnSync('/usr/bin/sudo', ['-n', '/bin/launchctl', 'print', 'user/' + uid], {
+      env: hostEnv, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024,
+    });
+    return classifyUserDomain(uid, result);
+  };
   try {
     rootCommand('/usr/bin/true', []);
     for (const directory of [home, temporary, snapshot, bin, browserDirectory]) mkdirSync(directory, { mode: 0o700 });
+    assertDiaSocketPath(path.join(temporary, 'dia-XXXXXX', 'h', 'Library/Application Support/Dia/User Data'));
     writeFileSync(path.join(temporary, 'dia-background-preflight.json'), JSON.stringify({ status: 'incomplete', reason: 'fresh_worker_not_started',
       nativeCasesRun: false, preflight: { registeredIdentity: false, foundationHome: false, keychain: false, headlessChromium: false } }) + '\n', { mode: 0o600, flag: 'wx' });
     const sourceRevision = run('/usr/bin/git', ['-C', repository, 'rev-parse', 'HEAD']);
@@ -424,6 +468,10 @@ export async function runFreshAccountQualification() {
     let uid = 20_000;
     while (used.has(uid) && uid < 60_000) uid++;
     if (uid >= 60_000) throw new Error('fresh_uid_unavailable');
+    stage = 'fresh_user_domain_preflight';
+    domainBeforeCreation = probeUserDomain(uid);
+    receipt.userDomain = { beforeCreation: domainBeforeCreation };
+    if (domainBeforeCreation.state !== 'absent') throw new Error('fresh_user_domain_not_absent');
     const configFile = path.join(work, 'account.json');
     const metadata = Object.fromEntries(['CI', 'GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'RUNNER_ARCH', 'GITHUB_RUN_ID',
       'GITHUB_RUN_ATTEMPT', 'GSTACK_DIA_NATIVE_QUALIFY'].map(name => [name, process.env[name]!]));
@@ -509,10 +557,29 @@ export async function runFreshAccountQualification() {
           (receipt.uidProcessSnapshots ??= {})[phase] = uidProcessFacts(snapshot.stdout, account!.uid);
         } catch { (receipt.uidProcessSnapshots ??= {})[phase] = { available: false }; }
       };
+      const active = () => run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).some(value => value === String(account!.uid));
       collect('before_signal');
       snapshotProcesses('before_signal');
+      let domainOwnershipConfirmed = false;
       try {
-        const active = () => run('/bin/ps', ['-axo', 'uid=']).split(/\s+/).some(value => value === String(account!.uid));
+        if (!receipt.launcherCleanup.serviceStopped) throw new Error('service_still_loaded');
+        const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
+        const before = probeUserDomain(account.uid);
+        (receipt.userDomain ??= {}).beforeTeardown = before;
+        const domain = ownedUserDomainTarget(record, account, domainBeforeCreation, before);
+        domainOwnershipConfirmed = true;
+        if (before.state === 'present') {
+          try { rootCommand('/bin/launchctl', ['bootout', domain], 10_000); }
+          catch (error) {
+            receipt.userDomain.teardownCommandFailure = (error as { diagnostic?: object }).diagnostic ?? { failed: true };
+          }
+        }
+        receipt.userDomain.afterTeardown = probeUserDomain(account.uid);
+        receipt.launcherCleanup.userDomainStopped = receipt.userDomain.afterTeardown.state === 'absent';
+      } catch { (receipt.userDomain ??= {}).teardownRefusedOrUnconfirmed = true; }
+      snapshotProcesses('after_domain_teardown');
+      try {
+        if (!domainOwnershipConfirmed) throw new Error('user_domain_ownership_unconfirmed');
         if (active()) {
           try { rootCommand('/usr/bin/pkill', ['-KILL', '-u', String(account.uid)]); } catch {}
           const until = Math.min(cleanupDeadline, performance.now() + 10_000);
@@ -522,17 +589,25 @@ export async function runFreshAccountQualification() {
         receipt.launcherCleanup.userProcessesStopped = !active();
       } catch {}
       snapshotProcesses('after_wait');
+      if (domainOwnershipConfirmed) {
+        try {
+          receipt.userDomain.afterWait = probeUserDomain(account.uid);
+          receipt.launcherCleanup.userDomainStopped = receipt.userDomain.afterWait.state === 'absent';
+        } catch { receipt.launcherCleanup.userDomainStopped = false; }
+      }
       collect('after_wait');
       if (receipt.launcherCleanup.userProcessesStopped) {
         try {
-          if (!receipt.launcherCleanup.serviceStopped) throw new Error('service_still_loaded');
+          if (!receipt.launcherCleanup.serviceStopped || !receipt.launcherCleanup.userDomainStopped) throw new Error('owned_domain_or_service_still_loaded');
           const record = parseDirectoryRecord(run('/usr/bin/dscl', ['.', '-read', '/Users/' + accountName, 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory', 'GeneratedUID']));
           if (!ownsFreshAccount(record, account)) throw new Error('account_identity_changed');
+          if (active()) { receipt.launcherCleanup.userProcessesStopped = false; throw new Error('fresh_uid_processes_reappeared'); }
           rootCommand('/usr/bin/dscl', ['.', '-delete', '/Users/' + accountName]);
           receipt.launcherCleanup.accountRemoved = true;
         } catch {}
       }
     } else if (!userCreated) {
+      receipt.launcherCleanup.userDomainStopped = true;
       receipt.launcherCleanup.userProcessesStopped = true;
       receipt.launcherCleanup.accountRemoved = true;
     }
@@ -546,11 +621,11 @@ export async function runFreshAccountQualification() {
     } else if (!groupCreated) receipt.launcherCleanup.groupRemoved = true;
     const mountSafe = !serviceAttempted || (receipt.qualification ? receipt.qualification.cleanup?.mountDetached === true
       : receipt.backgroundPreflight?.status === 'incomplete');
-    if (receipt.launcherCleanup.serviceStopped && receipt.launcherCleanup.userProcessesStopped && receipt.launcherCleanup.accountRemoved
+    if (receipt.launcherCleanup.serviceStopped && receipt.launcherCleanup.userDomainStopped && receipt.launcherCleanup.userProcessesStopped && receipt.launcherCleanup.accountRemoved
       && receipt.launcherCleanup.groupRemoved && mountSafe && (workerExit !== undefined || !serviceAttempted)) {
       try {
         const owner = lstatSync(work).uid;
-        if (realpathSync(work) !== work || path.dirname(work) !== '/private/tmp' || !path.basename(work).startsWith('dia-native-')
+        if (realpathSync(work) !== work || path.dirname(work) !== '/private/tmp' || !path.basename(work).startsWith(path.basename(FRESH_WORK_PREFIX))
           || (owner !== 0 && owner !== process.getuid?.())) throw new Error('staging_identity_changed');
         rootCommand('/bin/rm', ['-rf', '--', work], 20_000);
         receipt.launcherCleanup.stagingRemoved = true;

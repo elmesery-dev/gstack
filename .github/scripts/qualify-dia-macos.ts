@@ -10,6 +10,10 @@ const require = createRequire(import.meta.url);
 const repository = path.resolve(import.meta.dir, '../..');
 export const DIA_DOWNLOAD = 'https://releases.diabrowser.com/release/Dia-latest.dmg';
 
+export function assertDiaSocketPath(sourceProfile: string): void {
+  if (Buffer.byteLength(path.join(sourceProfile, 'SingletonSocket')) >= 100) throw new Error('fixture_socket_path_too_long');
+}
+
 export function writePrivateReceipt(file: string, value: unknown, replace = false): void {
   const directory = path.dirname(file);
   const owner = process.getuid?.();
@@ -349,7 +353,8 @@ export async function qualifyDia(isolation: { root: string; originalHome: string
       if (!existsSync(directory)) mkdirSync(directory, { mode: 0o700 });
       else if (realpathSync(directory) !== directory || !lstatSync(directory).isDirectory()) throw new Error('fixture_directory_escape');
     }
-    if (Buffer.byteLength(path.join(sourceProfile, 'SingletonSocket')) >= 100) throw new Error('fixture_socket_path_too_long');
+    receipt.sourceSocketPathBytes = Buffer.byteLength(path.join(sourceProfile, 'SingletonSocket'));
+    assertDiaSocketPath(sourceProfile);
     if (existsSync(sourceProfile) || existsSync(destinationProfile)) throw new Error('existing_profile_refused');
     for (const relative of ['Library/Application Support/Google/Chrome', 'Library/Application Support/Chromium',
       'Library/Application Support/Arc', 'Library/Application Support/Dia', 'Library/Application Support/Comet',

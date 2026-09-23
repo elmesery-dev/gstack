@@ -7,10 +7,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import {
-  allowedFixturePage, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
+  allowedFixturePage, assertDiaSocketPath, browserPreflightError, browserStartupCategory, captureUserKeychains, DIA_DOWNLOAD, fixtureKeychainRestoreCommands, nativeDiaLaunchOptions, observeBrowserLaunches,
   observeFixtureKeychain, parseDefaultKeychain, parseKeychainPaths, playwrightModuleLoadFacts, prepareKeychainHome, validateQualificationHost, writePrivateReceipt,
 } from '../../.github/scripts/qualify-dia-macos';
-import { ARCHIVE_CHECK, PRIVATE_RECEIPT_READ, freshLaunchDefinition, freshQualificationPassed, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
+import { ARCHIVE_CHECK, FRESH_WORK_PREFIX, PRIVATE_RECEIPT_READ, classifyUserDomain, freshLaunchDefinition, freshQualificationPassed,
+  ownedUserDomainTarget, ownsFreshAccount, ownsLaunchService, parseDirectoryRecord, uidProcessFacts } from '../../.github/scripts/run-dia-native-qualification';
 
 const require = createRequire(import.meta.url);
 const root = mkdtempSync(path.join(tmpdir(), 'dia-qualification-test-'));
@@ -122,6 +123,18 @@ describe('Dia macOS CI qualification safety', () => {
 
   test('the download is the published HTTPS Dia release endpoint', () => {
     expect(DIA_DOWNLOAD).toBe('https://releases.diabrowser.com/release/Dia-latest.dmg');
+  });
+
+  test('the exact nested macOS account and qualifier socket layout stays below the unchanged limit', () => {
+    const sourceProfile = path.posix.join(FRESH_WORK_PREFIX + 'XXXXXX', 'tmp', 'dia-XXXXXX', 'h', 'Library/Application Support/Dia/User Data');
+    expect(Buffer.byteLength(sourceProfile + '/SingletonSocket')).toBe(97);
+    expect(() => assertDiaSocketPath(sourceProfile)).not.toThrow();
+    const oldProfile = '/private/tmp/dia-native-XXXXXX/tmp/dia-XXXXXX/h/Library/Application Support/Dia/User Data';
+    expect(Buffer.byteLength(oldProfile + '/SingletonSocket')).toBe(105);
+    expect(() => assertDiaSocketPath(oldProfile)).toThrow('fixture_socket_path_too_long');
+    const atLimit = '/' + 'x'.repeat(100 - Buffer.byteLength('//SingletonSocket'));
+    expect(Buffer.byteLength(atLimit + '/SingletonSocket')).toBe(100);
+    expect(() => assertDiaSocketPath(atLimit)).toThrow('fixture_socket_path_too_long');
   });
 
   test('headless source launch removes mock Keychain and first-run suppression defaults', () => {
@@ -394,6 +407,49 @@ describe('Dia macOS CI qualification safety', () => {
     expect(() => parseDirectoryRecord('UniqueID: 23456\nUniqueID: 501')).toThrow('invalid_directory_record');
   });
 
+  test('user-domain absence requires an explicit matching-domain response, not an arbitrary command failure', () => {
+    for (const status of [64, 113]) {
+      const absent = classifyUserDomain(23456, { status, stdout: '', stderr: 'Bad request.\nCould not find domain for user uid: 23456\n' });
+      expect(absent.state).toBe('absent');
+      expect(absent.uid).toBe(23456);
+    }
+    for (const result of [
+      { status: 1, stdout: '', stderr: 'sudo: a password is required' },
+      { status: 113, stdout: '', stderr: 'Could not find domain for user uid: 23457' },
+      { status: 113, stdout: '', stderr: 'Could not find domain for user gui: 23456' },
+      { status: 113, stdout: '', stderr: 'synthetic-private-error' },
+      { status: null, stdout: '', stderr: '', error: new Error('synthetic-private-error') },
+    ]) expect(classifyUserDomain(23456, result).state).toBe('unavailable');
+    expect(() => classifyUserDomain(0, { status: 0, stdout: '', stderr: '' })).toThrow('invalid_fresh_user_domain');
+  });
+
+  test('user-domain inspection records only safe state facts and notices an unexpected GUI domain', () => {
+    const present = classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n type = user\n synthetic-private-value\n}', stderr: '' });
+    expect(present).toMatchObject({ uid: 23456, state: 'present', hasGuiDomain: false, exitCode: 0 });
+    expect(JSON.stringify(present)).not.toContain('synthetic-private-value');
+    expect(classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n subdomains = { gui/23456 }\n}', stderr: '' }).hasGuiDomain).toBe(true);
+    expect(classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n session = Aqua\n}', stderr: '' }).hasGuiDomain).toBe(true);
+    expect(classifyUserDomain(23456, { status: 0, stdout: 'user/501 = { }', stderr: '' }).state).toBe('unavailable');
+  });
+
+  test('user-domain teardown is bound to the new account and its pre-creation absence proof', () => {
+    const account = { guid: 'A38AC39B-5960-4F0C-B02F-C32A4F625B33', uid: 23456, gid: 23456, home: '/private/tmp/dn-fixture/home' };
+    const record = { GeneratedUID: account.guid, UniqueID: '23456', PrimaryGroupID: '23456', NFSHomeDirectory: account.home };
+    const proof = classifyUserDomain(23456, { status: 113, stdout: '', stderr: 'Could not find domain for user uid: 23456' });
+    const current = classifyUserDomain(23456, { status: 0, stdout: 'user/23456 = {\n type = user\n}', stderr: '' });
+    expect(ownedUserDomainTarget(record, account, proof, current, 501)).toBe('user/23456');
+    for (const key of ['GeneratedUID', 'UniqueID', 'PrimaryGroupID', 'NFSHomeDirectory']) {
+      expect(() => ownedUserDomainTarget({ ...record, [key]: 'changed' }, account, proof, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    }
+    expect(() => ownedUserDomainTarget(record, account, undefined, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    expect(() => ownedUserDomainTarget(record, account, { ...proof, state: 'present' }, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    expect(() => ownedUserDomainTarget(record, account, { ...proof, uid: 23457 }, current, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    expect(() => ownedUserDomainTarget(record, account, proof, current, 23456)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    for (const changed of [{ ...current, hasGuiDomain: true }, { ...current, uid: 23457 }, { ...current, state: 'unavailable' as const }]) {
+      expect(() => ownedUserDomainTarget(record, account, proof, changed, 501)).toThrow('fresh_user_domain_ownership_unconfirmed');
+    }
+  });
+
   test('launchd receives a one-shot fresh-user security session without an Aqua or auto-login workaround', () => {
     const account: any = { label: 'ai.gstack.dia.fixture', account: 'gsdiafixture', bun: '/private/tmp/fixture/bin/bun',
       snapshot: '/private/tmp/fixture/repo', configFile: '/private/tmp/fixture/account.json', environment: { HOME: '/private/tmp/fixture/home', CI: 'true' } };
@@ -573,7 +629,7 @@ with tarfile.open(file, 'w') as out:
   });
 
   test('captured passing inner receipts cannot qualify a run with incomplete cleanup', () => {
-    const cleanup = { serviceStopped: true, userProcessesStopped: true, accountRemoved: true, groupRemoved: true, stagingRemoved: true };
+    const cleanup = { serviceStopped: true, userDomainStopped: true, userProcessesStopped: true, accountRemoved: true, groupRemoved: true, stagingRemoved: true };
     expect(freshQualificationPassed(0, 'passed', 'passed', cleanup)).toBe(true);
     for (const key of Object.keys(cleanup)) expect(freshQualificationPassed(0, 'passed', 'passed', { ...cleanup, [key]: false })).toBe(false);
     expect(freshQualificationPassed(0, 'passed', 'passed', {})).toBe(false);
