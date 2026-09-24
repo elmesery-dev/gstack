@@ -8,6 +8,7 @@ import { runGeneration } from '../scripts/gen-skill-docs';
 
 const root = mkdtempSync(join(tmpdir(), 'skill-positional-'));
 const rendered = join(root, 'rendered');
+let checksumFailurePath: string | undefined;
 const tenArguments = Array.from({ length: 10 }, (_, n) => `argument${n}`);
 const literals = {
   checksum: `actual_sha=$(sha256sum < "$tmpfile" | awk '{print $(1)}')`,
@@ -24,7 +25,38 @@ beforeAll(async () => {
     expect((await runGeneration({ host, outputRoot: rendered })).exitCode).toBe(0);
   }
 }, 120000);
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+afterAll(() => {
+  try {
+    if (!checksumFailurePath) return;
+    for (const tool of ['sha256sum', 'shasum -a 256']) {
+      for (const pathForm of ['native-argument', 'native-input', 'shell-mktemp', 'shell-mktemp-backslash']) {
+        const setup = pathForm === 'shell-mktemp'
+          ? `tmpfile=$(mktemp) || exit
+trap 'rm -f -- "$tmpfile"' EXIT
+printf 'synthetic installer bytes\\n' > "$tmpfile" || exit`
+          : pathForm === 'shell-mktemp-backslash'
+            ? `dir=$(mktemp -d) || exit
+tmpfile="$dir/nested\\\\installer"
+trap 'rm -f -- "$tmpfile"; rmdir -- "$dir/nested" "$dir"' EXIT
+mkdir -- "$dir/nested" || exit
+printf 'synthetic installer bytes\\n' > "$tmpfile" || exit`
+            : '';
+        const command = `set -o pipefail
+${setup}
+printf 'DIAGNOSTIC_BASH=%s\\nDIAGNOSTIC_PATH=%s\\n' "$BASH_VERSION" "$tmpfile" >&2
+command -v ${tool.split(' ')[0]} >&2
+${tool} ${pathForm === 'native-argument' ? '' : '< '}"$tmpfile"`;
+        const result = spawnSync('bash', ['-c', command], {
+          encoding: 'utf8', timeout: 1500,
+          env: { ...process.env, HOME: root, tmpfile: checksumFailurePath },
+        });
+        reportChecksumDiagnostic(command, pathForm, checksumFailurePath, result);
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15000);
 
 function substitute(text: string, args: string[]) {
   const numbered = args.length ? text.replace(/\$(\d+)/g, (_, n) => args[Number(n)] ?? '') : text;
@@ -35,6 +67,16 @@ function run(code: string, env: Record<string, string> = {}) {
   return spawnSync('bash', ['-c', code], {
     encoding: 'utf8', timeout: 5000, env: { ...process.env, HOME: root, ...env },
   });
+}
+
+function reportChecksumDiagnostic(command: string, pathForm: string, file: string, result: ReturnType<typeof run>) {
+  console.error('checksum diagnostic error:', JSON.stringify({
+    command, pathForm, nativePath: file, platform: process.platform, bash: Bun.which('bash'),
+    status: result.status, signal: result.signal, error: result.error?.message.slice(0, 512),
+    stdout: result.stdout?.slice(0, 512), stderr: result.stderr?.slice(0, 2048),
+    stdoutCharacters: result.stdout?.length, stderrCharacters: result.stderr?.length,
+    observationOnly: true,
+  }));
 }
 
 function skill(host: string, name: string) {
@@ -76,6 +118,10 @@ for (const host of ['claude', 'codex'] as const) for (const args of [[], tenArgu
       ]);
       for (const line of lines) {
         const result = run(`${line}\nprintf '%s' "$actual_sha"`, { tmpfile: file });
+        if (result.status !== 0 || result.stdout !== createHash('sha256').update(readFileSync(file)).digest('hex')) {
+          checksumFailurePath ??= file;
+          reportChecksumDiagnostic(`${line}\nprintf '%s' "$actual_sha"`, `${label}/${name}/${backslashPath ? 'native-backslash' : 'native-input'}`, file, result);
+        }
         expect(result.status).toBe(0);
         expect(result.stdout).toBe(createHash('sha256').update(readFileSync(file)).digest('hex'));
       }
