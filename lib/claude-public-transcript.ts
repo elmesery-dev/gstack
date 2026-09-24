@@ -279,6 +279,7 @@ export function readPlanCountTranscript(configDir: string, cwd: string,
   ownedSnapshot?: OwnedSnapshot,
 ): PlanCountTranscript {
   const calls = new Map<string, NativePlanQuestionCall>();
+  const asked = new Map<string, Set<string>>();
   const assistantMessages: PlanCountTranscript['assistantMessages'] = [];
   const planReadyRequests = new Map<string, NonNullable<PlanCountTranscript['planReadyRequests']>[number]>();
   let matched = false;
@@ -442,17 +443,22 @@ export function readPlanCountTranscript(configDir: string, cwd: string,
               if (prior && JSON.stringify(prior.questions) !== JSON.stringify(block.input.questions)) {
                 throw new Error('conflicting question metadata for one tool call');
               }
-              if (!prior) calls.set(key, { sessionId: record.sessionId, toolUseId: block.id,
-                questions: block.input.questions, answered: false, failed: false });
+              if (!prior) {
+                calls.set(key, { sessionId: record.sessionId, toolUseId: block.id,
+                  questions: block.input.questions, answered: false, failed: false });
+                asked.set(key, new Set(block.input.questions.map(q => q.question)));
+              }
             } else if (record.message.role === 'user' && block.type === 'tool_result' &&
                        typeof block.tool_use_id === 'string') {
               const ready = planReadyRequests.get(`${record.sessionId}:${block.tool_use_id}`);
               if (ready && block.is_error === true) ready.failed = true;
-              const call = calls.get(`${record.sessionId}:${block.tool_use_id}`);
+              const key = `${record.sessionId}:${block.tool_use_id}`, call = calls.get(key), questions = asked.get(key);
               const answers = record.toolUseResult?.answers;
-              const validAnswers = call && object(answers) ? Object.fromEntries(call.questions
-                .filter(q => typeof answers[q.question] === 'string' && answers[q.question].trim())
-                .map(q => [q.question, answers[q.question]])) : {};
+              // Walk the result's own keys, not the call's questions, so R
+              // results for one Q-question call cost O(Q + R), not O(Q × R).
+              const validAnswers = call && questions && object(answers) ? Object.fromEntries(Object.keys(answers)
+                .filter(q => questions.has(q) && typeof answers[q] === 'string' && answers[q].trim())
+                .map(q => [q, answers[q]])) : {};
               if (call && block.is_error !== true && Object.keys(validAnswers).length > 0) {
                 // The CLI allows submitting a multi-question packet with
                 // unanswered tabs. This completes ONE call, not N questions.
@@ -460,7 +466,6 @@ export function readPlanCountTranscript(configDir: string, cwd: string,
                 call.failed = false;
                 delete call.failure;
                 call.answers = validAnswers;
-                call.unansweredQuestionIndices = call.questions.flatMap((q, i) => q.question in validAnswers ? [] : [i]);
                 call.answeredAt = validTimestamp(record.timestamp) ? record.timestamp : undefined;
               } else if (call) {
                 if (call.answered) throw new Error('conflicting successful and failed results for one question call');
@@ -475,6 +480,9 @@ export function readPlanCountTranscript(configDir: string, cwd: string,
         }
       }
     }
+    // The unanswered tabs of the final successful result, computed once per call.
+    for (const call of calls.values()) if (call.answers)
+      call.unansweredQuestionIndices = call.questions.flatMap((q, i) => Object.hasOwn(call.answers!, q.question) ? [] : [i]);
     return { status: matched ? 'ready' : 'missing', calls: [...calls.values()], assistantMessages,
       ...(planReadyRequests.size ? { planReadyRequests: [...planReadyRequests.values()] } : {}) };
   } catch (error) {

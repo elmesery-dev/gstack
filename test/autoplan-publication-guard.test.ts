@@ -724,6 +724,22 @@ describe('Autoplan parent publication guard', () => {
     expect(decoded.transcript.status).toBe('ready');
     expect(decoded.events.filter(e => e.kind === 'message').map(e => e.text)).toEqual(['Phase 1 complete.']);
   }, 5_000);
+  test('one 12,000-question call followed by 12,000 small results resolves in linear time', () => {
+    const f = fixture(); f.message(); f.current();
+    const { rows, record } = f.journal();
+    const questions = Array.from({ length: 12_000 }, (_, i) => ({ header: `h${i}`, question: `q${i}`, options: [{ label: 'a' }, { label: 'b' }] }));
+    const extra = [record('assistant', [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion', input: { questions } }])];
+    for (let i = 0; i < 12_000; i++)
+      extra.push(record('user', [{ type: 'tool_result', tool_use_id: 'ask', content: 'ok' }], { toolUseResult: { answers: { [`q${i}`]: 'a' } } }));
+    fs.writeFileSync(f.input.transcript_path, [...rows, ...extra].map(x => JSON.stringify(x)).join('\n') + '\n');
+    const decoded = owned(f);
+    expect(decoded.transcript.status).toBe('ready');
+    const call = decoded.transcript.calls.find(c => c.toolUseId === 'ask')!;
+    expect(call.answered).toBe(true);
+    expect(call.answers).toEqual({ q11999: 'a' });
+    expect(call.unansweredQuestionIndices).toHaveLength(11_999);
+    expect(call.unansweredQuestionIndices).not.toContain(11_999);
+  }, 5_000);
   for (const [name, change] of Object.entries({
     'non-SessionStart hook': (p: any[]) => { p[0].attachment.hookEvent = 'UserPromptSubmit'; },
     'non-hook attachment': (p: any[]) => { p[1].attachment.type = 'todo'; },
