@@ -71,6 +71,39 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install pinned upstream shasum
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v perl
+          perl -MDigest::SHA=6.04 -e 'print "Perl $^V; Digest::SHA $Digest::SHA::VERSION\n"'
+          checksum_bin=$(mktemp -d)
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 2 --max-time 60 \
+            https://raw.githubusercontent.com/Perl/perl5/5551b97c3be30b899397b99d57993a39d13294f1/cpan/Digest-SHA/shasum \
+            -o "$checksum_bin/shasum.pl"
+          printf '81cf4cf22dff082ea7f7654b3505f72d62a8e1cb02fb837b86e1f396455d74fa  %s\n' "$checksum_bin/shasum.pl" \
+            | sha256sum --check --strict
+          cat > "$checksum_bin/shasum" <<'SHASUM'
+          #!/usr/bin/env bash
+          exec perl "$(dirname "$0")/shasum.pl" "$@"
+          SHASUM
+          chmod +x "$checksum_bin/shasum"
+          cygpath -w "$checksum_bin" >> "$GITHUB_PATH"
+
+      - name: Verify real checksum tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sha256sum && command -v shasum
+          test "$(shasum --version)" = 6.04
+          input=$(mktemp)
+          trap 'rm -f -- "$input"' EXIT
+          printf abc > "$input"
+          expected=ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+          test "$(sha256sum < "$input" | awk '{print $1}')" = "$expected"
+          test "$(shasum -a 256 < "$input" | awk '{print $1}')" = "$expected"
+          printf 'Both tools matched SHA-256(abc): %s\n' "$expected"
+
       - name: Build server-node.mjs (required by Windows browse path)
         # browse/src/cli.ts module-level throws on Windows if server-node.mjs
         # is missing — Bun can't drive Playwright's Chromium on Windows

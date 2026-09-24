@@ -123,6 +123,7 @@ for (const host of ['claude', 'codex'] as const) for (const args of [[], tenArgu
           reportChecksumDiagnostic(`${line}\nprintf '%s' "$actual_sha"`, `${label}/${name}/${backslashPath ? 'native-backslash' : 'native-input'}`, file, result);
         }
         expect(result.status).toBe(0);
+        expect(result.stderr).toBe('');
         expect(result.stdout).toBe(createHash('sha256').update(readFileSync(file)).digest('hex'));
       }
     }
